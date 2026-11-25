@@ -1,0 +1,15 @@
+"AppState"
+{
+	"appid"		"1000"
+	"Universe"		"1"
+	"name"		"Jogo Exemplo"
+	"StateFlags"		"4"
+	"installdir"		"JogoExemplo"
+	"InstalledDepots"
+	{
+		"1001"
+		{
+			"manifest"		"1"
+		}
+	}
+}

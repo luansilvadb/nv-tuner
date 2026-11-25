@@ -1,0 +1,161 @@
+# Catálogo de settings simbólicas do nv-tuner.
+#
+# Cada entrada liga um nome estável (usado em `aplicar` nas regras) ao ID DRS
+# e aos valores aceitos. O catálogo é também a lista permitida do serviço:
+# uma regra não consegue gravar um ID que não esteja aqui.
+#
+# Origem dos IDs e valores: NvApiDriverSettings.h (NVAPI) e o Reference.xml /
+# CustomSettingNames.xml do NVIDIA Profile Inspector 3.0.2.1 (MIT), conferidos
+# no laboratório contra o DRS real (driver 621.40). Referência completa:
+# docs/pesquisa/settings-referencia.json.
+#
+# Campos: nome (snake_case), id, descricao, valores (nome = valor),
+# faixa opcional { min, max } para números livres e governada_por opcional
+# (preferências do usuário que mandam nesta setting). Formato: docs/regras.md.
+
+versao_schema = 1
+
+# ── Sincronismo ──────────────────────────────────────────────────────────────
+
+[[setting]]
+nome = "vsync"
+id = 0x00A879CF
+descricao = "Vertical Sync (NPI) / Sincronização vertical"
+governada_por = ["sincronismo"]
+valores = { force_off = 0x08416747, force_on = 0x47814940, fast_sync = 0x18888888, aplicacao = 0x60925292, meio_refresh = 0x32610244, terco_refresh = 0x71271021, quarto_refresh = 0x13245256 }
+
+[[setting]]
+nome = "vsync_tear_control"
+id = 0x005A375C
+descricao = "Vertical Sync - Tear Control (Adaptive não deve ser usado)"
+governada_por = ["sincronismo"]
+valores = { standard = 0x96861077, adaptive = 0x99941284 }
+
+[[setting]]
+nome = "gsync_global"
+id = 0x1094F157
+descricao = "GSYNC - Global Feature (driver: Toggle the VRR global feature)"
+governada_por = ["sincronismo"]
+valores = { off = 0, on = 1 }
+
+[[setting]]
+nome = "gsync_app_mode"
+id = 0x1194F158
+descricao = "GSYNC - Application Mode (driver: Enable G-SYNC globally); padrão do driver: só tela cheia"
+governada_por = ["sincronismo"]
+valores = { off = 0, tela_cheia = 1, tela_cheia_e_janela = 2 }
+
+[[setting]]
+nome = "gsync_app_state"
+id = 0x10A879CF
+descricao = "GSYNC - Application State (driver: G-SYNC); herdado por todo perfil sem override próprio"
+governada_por = ["sincronismo"]
+valores = { permitir = 0, forcar_off = 1, desabilitar = 2, ulmb = 3, refresh_fixo = 4 }
+
+# ── Latência e limite de FPS ─────────────────────────────────────────────────
+
+[[setting]]
+nome = "low_latency_cpl"
+id = 0x0005F543
+descricao = "Ultra Low Latency - CPL State (estado do modo de baixa latência na UI; sem nome no driver)"
+valores = { off = 0, on = 1, ultra = 2 }
+
+[[setting]]
+nome = "low_latency_enabled"
+id = 0x10835000
+descricao = "Ultra Low Latency - Enabled (driver: FRL Low Latency)"
+valores = { off = 0, on = 1 }
+
+[[setting]]
+nome = "limite_fps"
+id = 0x10835002
+descricao = "Frame Rate Limiter V3 (driver: Frame Rate Limiter); unidade: FPS"
+governada_por = ["sincronismo", "limite_fps"]
+valores = { off = 0 }
+faixa = { min = 20, max = 1000 }
+
+[[setting]]
+nome = "platform_boost"
+id = 0x10834FFE
+descricao = "Platform Boost"
+valores = { off = 0, on = 1 }
+
+# ── Energia e shader cache ───────────────────────────────────────────────────
+
+[[setting]]
+nome = "energia"
+id = 0x1057EB71
+descricao = "Power Management - Mode / Modo de gerenciamento de energia"
+valores = { adaptativo = 0, desempenho_maximo = 1, otimizado = 5 }
+
+[[setting]]
+nome = "shader_cache"
+id = 0x00198FFF
+descricao = "Shader Cache - Enabled"
+valores = { off = 0, on = 1 }
+
+# ── Filtragem e antialiasing ─────────────────────────────────────────────────
+
+[[setting]]
+nome = "af_modo"
+id = 0x10D2BB16
+descricao = "Anisotropic Filtering - Mode"
+valores = { aplicacao = 0, usuario = 1 }
+
+[[setting]]
+nome = "af_otimizacao"
+id = 0x0084CD70
+descricao = "Anisotropic Filter - Optimization (só atua quando o driver controla o AF)"
+valores = { off = 0, on = 1 }
+
+[[setting]]
+nome = "af_otimizacao_amostras"
+id = 0x00E73211
+descricao = "Anisotropic Filter - Sample Optimization (só atua quando o driver controla o AF)"
+valores = { off = 0, on = 1 }
+
+[[setting]]
+nome = "aa_modo"
+id = 0x107EFC5B
+descricao = "Antialiasing (MSAA) - Mode"
+valores = { aplicacao = 0, sobrescrever = 1, melhorar = 2 }
+
+# ── Indicadores (overlays de depuração) ──────────────────────────────────────
+
+[[setting]]
+nome = "indicador_vrr"
+id = 0x1095F16F
+descricao = "Variable Refresh Rate - Overlay Indicator (padrão do driver: ligado)"
+valores = { off = 0, on = 1 }
+
+[[setting]]
+nome = "indicador_mfaa"
+id = 0x00666665
+descricao = "Indicator MFAA"
+valores = { off = 0, on = 1 }
+
+[[setting]]
+nome = "indicador_triple_buffering"
+id = 0x00676635
+descricao = "Indicator Triple Buffering"
+valores = { off = 0, on = 1 }
+
+# ── DLSS (override pelo driver) ──────────────────────────────────────────────
+
+[[setting]]
+nome = "dlss_override"
+id = 0x10E41E01
+descricao = "DLSS - Enable DLL Override (NVAPI: NGX_DLSS_SR_OVERRIDE); também troca a DLL pela mais nova do driver"
+valores = { off = 0, on = 1 }
+
+[[setting]]
+nome = "dlss_perfil_preset"
+id = 0x00634291
+descricao = "DLSS - Forced Model Preset Profile (oculta da NVAPI pública; Custom = Personalizado do NVIDIA App)"
+valores = { na = 0, recomendado = 1, personalizado = 2 }
+
+[[setting]]
+nome = "dlss_preset"
+id = 0x10E41DF3
+descricao = "DLSS - Forced Preset Letter (NVAPI: NGX_DLSS_SR_OVERRIDE_RENDER_PRESET_SELECTION); A–F CNN, J/K Transformer Gen 1, L/M Gen 2"
+valores = { na = 0, a = 1, b = 2, c = 3, d = 4, e = 5, f = 6, j = 0xA, k = 0xB, l = 0xC, m = 0xD, recomendado = 0x00FFFFFF }

@@ -1,0 +1,9 @@
+{
+    "FormatVersion": 0,
+    "bIsIncompleteInstall": false,
+    "DisplayName": "Jogo Epic",
+    "InstallLocation": "X:\\Epic Games\\JogoEpic",
+    "LaunchExecutable": "Binaries/Win64/JogoEpic.exe",
+    "AppName": "abc123",
+    "AppCategories": ["public", "games", "applications"]
+}

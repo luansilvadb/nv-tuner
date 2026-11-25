@@ -1,0 +1,16 @@
+[package]
+name = "nvt-drs"
+description = "FFI própria da NVAPI DRS (perfis do driver NVIDIA)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json = "1"
+
+[lints]
+workspace = true

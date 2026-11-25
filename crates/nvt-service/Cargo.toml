@@ -1,0 +1,43 @@
+[package]
+name = "nvt-service"
+description = "Serviço do Windows (privilegiado) que aplica planos de configuração"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+nvt-ipc.workspace = true
+nvt-core = { path = "../nvt-core" }
+nvt-drs = { path = "../nvt-drs" }
+nvt-engine = { path = "../nvt-engine" }
+serde.workspace = true
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "registry"] }
+tracing-appender = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+] }
+
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+embed-resource = "3"
+
+[lints]
+workspace = true

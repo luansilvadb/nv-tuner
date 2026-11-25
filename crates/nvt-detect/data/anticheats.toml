@@ -1,0 +1,71 @@
+# Indícios de anticheat (dados, não código) — ver docs/pesquisa/deteccao.md, seção 3.5.
+#
+# Campos (todos opcionais, exceto nome/kernel):
+#   pastas            = nomes de pasta dentro da instalação do jogo (sem diferenciar maiúsculas)
+#   arquivos          = nomes exatos de arquivo
+#   prefixos_arquivo  = início do nome de arquivo (ex.: "BEService")
+#   sufixos_arquivo   = fim do nome de arquivo (ex.: "_BE.exe")
+#   descricao_dll     = { arquivo, contem }: VERSIONINFO FileDescription/ProductName do arquivo contém o texto
+#   metadata_riot     = true: indício vem do metadata Riot (dependencies.vanguard)
+#   servicos          = nomes exatos de serviço/driver em HKLM\SYSTEM\CurrentControlSet\Services
+#   prefixos_servico  = início do nome de serviço (drivers com sufixo aleatório)
+#
+# Nunca usar busca de string curta dentro do binário (ex.: "vgk"): deu falso positivo em todos os exes testados.
+
+versao_schema = 1
+
+[[anticheat]]
+nome = "Easy Anti-Cheat"
+kernel = true
+pastas = ["EasyAntiCheat"]
+arquivos = ["EasyAntiCheat_EOS_Setup.exe", "EasyAntiCheat_Setup.exe", "start_protected_game.exe", "EasyAntiCheat_x64.dll", "EasyAntiCheat_EOS.sys"]
+servicos = ["EasyAntiCheat", "EasyAntiCheat_EOS"]
+
+[[anticheat]]
+nome = "BattlEye"
+kernel = true
+pastas = ["BattlEye"]
+prefixos_arquivo = ["BEService"]
+sufixos_arquivo = ["_BE.exe"]
+arquivos = ["BEClient_x64.dll"]
+servicos = ["BEService", "BEDaisy"]
+
+[[anticheat]]
+nome = "Riot Vanguard"
+kernel = true
+metadata_riot = true
+servicos = ["vgk", "vgc"]
+
+[[anticheat]]
+nome = "Elytra"
+kernel = true
+pastas = ["Elytra"]
+arquivos = ["Elytra-Setup.exe"]
+descricao_dll = { arquivo = "coreinit.dll", contem = "Elytra" }
+servicos = ["Elytra.Service"]
+prefixos_servico = ["elytra_"]
+
+# Entradas abaixo: indícios públicos, NÃO verificados em hardware nesta pesquisa.
+[[anticheat]]
+nome = "EA Javelin"
+kernel = true
+pastas = ["EAAntiCheat"]
+arquivos = ["EAAntiCheat.GameServiceLauncher.exe", "EAAntiCheat.Installer.exe"]
+servicos = ["EAAntiCheatService"]
+
+[[anticheat]]
+nome = "ACE (Tencent)"
+kernel = true
+pastas = ["AntiCheatExpert"]
+servicos = ["ACE-BASE"]
+
+[[anticheat]]
+nome = "nProtect GameGuard"
+kernel = true
+pastas = ["GameGuard"]
+arquivos = ["GameMon.des", "GameMon64.des"]
+
+[[anticheat]]
+nome = "Ricochet"
+kernel = true
+arquivos = ["randgrid.sys"]

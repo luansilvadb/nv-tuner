@@ -1,0 +1,25 @@
+# Build do Cargo
+/target/
+**/*.rs.bk
+*.pdb
+
+# Artefatos de instalador
+*.msi
+*.msix
+*.wixobj
+*.wixpdb
+*.cab
+/dist/
+/installer/out/
+
+# Arquivos locais de usuário
+*.local.toml
+.env
+.env.*
+*.log
+/local/
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

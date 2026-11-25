@@ -1,0 +1,129 @@
+# Capacidades por arquitetura de GPU NVIDIA (GeForce RTX) — regras portáveis do nv-tuner.
+#
+# Detecção: NvAPI_EnumPhysicalGPUs (0xE5AC921F) -> NvAPI_GPU_GetArchInfo (0xD8265D24) com
+# NV_GPU_ARCH_INFO_V2 (16 bytes; version = 16 | (2 << 16)): { version, architecture (NV_GPU_ARCHITECTURE_ID),
+# implementation (NV_GPU_ARCH_IMPLEMENTATION_ID), revision (NV_GPU_CHIP_REVISION) }.
+# Validado nesta máquina (2026-11-25, driver 621.40): RTX 2060 SUPER -> architecture=0x160 (TU100),
+# implementation=0x06 (TU106), revision=0xA1.
+#
+# Fonte dos IDs: NVAPI Reference, enum _NV_GPU_ARCHITECTURE_ID
+#   https://docs.nvidia.com/nvapi/group__gpu.html
+#   https://docs.nvidia.com/nvapi/structNV__GPU__ARCH__INFO__V2.html
+#
+# Campos:
+#   tensor_fp8   = Tensor Cores executam FP8 (Transformer Engine). Fato de hardware.
+#   dlss_sr / dlss_rr = Super Resolution / Ray Reconstruction (todas as RTX).
+#   dlss_fg      = DLSS Frame Generation (2x) — exige Ada+ (Optical Flow Accelerator de 4ª geração).
+#   dlss_mfg     = DLSS Multi Frame Generation (3x/4x) — exige Blackwell (Flip Metering em hardware).
+#   rebar_oficial = Resizable BAR suportado oficialmente pela NVIDIA na arquitetura.
+#                  ATIVO é outro fato: detectar em runtime (ver [deteccao_runtime]).
+#   dlss_transformer_custo = custo relativo do modelo transformer (presets J/K) — Turing/Ampere sem FP8
+#                  pagam mais caro; regra conservadora do app: preferir CNN/preset E em Turing/Ampere
+#                  quando a meta é FPS (medido no WARDOGS: preset E +16,8% FPS).
+
+versao_schema = 1
+
+[[arquitetura]]
+nome = "Turing"
+nv_gpu_architecture_id = 0x160            # NV_GPU_ARCHITECTURE_TU100
+implementacoes = { TU102 = 0x02, TU104 = 0x04, TU106 = 0x06, TU116 = 0x08, TU117 = 0x07 }
+geforce = "RTX 20 (GTX 16 = TU116/TU117 sem Tensor/RT Cores: dlss_* = false)"
+tensor_geracao = 2
+tensor_fp8 = false                        # FP16/INT8/INT4 apenas
+dlss_sr = true
+dlss_rr = true
+dlss_fg = false
+dlss_mfg = false
+rebar_oficial = false                     # NVIDIA só suporta oficialmente a partir da RTX 30
+dlss_transformer_custo = "alto"
+fontes = [
+  "https://images.nvidia.com/aem-dam/en-zz/Solutions/design-visualization/technologies/turing-architecture/NVIDIA-Turing-Architecture-Whitepaper.pdf",
+  "https://www.nvidia.com/en-us/geforce/news/geforce-rtx-30-series-resizable-bar-support/",
+]
+observacao = "GTX 16xx tem architecture=0x160 mas implementação TU116/TU117: checar implementação antes de assumir Tensor Cores."
+
+[[arquitetura]]
+nome = "Ampere"
+nv_gpu_architecture_id = 0x170            # NV_GPU_ARCHITECTURE_GA100
+implementacoes = { GA102 = 0x02, GA103 = 0x03, GA104 = 0x04, GA106 = 0x06, GA107 = 0x07 }
+geforce = "RTX 30"
+tensor_geracao = 3
+tensor_fp8 = false                        # TF32/BF16/FP16/INT8 + esparsidade; FP8 não existe no Ampere
+dlss_sr = true
+dlss_rr = true
+dlss_fg = false
+dlss_mfg = false
+rebar_oficial = true                      # depende de BIOS de placa-mãe + VBIOS + driver 465.89+
+dlss_transformer_custo = "alto"
+fontes = [
+  "https://images.nvidia.com/aem-dam/en-zz/Solutions/geforce/ampere/pdf/NVIDIA-ampere-GA102-GPU-Architecture-Whitepaper-V1.pdf",
+  "https://www.nvidia.com/en-us/geforce/news/geforce-rtx-30-series-resizable-bar-support/",
+]
+
+[[arquitetura]]
+nome = "Ada Lovelace"
+nv_gpu_architecture_id = 0x190            # NV_GPU_ARCHITECTURE_AD100 (confirmado na NVAPI Reference)
+implementacoes = { AD102 = 0x02, AD103 = 0x03, AD104 = 0x04, AD106 = 0x06, AD107 = 0x07 }
+geforce = "RTX 40"
+tensor_geracao = 4
+tensor_fp8 = true                         # "FP8 Transformer Engine" (NVIDIA, página da arquitetura Ada)
+dlss_sr = true
+dlss_rr = true
+dlss_fg = true
+dlss_mfg = false
+rebar_oficial = true
+dlss_transformer_custo = "baixo"
+fontes = [
+  "https://www.nvidia.com/en-us/geforce/ada-lovelace-architecture",
+  "https://images.nvidia.com/aem-dam/en-zz/Solutions/technologies/NVIDIA-ADA-GPU-PROVIZ-Architecture-Whitepaper_1.1.pdf",
+  "https://www.nvidia.com/en-us/geforce/news/dlss3-ai-powered-neural-graphics-innovations/",
+]
+
+[[arquitetura]]
+nome = "Blackwell"
+nv_gpu_architecture_id = 0x1B0            # NV_GPU_ARCHITECTURE_GB200 (confirmado na NVAPI Reference)
+implementacoes = { GB202 = 0x02, GB203 = 0x03, GB205 = 0x05, GB206 = 0x06, GB207 = 0x07 }  # NÃO verificado: conferir no nvapi.h R570+
+geforce = "RTX 50"
+tensor_geracao = 5
+tensor_fp8 = true                         # FP8 + FP6/FP4 (5ª geração)
+dlss_sr = true
+dlss_rr = true
+dlss_fg = true
+dlss_mfg = true                           # DLSS 4 Multi Frame Generation exclusivo da RTX 50
+rebar_oficial = true
+dlss_transformer_custo = "baixo"
+fontes = [
+  "https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf",
+  "https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/quadro-product-literature/pdf/NVIDIA-RTX-Blackwell-PRO-GPU-Architecture-v1_1.pdf",
+  "https://www.nvidia.com/en-us/geforce/news/dlss4-multi-frame-generation-ai-innovations/",
+]
+
+# Arquiteturas pré-RTX (GP100=0x130, GV100=0x140, ...) e datacenter (GH100=0x180, GB100=0x1A0):
+# fora do escopo — o app trata como "sem DLSS" e não aplica regras de DLSS.
+[fora_de_escopo]
+ids = [0x130, 0x140, 0x150, 0x180, 0x1A0]
+regra = "sem_dlss"
+
+[desconhecida]
+# architecture_id > 0x1B0 (futura) e GPU NVIDIA com NvAPI respondendo:
+# herdar da mais nova conhecida (Blackwell), mas só os fatos que a NVIDIA nunca removeu entre gerações
+# (tensor_fp8, dlss_sr/rr/fg, rebar_oficial). dlss_mfg herdado = true SOMENTE se o próprio jogo/driver
+# confirmar em runtime (Streamline sl.dlss_g reportando numFramesToGenerateMax > 1); até lá, false.
+# architecture_id < 0x160 ou desconhecido entre IDs conhecidos: tratar como fora_de_escopo.
+herdar_de = "Blackwell"
+condicao = "architecture_id > 0x1B0"
+sobrescrever = { dlss_mfg = false }
+avisar_usuario = true
+regra_menor = "fora_de_escopo"
+
+[deteccao_runtime]
+# VRAM: NvAPI_GPU_GetMemoryInfo (NV_DISPLAY_DRIVER_MEMORY_INFO, dedicatedVideoMemory em KB)
+#   ou DXGI IDXGIAdapter1::GetDesc1 -> DedicatedVideoMemory (bytes; casar VendorId 0x10DE).
+#   Medido aqui: 8192 MiB (nvidia-smi / NVML).
+vram = ["NvAPI_GPU_GetMemoryInfo", "DXGI GetDesc1.DedicatedVideoMemory", "NVML nvmlDeviceGetMemoryInfo"]
+# ReBAR ATIVO: NVML nvmlDeviceGetBAR1MemoryInfo -> bar1Total. 256 MiB = desligado; ≈ VRAM = ligado.
+#   Medido aqui: BAR1 Total = 256 MiB (Turing: esperado, sem suporte oficial).
+#   nvml.dll vem com o driver (C:\Windows\System32\nvml.dll); não precisa de admin.
+rebar_ativo = "NVML nvmlDeviceGetBAR1MemoryInfo: bar1Total >= 0.9 * vram"
+# Driver: NvAPI_SYS_GetDriverAndBranchVersion (0x2926AAAD). Medido aqui: 621.40.
+driver = "NvAPI_SYS_GetDriverAndBranchVersion"

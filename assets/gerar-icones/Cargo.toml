@@ -1,0 +1,14 @@
+# Ferramenta fora do workspace principal: gera os PNGs e o nv-tuner.ico a
+# partir de assets/logo.svg. Uso (na raiz do repositório):
+#   cargo run --release --manifest-path assets/gerar-icones/Cargo.toml
+[package]
+name = "gerar-icones"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+resvg = "0.46"

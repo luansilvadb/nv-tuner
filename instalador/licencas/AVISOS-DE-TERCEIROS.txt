@@ -1,0 +1,91 @@
+nv-tuner — avisos de terceiros
+==============================
+
+O nv-tuner é distribuído sob a licença MIT (arquivo LICENSE). Ele incorpora ou
+deriva material dos projetos abaixo, cada um sob a sua própria licença.
+
+Lista a reconferir a cada release com `cargo deny`/`cargo about` (crates Rust
+transitivas também exigem aviso; esta lista cobre as fontes principais).
+
+
+------------------------------------------------------------------------------
+1. NVIDIA NVAPI SDK — licença MIT
+   https://github.com/NVIDIA/nvapi
+   Uso: IDs, constantes e layouts de estruturas transcritos para Rust (nvt-drs).
+------------------------------------------------------------------------------
+
+Copyright (c) 2019-2026 NVIDIA CORPORATION & AFFILIATES
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+------------------------------------------------------------------------------
+2. NVIDIA Profile Inspector (NPI) — licença MIT
+   https://github.com/Orbmu2k/nvidiaProfileInspector
+   Uso: dados de Reference.xml e CustomSettingNames.xml, redistribuídos
+   transformados em settings-referencia.json, e IDs internos de configurações.
+------------------------------------------------------------------------------
+
+Copyright (c) 2016 Orbmu2k
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+------------------------------------------------------------------------------
+3. GPUI (Zed Industries; snapshot publicado como gpui-pre) e gpui-component
+   (Longbridge) — licença Apache License 2.0
+   https://github.com/zed-industries/zed
+   https://github.com/longbridge/gpui-component
+   Uso: framework de interface do nvt-ui, ligado estaticamente ao executável.
+------------------------------------------------------------------------------
+
+Copyright 2022-2026 Zed Industries, Inc.
+Copyright 2024-2026 Longbridge
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+O texto integral da Apache License 2.0 acompanha esta instalação no arquivo
+Apache-2.0.txt. Se os projetos acima distribuírem um arquivo NOTICE, o
+conteúdo dele deve ser reproduzido aqui antes de cada release.

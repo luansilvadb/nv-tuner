@@ -1,0 +1,19 @@
+[package]
+name = "nvt-engine"
+description = "Motor do nv-tuner: detecção, avaliação, diff contra o DRS, aplicação verificada, deriva e restauração"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+nvt-core = { path = "../nvt-core" }
+nvt-detect = { path = "../nvt-detect" }
+nvt-drs = { path = "../nvt-drs" }
+serde.workspace = true
+serde_json = "1"
+
+[lints]
+workspace = true

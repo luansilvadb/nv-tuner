@@ -1,0 +1,11 @@
+auto_patching_enabled_by_player: false
+dependencies:
+    Direct X 9:
+        hash: "0000"
+        phase: "Succeeded"
+        version: "1.0.0"
+    vanguard: true
+locale_data:
+    default_locale: "pt_BR"
+product_install_full_path: "X:/Riot Games/League of Legends"
+product_install_root: "X:/Riot Games"

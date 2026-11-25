@@ -1,0 +1,21 @@
+[package]
+name = "nvt-detect"
+description = "Detecção de GPU, capacidades, jogos e bibliotecas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+pelite = "0.10.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.2.3"
+winreg = "0.56.0"
+
+
+[lints]
+workspace = true
+

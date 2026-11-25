@@ -1,0 +1,963 @@
+//! Mensagens do protocolo (DTOs).
+//!
+//! São tipos próprios do IPC, independentes do motor: o serviço converte
+//! entre eles e o seu modelo interno. A UI só envia comandos de alto nível;
+//! configurações do driver aparecem apenas por nome simbólico (ex.:
+//! `"vsync"`, `"dlss_preset"`), nunca por ID DRS ou valor bruto.
+
+use serde::{Deserialize, Serialize};
+
+/// Limite inferior aceito para o limitador de FPS.
+pub const LIMITE_FPS_MIN: u32 = 20;
+/// Limite superior aceito para o limitador de FPS.
+pub const LIMITE_FPS_MAX: u32 = 1000;
+/// Máximo de entradas pedidas em [`Requisicao::ListarHistorico`].
+pub const HISTORICO_MAX: u32 = 1000;
+/// Comprimento máximo do nome de um perfil (em caracteres).
+pub const PERFIL_MAX: usize = 256;
+/// Comprimento máximo de um nome simbólico de setting.
+pub const SETTING_MAX: usize = 64;
+
+// ---------------------------------------------------------------------------
+// Requisições
+// ---------------------------------------------------------------------------
+
+/// Requisição enviada pela UI ao serviço.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "tipo", rename_all = "snake_case")]
+pub enum Requisicao {
+    /// Resumo do estado atual.
+    ObterEstado,
+    /// Plano que seria aplicado agora (sem aplicar).
+    ObterPlano,
+    /// Calcula e aplica o plano imediatamente.
+    AplicarAgora,
+    /// Restaura os valores originais de tudo que o nv-tuner alterou.
+    RestaurarOriginal,
+    /// Atualiza as preferências do usuário.
+    DefinirPreferencias {
+        sincronismo: Sincronismo,
+        qualidade: Qualidade,
+        /// `None` = sem limitador.
+        limite_fps: Option<u32>,
+    },
+    /// Últimas `limite` entradas do histórico (mais recentes primeiro).
+    ListarHistorico { limite: u32 },
+    /// Marca uma setting como escolha do usuário: o avaliador não a altera.
+    TravarSetting { perfil: String, setting: String },
+    /// Devolve uma setting travada ao controle do avaliador.
+    DestravarSetting { perfil: String, setting: String },
+    /// Refaz a varredura de jogos instalados.
+    ReescanearJogos,
+}
+
+impl Requisicao {
+    /// Validação de forma, feita pelo servidor antes de chamar o tratador.
+    ///
+    /// Não substitui a validação semântica do serviço (lista permitida de
+    /// settings, existência do perfil); apenas rejeita entradas absurdas.
+    pub fn validar(&self) -> Result<(), String> {
+        match self {
+            Self::DefinirPreferencias {
+                limite_fps: Some(fps),
+                ..
+            } if !(LIMITE_FPS_MIN..=LIMITE_FPS_MAX).contains(fps) => Err(format!(
+                "limite_fps deve estar entre {LIMITE_FPS_MIN} e {LIMITE_FPS_MAX}"
+            )),
+            Self::ListarHistorico { limite } if !(1..=HISTORICO_MAX).contains(limite) => {
+                Err(format!("limite deve estar entre 1 e {HISTORICO_MAX}"))
+            }
+            Self::TravarSetting { perfil, setting }
+            | Self::DestravarSetting { perfil, setting } => {
+                validar_perfil(perfil)?;
+                validar_setting(setting)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Nome de perfil: 1 a [`PERFIL_MAX`] caracteres, sem caracteres de controle.
+pub fn validar_perfil(perfil: &str) -> Result<(), String> {
+    let n = perfil.chars().count();
+    if n == 0 || n > PERFIL_MAX || perfil.chars().any(char::is_control) {
+        return Err(format!(
+            "nome de perfil inválido (1 a {PERFIL_MAX} caracteres, sem controle)"
+        ));
+    }
+    Ok(())
+}
+
+/// Nome simbólico de setting: 1 a [`SETTING_MAX`] caracteres em
+/// `[a-z0-9_.]`, começando por letra.
+pub fn validar_setting(setting: &str) -> Result<(), String> {
+    let ok = !setting.is_empty()
+        && setting.len() <= SETTING_MAX
+        && setting.starts_with(|c: char| c.is_ascii_lowercase())
+        && setting
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "nome simbólico de setting inválido (até {SETTING_MAX} caracteres em [a-z0-9_.])"
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Preferências
+// ---------------------------------------------------------------------------
+
+/// Política de sincronismo de quadros.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sincronismo {
+    /// Sem V-Sync nem G-Sync (menor latência).
+    Desligado,
+    /// V-Sync forçado no driver.
+    VSync,
+    /// G-Sync/VRR com V-Sync no driver e limitador abaixo da taxa do monitor.
+    GSync,
+}
+
+/// Teto de qualidade visual escolhido pelo usuário.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Qualidade {
+    Desempenho,
+    Equilibrado,
+    Qualidade,
+}
+
+/// Preferências atuais (eco do que foi definido).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Preferencias {
+    pub sincronismo: Sincronismo,
+    pub qualidade: Qualidade,
+    pub limite_fps: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// Respostas
+// ---------------------------------------------------------------------------
+
+/// Resposta enviada pelo serviço à UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "tipo", rename_all = "snake_case")]
+pub enum Resposta {
+    Estado(Estado),
+    Plano(Plano),
+    Historico {
+        entradas: Vec<EntradaHistorico>,
+    },
+    Ok,
+    Erro {
+        codigo: CodigoErro,
+        mensagem: String,
+    },
+}
+
+impl Resposta {
+    /// Atalho para montar uma resposta de erro.
+    pub fn erro(codigo: CodigoErro, mensagem: impl Into<String>) -> Self {
+        Self::Erro {
+            codigo,
+            mensagem: mensagem.into(),
+        }
+    }
+}
+
+/// Código de erro estável (a mensagem é só para exibição).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodigoErro {
+    /// Versão do protocolo diferente da do serviço.
+    VersaoIncompativel,
+    /// Quadro acima do limite de tamanho.
+    MensagemGrande,
+    /// JSON ou envelope inválido, ou tipo de mensagem desconhecido.
+    MensagemInvalida,
+    /// Campos fora de faixa ou com formato inválido.
+    RequisicaoInvalida,
+    /// Setting fora da lista permitida do serviço.
+    SettingNaoPermitida,
+    /// Perfil inexistente no driver.
+    PerfilNaoEncontrado,
+    /// NVAPI/driver indisponível.
+    DriverIndisponivel,
+    /// Outra operação em andamento.
+    Ocupado,
+    /// Falha interna do serviço.
+    Interno,
+}
+
+/// Resumo do estado do serviço e do sistema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Estado {
+    pub versao_servico: String,
+    /// `None` se o driver não pôde ser lido.
+    pub driver: Option<Driver>,
+    pub gpu: Option<Gpu>,
+    pub preferencias: Preferencias,
+    pub jogos: u32,
+    pub ultima_aplicacao: Option<Aplicacao>,
+    pub alertas_deriva: Vec<AlertaDeriva>,
+    /// Problemas que o usuário precisa ver (estado recuperado, snapshot
+    /// indisponível, erros isolados por perfil no último ciclo, jogos
+    /// ignorados). Mais graves primeiro.
+    pub avisos: Vec<Aviso>,
+}
+
+impl Estado {
+    /// A restauração está bloqueada (snapshot original ilegível)? Devolve o
+    /// aviso que explica o motivo.
+    pub fn restauracao_bloqueada(&self) -> Option<&Aviso> {
+        self.avisos
+            .iter()
+            .find(|a| a.codigo == codigo_aviso::SNAPSHOT_INDISPONIVEL)
+    }
+}
+
+/// Gravidade de um [`Aviso`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NivelAviso {
+    /// Informativo: nada a fazer.
+    Info,
+    /// Merece atenção: algo foi contornado automaticamente.
+    Atencao,
+    /// Algo deixou de funcionar e precisa de uma pessoa.
+    Erro,
+}
+
+/// Códigos estáveis de [`Aviso::codigo`]. A UI pode tratar um código
+/// específico (ex.: desabilitar a restauração); um código desconhecido é só
+/// exibido.
+pub mod codigo_aviso {
+    /// `estado.json` inválido, guardado à parte como `.corrompido-<data>`.
+    pub const ESTADO_CORROMPIDO: &str = "estado_corrompido";
+    /// Estado recuperado de `estado.anterior.json`.
+    pub const ESTADO_RECUPERADO: &str = "estado_recuperado";
+    /// Sem cópia válida: o estado recomeçou limpo.
+    pub const ESTADO_REINICIADO: &str = "estado_reiniciado";
+    /// Outro aviso da abertura do estado.
+    pub const ESTADO_AVISO: &str = "estado_aviso";
+    /// `snapshot-original.json` ilegível: restauração desabilitada.
+    pub const SNAPSHOT_INDISPONIVEL: &str = "snapshot_indisponivel";
+    /// O diretório de estado foi posto em quarentena e o snapshot original
+    /// ficou lá: o snapshot atual (ou o próximo) é só uma base pós-quarentena,
+    /// e “voltar ao original” volta a essa base.
+    pub const SNAPSHOT_ORIGINAL_PERDIDO: &str = "snapshot_original_perdido";
+    /// Erro isolado num perfil de jogo ao aplicar o plano.
+    pub const ERRO_PERFIL_APLICACAO: &str = "erro_perfil_aplicacao";
+    /// Erro isolado num perfil de jogo ao tratar a deriva.
+    pub const ERRO_PERFIL_DERIVA: &str = "erro_perfil_deriva";
+    /// Jogos deixados de fora do plano (nome/executável inválido, erro no perfil).
+    pub const JOGOS_IGNORADOS: &str = "jogos_ignorados";
+}
+
+/// Aviso estruturado para o usuário.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Aviso {
+    pub nivel: NivelAviso,
+    /// Código estável (ver [`codigo_aviso`]).
+    pub codigo: String,
+    /// Frase para exibição (pt-BR).
+    pub mensagem: String,
+    /// Detalhe técnico opcional (texto original do motor).
+    pub detalhe: Option<String>,
+    /// Segundos desde a época Unix (UTC).
+    pub quando_unix: u64,
+}
+
+impl Aviso {
+    pub fn novo(
+        nivel: NivelAviso,
+        codigo: &str,
+        mensagem: impl Into<String>,
+        detalhe: Option<String>,
+        quando_unix: u64,
+    ) -> Self {
+        Self {
+            nivel,
+            codigo: codigo.to_owned(),
+            mensagem: mensagem.into(),
+            detalhe,
+            quando_unix,
+        }
+    }
+
+    /// Snapshot original ilegível: restauração desabilitada.
+    pub fn snapshot_indisponivel(detalhe: impl Into<String>, quando_unix: u64) -> Self {
+        Self::novo(
+            NivelAviso::Erro,
+            codigo_aviso::SNAPSHOT_INDISPONIVEL,
+            "O snapshot original está ilegível, por isso a restauração está desabilitada. \
+             O arquivo não é sobrescrito: confira-o ou remova-o manualmente (a próxima \
+             aplicação captura um novo original).",
+            Some(detalhe.into()),
+            quando_unix,
+        )
+    }
+
+    /// Jogos deixados de fora do plano.
+    pub fn jogos_ignorados(ignorados: &[JogoIgnorado], quando_unix: u64) -> Self {
+        let n = ignorados.len();
+        let mensagem = if n == 1 {
+            "1 jogo ficou de fora do plano por um problema só dele; os demais seguiram.".to_owned()
+        } else {
+            format!(
+                "{n} jogos ficaram de fora do plano por problemas só deles; os demais seguiram."
+            )
+        };
+        let detalhe = ignorados
+            .iter()
+            .map(|j| format!("{}: {}", j.nome, j.motivo))
+            .collect::<Vec<_>>()
+            .join("; ");
+        Self::novo(
+            NivelAviso::Atencao,
+            codigo_aviso::JOGOS_IGNORADOS,
+            mensagem,
+            Some(detalhe),
+            quando_unix,
+        )
+    }
+
+    /// Erro isolado num perfil de jogo (`deriva` = no tratamento da deriva).
+    pub fn erro_perfil(detalhe: impl Into<String>, deriva: bool, quando_unix: u64) -> Self {
+        let (codigo, mensagem) = if deriva {
+            (
+                codigo_aviso::ERRO_PERFIL_DERIVA,
+                "Falha ao tratar a deriva num perfil de jogo; os demais perfis seguiram \
+                 e ele será tentado de novo no próximo ciclo.",
+            )
+        } else {
+            (
+                codigo_aviso::ERRO_PERFIL_APLICACAO,
+                "Falha ao aplicar o plano num perfil de jogo; os demais perfis seguiram \
+                 e ele será tentado de novo no próximo ciclo.",
+            )
+        };
+        Self::novo(
+            NivelAviso::Erro,
+            codigo,
+            mensagem,
+            Some(detalhe.into()),
+            quando_unix,
+        )
+    }
+}
+
+/// Ordena do mais grave para o menos grave e, no mesmo nível, do mais recente
+/// para o mais antigo.
+pub fn ordenar_avisos(avisos: &mut [Aviso]) {
+    avisos.sort_by(|a, b| {
+        b.nivel
+            .cmp(&a.nivel)
+            .then_with(|| b.quando_unix.cmp(&a.quando_unix))
+    });
+}
+
+/// Driver NVIDIA instalado.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Driver {
+    /// Ex.: `"581.57"`.
+    pub versao: String,
+    /// Ramo do driver (ex.: `"r580_00"`), quando conhecido.
+    pub ramo: Option<String>,
+}
+
+/// GPU principal e capacidades resumidas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Gpu {
+    pub nome: String,
+    /// Ex.: `"ada"`, `"blackwell"`.
+    pub arquitetura: String,
+    pub vram_mb: u32,
+    pub capacidades: Capacidades,
+}
+
+/// Capacidades relevantes para as regras.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Capacidades {
+    pub dlss: bool,
+    pub geracao_quadros: bool,
+    pub reflex: bool,
+    pub rebar: bool,
+    pub vrr: bool,
+}
+
+/// Última aplicação de plano.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Aplicacao {
+    /// Segundos desde a época Unix (UTC).
+    pub quando_unix: u64,
+    pub mudancas: u32,
+    pub falhas: u32,
+}
+
+/// Setting cujo valor real no driver diverge do último valor aplicado.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertaDeriva {
+    pub perfil: String,
+    pub setting: String,
+    pub nome_legivel: String,
+    pub esperado: String,
+    pub encontrado: Option<String>,
+    pub detectado_unix: u64,
+}
+
+/// Plano de configuração.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Plano {
+    pub gerado_unix: u64,
+    pub perfis: Vec<PlanoPerfil>,
+    /// Settings que o app gravou e que saíram do plano: voltam ao original.
+    pub reversoes: Vec<Reversao>,
+    /// Jogos deixados de fora do plano, com o motivo.
+    pub ignorados: Vec<JogoIgnorado>,
+}
+
+/// Setting gerida pelo app que o plano atual não quer mais (preferência
+/// trocada, teto de qualidade, regra que deixou de casar): volta ao original.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reversao {
+    /// Nome do perfil no driver (`"global"` para o perfil base).
+    pub perfil: String,
+    /// Nome para exibição (ex.: nome do jogo).
+    pub nome_perfil: String,
+    pub setting: String,
+    pub nome_legivel: String,
+    /// Valor atual no driver (`None` = não definido).
+    pub atual: Option<String>,
+    /// Valor que volta (`None` = sai do perfil / predefinido da NVIDIA).
+    pub original: Option<String>,
+    pub acao: AcaoReversao,
+    /// Por que saiu do plano.
+    pub motivo: String,
+    /// `pendente`, `aplicada` (revertida e relida) ou `falhou`.
+    pub status: StatusMudanca,
+}
+
+/// O que acontece com uma setting que saiu do plano.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcaoReversao {
+    /// Grava o valor original do snapshot.
+    GravarOriginal,
+    /// Remove a setting do perfil (não existia no original).
+    Remover,
+    /// O driver já está como no original (ou o original é desconhecido): só
+    /// deixa de vigiar.
+    SoDeixarDeVigiar,
+}
+
+/// Jogo deixado de fora do plano por um erro só dele.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JogoIgnorado {
+    pub nome: String,
+    /// Nome do arquivo do executável principal.
+    pub exe: String,
+    pub motivo: String,
+}
+
+/// Mudanças de um perfil do driver.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanoPerfil {
+    /// Nome do perfil no driver (`"global"` para o perfil base).
+    pub perfil: String,
+    /// Nome para exibição (ex.: nome do jogo).
+    pub nome_legivel: String,
+    pub mudancas: Vec<Mudanca>,
+}
+
+/// Uma alteração de setting, com valores já formatados para exibição.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mudanca {
+    pub setting: String,
+    pub nome_legivel: String,
+    /// `None` = não definida no perfil.
+    pub antes: Option<String>,
+    pub depois: Option<String>,
+    pub motivo: String,
+    /// Identificador da regra de origem.
+    pub regra: String,
+    pub impacto_visual: ImpactoVisual,
+    pub status: StatusMudanca,
+}
+
+/// Impacto visual estimado de uma mudança.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImpactoVisual {
+    Nenhum,
+    Baixo,
+    Medio,
+    Alto,
+}
+
+/// Situação de uma mudança do plano.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusMudanca {
+    /// Ainda não aplicada.
+    Pendente,
+    /// Aplicada e confirmada por releitura do driver.
+    Aplicada,
+    /// O driver já tinha o valor desejado.
+    JaNoValor,
+    /// Travada pelo usuário; não será alterada.
+    Travada,
+    /// Recusada pela validação do serviço.
+    Recusada,
+    /// Falhou ao gravar ou a releitura divergiu.
+    Falhou,
+}
+
+/// Entrada do histórico.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntradaHistorico {
+    pub id: u64,
+    pub quando_unix: u64,
+    pub acao: AcaoHistorico,
+    pub perfil: Option<String>,
+    pub setting: Option<String>,
+    pub antes: Option<String>,
+    pub depois: Option<String>,
+    pub descricao: String,
+}
+
+/// Tipo de evento registrado no histórico.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcaoHistorico {
+    Aplicacao,
+    Restauracao,
+    Rollback,
+    Travamento,
+    Destravamento,
+    Preferencias,
+    DerivaDetectada,
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+    use crate::quadro::{codificar, decodificar};
+
+    fn prefs() -> Preferencias {
+        Preferencias {
+            sincronismo: Sincronismo::Desligado,
+            qualidade: Qualidade::Equilibrado,
+            limite_fps: Some(141),
+        }
+    }
+
+    /// Um exemplar de cada requisição. O `match` garante (em tempo de
+    /// compilação) que nenhuma variante nova fique sem teste.
+    fn todas_requisicoes() -> Vec<Requisicao> {
+        let v = vec![
+            Requisicao::ObterEstado,
+            Requisicao::ObterPlano,
+            Requisicao::AplicarAgora,
+            Requisicao::RestaurarOriginal,
+            Requisicao::DefinirPreferencias {
+                sincronismo: Sincronismo::GSync,
+                qualidade: Qualidade::Qualidade,
+                limite_fps: None,
+            },
+            Requisicao::DefinirPreferencias {
+                sincronismo: Sincronismo::VSync,
+                qualidade: Qualidade::Desempenho,
+                limite_fps: Some(60),
+            },
+            Requisicao::ListarHistorico { limite: 50 },
+            Requisicao::TravarSetting {
+                perfil: "WARDOGS".into(),
+                setting: "dlss_preset".into(),
+            },
+            Requisicao::DestravarSetting {
+                perfil: "global".into(),
+                setting: "vsync".into(),
+            },
+            Requisicao::ReescanearJogos,
+        ];
+        for r in &v {
+            match r {
+                Requisicao::ObterEstado
+                | Requisicao::ObterPlano
+                | Requisicao::AplicarAgora
+                | Requisicao::RestaurarOriginal
+                | Requisicao::DefinirPreferencias { .. }
+                | Requisicao::ListarHistorico { .. }
+                | Requisicao::TravarSetting { .. }
+                | Requisicao::DestravarSetting { .. }
+                | Requisicao::ReescanearJogos => {}
+            }
+        }
+        v
+    }
+
+    fn todas_respostas() -> Vec<Resposta> {
+        let v = vec![
+            Resposta::Estado(Estado {
+                versao_servico: "0.0.1".into(),
+                driver: Some(Driver {
+                    versao: "581.57".into(),
+                    ramo: Some("r580_00".into()),
+                }),
+                gpu: Some(Gpu {
+                    nome: "NVIDIA GeForce RTX 4070".into(),
+                    arquitetura: "ada".into(),
+                    vram_mb: 12282,
+                    capacidades: Capacidades {
+                        dlss: true,
+                        geracao_quadros: true,
+                        reflex: true,
+                        rebar: false,
+                        vrr: true,
+                    },
+                }),
+                preferencias: prefs(),
+                jogos: 12,
+                ultima_aplicacao: Some(Aplicacao {
+                    quando_unix: 1_790_000_000,
+                    mudancas: 7,
+                    falhas: 0,
+                }),
+                alertas_deriva: vec![AlertaDeriva {
+                    perfil: "WARDOGS".into(),
+                    setting: "dlss_preset".into(),
+                    nome_legivel: "Preset do DLSS".into(),
+                    esperado: "E".into(),
+                    encontrado: None,
+                    detectado_unix: 1_790_000_100,
+                }],
+                avisos: vec![
+                    Aviso::snapshot_indisponivel("snapshot-original.json ilegível", 1_790_000_000),
+                    Aviso::erro_perfil("perfil X: falha", true, 1_790_000_001),
+                    Aviso::novo(
+                        NivelAviso::Info,
+                        codigo_aviso::ESTADO_RECUPERADO,
+                        "Estado recuperado",
+                        None,
+                        1_790_000_002,
+                    ),
+                ],
+            }),
+            Resposta::Estado(Estado {
+                versao_servico: "0.0.1".into(),
+                driver: None,
+                gpu: None,
+                preferencias: prefs(),
+                jogos: 0,
+                ultima_aplicacao: None,
+                alertas_deriva: vec![],
+                avisos: vec![],
+            }),
+            Resposta::Plano(Plano {
+                gerado_unix: 1,
+                perfis: vec![],
+                reversoes: vec![],
+                ignorados: vec![],
+            }),
+            Resposta::Plano(Plano {
+                gerado_unix: 1_790_000_000,
+                perfis: vec![PlanoPerfil {
+                    perfil: "global".into(),
+                    nome_legivel: "Perfil global".into(),
+                    mudancas: vec![Mudanca {
+                        setting: "vsync".into(),
+                        nome_legivel: "Sincronização vertical".into(),
+                        antes: Some("Controlado pelo aplicativo".into()),
+                        depois: Some("Forçar desligado".into()),
+                        motivo: "Preferência: sincronismo desligado".into(),
+                        regra: "sincronismo.desligado".into(),
+                        impacto_visual: ImpactoVisual::Baixo,
+                        status: StatusMudanca::Pendente,
+                    }],
+                }],
+                reversoes: vec![Reversao {
+                    perfil: "global".into(),
+                    nome_perfil: "Perfil global".into(),
+                    setting: "limite_fps".into(),
+                    nome_legivel: "Limitador de FPS".into(),
+                    atual: Some("141 FPS".into()),
+                    original: None,
+                    acao: AcaoReversao::Remover,
+                    motivo: "Saiu do plano: preferência limite_fps".into(),
+                    status: StatusMudanca::Aplicada,
+                }],
+                ignorados: vec![JogoIgnorado {
+                    nome: "Jogo\u{0}Ruim".into(),
+                    exe: String::new(),
+                    motivo: "executável vazio".into(),
+                }],
+            }),
+            Resposta::Historico {
+                entradas: vec![EntradaHistorico {
+                    id: 1,
+                    quando_unix: 1_790_000_000,
+                    acao: AcaoHistorico::Aplicacao,
+                    perfil: Some("WARDOGS".into()),
+                    setting: Some("dlss_preset".into()),
+                    antes: None,
+                    depois: Some("E".into()),
+                    descricao: "Aplicação automática".into(),
+                }],
+            },
+            Resposta::Historico { entradas: vec![] },
+            Resposta::Ok,
+            Resposta::erro(CodigoErro::SettingNaoPermitida, "setting fora da lista"),
+        ];
+        for r in &v {
+            match r {
+                Resposta::Estado(_)
+                | Resposta::Plano(_)
+                | Resposta::Historico { .. }
+                | Resposta::Ok
+                | Resposta::Erro { .. } => {}
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn ida_e_volta_de_todas_as_requisicoes() {
+        for r in todas_requisicoes() {
+            let bytes = codificar(&r).unwrap();
+            assert_eq!(decodificar::<Requisicao>(&bytes).unwrap(), r);
+        }
+    }
+
+    #[test]
+    fn ida_e_volta_de_todas_as_respostas() {
+        for r in todas_respostas() {
+            let bytes = codificar(&r).unwrap();
+            assert_eq!(decodificar::<Resposta>(&bytes).unwrap(), r);
+        }
+    }
+
+    #[test]
+    fn ida_e_volta_de_todos_os_enums_simples() {
+        use serde_json::{from_value, to_value};
+        for c in [
+            CodigoErro::VersaoIncompativel,
+            CodigoErro::MensagemGrande,
+            CodigoErro::MensagemInvalida,
+            CodigoErro::RequisicaoInvalida,
+            CodigoErro::SettingNaoPermitida,
+            CodigoErro::PerfilNaoEncontrado,
+            CodigoErro::DriverIndisponivel,
+            CodigoErro::Ocupado,
+            CodigoErro::Interno,
+        ] {
+            assert_eq!(from_value::<CodigoErro>(to_value(c).unwrap()).unwrap(), c);
+        }
+        for s in [
+            StatusMudanca::Pendente,
+            StatusMudanca::Aplicada,
+            StatusMudanca::JaNoValor,
+            StatusMudanca::Travada,
+            StatusMudanca::Recusada,
+            StatusMudanca::Falhou,
+        ] {
+            assert_eq!(
+                from_value::<StatusMudanca>(to_value(s).unwrap()).unwrap(),
+                s
+            );
+        }
+        for i in [
+            ImpactoVisual::Nenhum,
+            ImpactoVisual::Baixo,
+            ImpactoVisual::Medio,
+            ImpactoVisual::Alto,
+        ] {
+            assert_eq!(
+                from_value::<ImpactoVisual>(to_value(i).unwrap()).unwrap(),
+                i
+            );
+        }
+        for a in [
+            AcaoHistorico::Aplicacao,
+            AcaoHistorico::Restauracao,
+            AcaoHistorico::Rollback,
+            AcaoHistorico::Travamento,
+            AcaoHistorico::Destravamento,
+            AcaoHistorico::Preferencias,
+            AcaoHistorico::DerivaDetectada,
+        ] {
+            assert_eq!(
+                from_value::<AcaoHistorico>(to_value(a).unwrap()).unwrap(),
+                a
+            );
+        }
+    }
+
+    #[test]
+    fn formato_json_estavel() {
+        let json = String::from_utf8(
+            codificar(&Requisicao::TravarSetting {
+                perfil: "WARDOGS".into(),
+                setting: "dlss_preset".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"versao":2,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
+        );
+        let json = String::from_utf8(codificar(&Resposta::Ok).unwrap()).unwrap();
+        assert_eq!(json, r#"{"versao":2,"corpo":{"tipo":"ok"}}"#);
+    }
+
+    #[test]
+    fn formato_json_de_aviso_reversao_e_ignorado() {
+        use serde_json::{json, to_value};
+        let a = Aviso::snapshot_indisponivel("x", 7);
+        assert_eq!(
+            to_value(&a).unwrap()["nivel"],
+            json!("erro"),
+            "nível em snake_case"
+        );
+        assert_eq!(
+            to_value(&a).unwrap()["codigo"],
+            json!("snapshot_indisponivel")
+        );
+        assert_eq!(to_value(NivelAviso::Atencao).unwrap(), json!("atencao"));
+        for n in [NivelAviso::Info, NivelAviso::Atencao, NivelAviso::Erro] {
+            assert_eq!(
+                serde_json::from_value::<NivelAviso>(to_value(n).unwrap()).unwrap(),
+                n
+            );
+        }
+        for (acao, s) in [
+            (AcaoReversao::GravarOriginal, "gravar_original"),
+            (AcaoReversao::Remover, "remover"),
+            (AcaoReversao::SoDeixarDeVigiar, "so_deixar_de_vigiar"),
+        ] {
+            assert_eq!(to_value(acao).unwrap(), json!(s));
+            assert_eq!(
+                serde_json::from_value::<AcaoReversao>(json!(s)).unwrap(),
+                acao
+            );
+        }
+        let j = to_value(JogoIgnorado {
+            nome: "A".into(),
+            exe: "a.exe".into(),
+            motivo: "m".into(),
+        })
+        .unwrap();
+        assert_eq!(j, json!({"nome":"A","exe":"a.exe","motivo":"m"}));
+        // Campo desconhecido continua recusado (mudança incompatível = nova versão).
+        assert!(
+            serde_json::from_value::<Aviso>(json!({
+                "nivel":"info","codigo":"x","mensagem":"m","detalhe":null,"quando_unix":0,"extra":1
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn avisos_ordenados_e_restauracao_bloqueada() {
+        let mut v = vec![
+            Aviso::novo(NivelAviso::Info, "a", "a", None, 5),
+            Aviso::erro_perfil("p", false, 1),
+            Aviso::jogos_ignorados(
+                &[JogoIgnorado {
+                    nome: "J".into(),
+                    exe: "j.exe".into(),
+                    motivo: "nome inválido".into(),
+                }],
+                9,
+            ),
+            Aviso::snapshot_indisponivel("s", 3),
+        ];
+        ordenar_avisos(&mut v);
+        let codigos: Vec<&str> = v.iter().map(|a| a.codigo.as_str()).collect();
+        assert_eq!(
+            codigos,
+            [
+                codigo_aviso::SNAPSHOT_INDISPONIVEL,
+                codigo_aviso::ERRO_PERFIL_APLICACAO,
+                codigo_aviso::JOGOS_IGNORADOS,
+                "a"
+            ]
+        );
+        assert_eq!(v[2].detalhe.as_deref(), Some("J: nome inválido"));
+        assert!(v[2].mensagem.starts_with("1 jogo ficou"));
+        let mut e = match &todas_respostas()[1] {
+            Resposta::Estado(e) => e.clone(),
+            _ => unreachable!(),
+        };
+        assert!(e.restauracao_bloqueada().is_none());
+        e.avisos = v;
+        assert_eq!(
+            e.restauracao_bloqueada().map(|a| a.nivel),
+            Some(NivelAviso::Erro)
+        );
+    }
+
+    #[test]
+    fn validacao_de_forma() {
+        for r in todas_requisicoes() {
+            assert_eq!(r.validar(), Ok(()), "{r:?}");
+        }
+        let invalidas = [
+            Requisicao::ListarHistorico { limite: 0 },
+            Requisicao::ListarHistorico {
+                limite: HISTORICO_MAX + 1,
+            },
+            Requisicao::DefinirPreferencias {
+                sincronismo: Sincronismo::Desligado,
+                qualidade: Qualidade::Equilibrado,
+                limite_fps: Some(5),
+            },
+            Requisicao::TravarSetting {
+                perfil: String::new(),
+                setting: "vsync".into(),
+            },
+            Requisicao::TravarSetting {
+                perfil: "a\u{0}b".into(),
+                setting: "vsync".into(),
+            },
+            Requisicao::TravarSetting {
+                perfil: "x".repeat(PERFIL_MAX + 1),
+                setting: "vsync".into(),
+            },
+            Requisicao::DestravarSetting {
+                perfil: "global".into(),
+                setting: "0x10A879CF".into(),
+            },
+            Requisicao::DestravarSetting {
+                perfil: "global".into(),
+                setting: "a".repeat(SETTING_MAX + 1),
+            },
+            Requisicao::DestravarSetting {
+                perfil: "global".into(),
+                setting: "VSync".into(),
+            },
+        ];
+        for r in invalidas {
+            assert!(r.validar().is_err(), "{r:?}");
+        }
+    }
+}

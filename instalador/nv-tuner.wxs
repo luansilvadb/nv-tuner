@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Instalador MSI do nv-tuner (WiX Toolset 5.0.2, esquema v4).
+
+  Variáveis de pré-processador (passadas pelo build-msi.ps1 com -d):
+    Versao   versão MSI (major.minor.build), ex.: 0.0.1
+    BinDir   pasta com nvt-service.exe e nvt-ui.exe (target\release)
+    RaizRepo raiz do repositório (para o LICENSE)
+
+  Compilação manual (dentro de instalador\):
+    dotnet wix build nv-tuner.wxs -arch x64 -culture pt-BR -ext WixToolset.UI.wixext
+      -d Versao=0.0.1 -d BinDir=..\target\release -d RaizRepo=.. -o ..\target\dist\nv-tuner.msi
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <?ifndef Versao?><?define Versao = "0.0.1"?><?endif?>
+  <?ifndef BinDir?><?define BinDir = "..\target\release"?><?endif?>
+  <?ifndef RaizRepo?><?define RaizRepo = ".."?><?endif?>
+
+  <!-- Nome interno do serviço: contrato com o service dispatcher do nvt-service (scm.rs). -->
+  <?define NomeServico = "nvt-service"?>
+  <!-- Nome de exibição (services.msc); a UI cita o mesmo texto. -->
+  <?define NomeExibicaoServico = "nv-tuner (serviço)"?>
+
+  <!--
+    UpgradeCode FIXO: nunca alterar. Identifica a "família" do produto para que o
+    MajorUpgrade encontre e substitua versões anteriores. ProductCode é gerado a
+    cada build (Id implícito "*").
+  -->
+  <Package Name="nv-tuner"
+           Manufacturer="nv-tuner contributors"
+           Version="$(Versao)"
+           UpgradeCode="A621CF92-2BA5-4F13-B1D8-EB6E6CAFAAB2"
+           Language="1046"
+           Codepage="1252"
+           Scope="perMachine"
+           InstallerVersion="500"
+           Compressed="yes">
+
+    <SummaryInformation Description="Instalador do nv-tuner"
+                        Manufacturer="nv-tuner contributors" />
+
+    <MajorUpgrade DowngradeErrorMessage="Uma versão mais recente do [ProductName] já está instalada. A instalação será encerrada." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Exige Windows 10 (build 10240) ou superior, 64 bits. -->
+    <Launch Condition="VersionNT64" Message="O [ProductName] requer Windows de 64 bits." />
+    <Property Id="WINDOWSBUILD">
+      <RegistrySearch Id="BuildWindows" Root="HKLM" Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+                      Name="CurrentBuildNumber" Type="raw" Bitness="always64" />
+    </Property>
+    <Launch Condition="Installed OR (WINDOWSBUILD &gt;= 10240)"
+            Message="O [ProductName] requer Windows 10 ou superior." />
+
+    <!-- Ícone em "Aplicativos instalados" e no atalho do Menu Iniciar (gerado de assets\logo.svg). -->
+    <Icon Id="nvtuner.ico" SourceFile="$(RaizRepo)\assets\nv-tuner.ico" />
+    <Property Id="ARPPRODUCTICON" Value="nvtuner.ico" />
+
+    <!-- "Aplicativos instalados": ARPNOMODIFY já vem do WixUI_Minimal; ARPURLINFOABOUT entra quando houver repositório público. -->
+
+    <!--
+      Restauração do perfil original do driver na desinstalação.
+      Padrão 0 (não restaura): a decisão de produto ainda está em aberto.
+      Chama 'nvt-service restore-original' com a confirmação "yes" (ver
+      ExeCommand; sem ela o comando é recusado com código 2). Para restaurar:
+        msiexec /x nv-tuner.msi RESTAURAR_PERFIL=1
+      Não roda em upgrade (UPGRADINGPRODUCTCODE).
+
+      Código de saída: IGNORADO, mas registrado. Roda via WixQuietExec64
+      (WixToolset.Util), que grava no log do MSI (msiexec /l*v) a linha de
+      comando, a saída (stdout/stderr) do nvt-service e o código de erro.
+      Por que não Return="check": a falha mais provável é justamente a de
+      quem quer se livrar do app (driver NVIDIA removido/trocado, snapshot
+      ilegível, DRS ocupado). Bloquear a desinstalação deixaria o serviço
+      instalado sem saída pelo "Aplicativos instalados"; e uma falha na fase
+      diferida não desfaz o que o restore já gravou. O snapshot continua em
+      %ProgramData%\nv-tuner (a pasta não é apagada na desinstalação), então
+      a restauração pode ser refeita reinstalando o nv-tuner e usando
+      "Restaurar original" na interface.
+    -->
+    <Property Id="RESTAURAR_PERFIL" Value="0" Secure="yes" />
+    <SetProperty Id="RestaurarPerfilOriginal"
+                 Value="&quot;[#NvtServiceExe]&quot; restore-original --yes"
+                 Before="RestaurarPerfilOriginal"
+                 Sequence="execute"
+                 Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND RESTAURAR_PERFIL=&quot;1&quot;" />
+    <CustomAction Id="RestaurarPerfilOriginal"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <!--
+      Diretório de estado com dono explícito. O SDDL do PermissionEx (abaixo)
+      só define a DACL: se um usuário comum tiver pré-criado
+      %ProgramData%\nv-tuner, ele continuaria dono (com WRITE_DAC implícito).
+      'nvt-service prepare-state-dir', como SYSTEM, confere o diretório e todo
+      o conteúdo sem seguir junções/links: cria com dono Administradores e
+      DACL protegida se faltar; toma posse de itens internos criados por
+      administradores; qualquer outro problema (dono comum na raiz, junção,
+      link, hard link, escrita para outras contas) move o diretório para
+      nv-tuner.inseguro-<unix>-<pid> (nada é apagado) e o recria vazio.
+      Código de saída VERIFICADO (Return="check"): código diferente de 0
+      aborta a instalação, desfaz tudo (rollback) e mostra o erro 1722 com o
+      texto abaixo; o log do MSI registra o código devolvido. Instalar com o
+      diretório de estado num estado desconhecido deixaria o serviço parado
+      sem que o usuário soubesse por quê.
+    -->
+    <CustomAction Id="PrepararDiretorioEstado"
+                  FileRef="NvtServiceExe"
+                  ExeCommand="prepare-state-dir"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <UI>
+      <!-- 1722: programa de custom action terminou com erro. [2] ação, [3] local, [4] comando. -->
+      <Error Id="1722"
+             Message="O nv-tuner não conseguiu preparar a pasta de estado (%ProgramData%\nv-tuner) e a instalação foi desfeita. Ação: [2]. Comando: [3] [4]. Para ver o motivo, abra um terminal como administrador e rode o comando acima; para o log completo, instale com: msiexec /i nv-tuner.msi /l*v instalacao.log" />
+    </UI>
+    <InstallExecuteSequence>
+      <Custom Action="RestaurarPerfilOriginal" Before="StopServices"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE AND RESTAURAR_PERFIL=&quot;1&quot;" />
+      <Custom Action="PrepararDiretorioEstado" After="InstallFiles"
+              Condition="NOT (REMOVE=&quot;ALL&quot;)" />
+    </InstallExecuteSequence>
+
+    <!-- Pastas. -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="nv-tuner" />
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DADOSFOLDER" Name="nv-tuner" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <!-- Serviço privilegiado. -->
+    <Component Id="CompServico" Directory="INSTALLFOLDER" Bitness="always64">
+      <File Id="NvtServiceExe" Source="$(BinDir)\nvt-service.exe" KeyPath="yes" />
+
+      <ServiceInstall Id="InstalaServico"
+                      Name="$(NomeServico)"
+                      DisplayName="$(NomeExibicaoServico)"
+                      Description="Aplica com segurança os planos de configuração do driver NVIDIA criados pelo nv-tuner."
+                      Type="ownProcess"
+                      Start="auto"
+                      ErrorControl="normal"
+                      Account="LocalSystem"
+                      Arguments="service"
+                      Vital="yes">
+        <!-- Subcomando explícito 'service': entrada do SCM no nvt-service (sem subcomando faz o mesmo). -->
+        <!--
+          Início automático atrasado (tabela MsiServiceConfig, Windows Installer 5.0).
+          O WiX emite o aviso WIX1149 (o SDK antigo diz que "pode não funcionar como
+          esperado"); a Util não oferece DelayedAutoStart, então fica o nativo.
+          Conferir com 'sc qc nvt-service' no teste em VM (START_TYPE AUTO_START (DELAYED)).
+        -->
+
+        <ServiceConfig DelayedAutoStart="yes" OnInstall="yes" OnReinstall="yes" />
+        <!--
+          Recuperação em falha (custom action da WixToolset.Util, recomendada pelo
+          WiX em vez de MsiServiceConfigFailureActions): reinicia na 1ª e 2ª falha
+          após 5 s, desiste na 3ª; contador zera após 1 dia.
+        -->
+        <util:ServiceConfig FirstFailureActionType="restart"
+                            SecondFailureActionType="restart"
+                            ThirdFailureActionType="none"
+                            RestartServiceDelayInSeconds="5"
+                            ResetPeriodInDays="1" />
+      </ServiceInstall>
+
+      <!-- Inicia ao instalar; para em instalação/desinstalação (troca de binário) e remove ao desinstalar. -->
+      <ServiceControl Id="ControlaServico"
+                      Name="$(NomeServico)"
+                      Start="install"
+                      Stop="both"
+                      Remove="uninstall"
+                      Wait="yes" />
+    </Component>
+
+    <!-- Interface (sem privilégios) com atalho no Menu Iniciar. -->
+    <Component Id="CompInterface" Directory="INSTALLFOLDER" Bitness="always64">
+      <File Id="NvtUiExe" Source="$(BinDir)\nvt-ui.exe" KeyPath="yes">
+        <Shortcut Id="AtalhoMenuIniciar"
+                  Directory="ProgramMenuFolder"
+                  Name="nv-tuner"
+                  Description="Otimize as configurações do driver NVIDIA por jogo"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="nvtuner.ico"
+                  Advertise="yes" />
+      </File>
+    </Component>
+
+    <!-- Licenças. -->
+    <!-- Um arquivo não versionado por componente (exigência do GUID automático). -->
+    <ComponentGroup Id="Licencas" Directory="INSTALLFOLDER">
+      <Component Id="CompLicencaMit" Bitness="always64">
+        <File Id="LicencaMit" Source="$(RaizRepo)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="CompAvisosTerceiros" Bitness="always64">
+        <File Id="AvisosTerceiros" Source="licencas\AVISOS-DE-TERCEIROS.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="CompLicencaApache" Bitness="always64">
+        <File Id="LicencaApache" Source="licencas\Apache-2.0.txt" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!--
+      %ProgramData%\nv-tuner com ACL própria (MsiLockPermissionsEx via SDDL,
+      independente do idioma do Windows):
+        P/AI      protegida (não herda de ProgramData) e herança automática
+        SY, BA    SYSTEM e Administradores: controle total (FA)
+        BU        Usuários: leitura e execução (0x1200a9), sem gravação
+      OICI propaga para arquivos e subpastas criados pelo serviço.
+      O dono é definido pela custom action PrepararDiretorioEstado (acima),
+      e o serviço confere dono, DACL e reparse points a cada início.
+      Na desinstalação a pasta só é removida se estiver vazia: o backup do
+      perfil original e o histórico gravados pelo serviço são preservados.
+    -->
+    <Component Id="CompPastaDados" Directory="DADOSFOLDER" Guid="8E0B7C2D-4F1A-4B6E-9C3D-2A5F7E9B1C40">
+      <CreateFolder>
+        <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)" />
+      </CreateFolder>
+    </Component>
+
+    <Feature Id="Principal" Title="nv-tuner" Level="1" AllowAbsent="no">
+      <ComponentRef Id="CompServico" />
+      <ComponentRef Id="CompInterface" />
+      <ComponentGroupRef Id="Licencas" />
+      <ComponentRef Id="CompPastaDados" />
+    </Feature>
+
+    <!-- Interface do instalador: boas-vindas com licença e progresso (localização pt-BR). -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="licencas\licenca.rtf" />
+  </Package>
+</Wix>

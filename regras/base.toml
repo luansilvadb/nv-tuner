@@ -1,0 +1,198 @@
+# Regras base do nv-tuner. Formato e semântica: docs/regras.md.
+#
+# Evidências vêm do laboratório do projeto (RTX 2060 SUPER/Turing, driver
+# 621.40, monitor 1080p 240 Hz, PresentMon 2.6.0, 3 capturas de 60 s por
+# estado, mediana). Um efeito só conta se passar da variação entre sessões.
+
+versao_schema = 1
+
+# ── Baseline global ──────────────────────────────────────────────────────────
+
+[[regra]]
+id = "baseline-baixa-latencia-ultra"
+descricao = "Modo de baixa latência Ultra no perfil global"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 50
+motivo = "Reduz a fila de frames da CPU quando o jogo não tem Reflex; com Reflex, o Reflex do jogo prevalece."
+evidencia = "Laboratório, LoL (DX11, sem Reflex): estado sem sincronismo com Ultra teve entrada→fóton média 1,54 ms contra 1,71 ms da linha-base (capturas pareadas, faixas sem sobreposição); FPS e 1% low dentro do ruído."
+
+[regra.aplicar]
+low_latency_cpl = "ultra"
+low_latency_enabled = "on"
+
+[[regra]]
+id = "baseline-energia-desempenho-maximo"
+descricao = "Gerenciamento de energia em desempenho máximo"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 50
+motivo = "Evita quedas de clock da GPU em cenas leves ou com carga variável, que viram picos de frametime."
+evidencia = "Laboratório: valor original era Normal/Otimizado (0x5); aplicado Prefer maximum performance no global e mantido nas medições de LoL e WARDOGS sem regressão."
+
+[regra.aplicar]
+energia = "desempenho_maximo"
+
+[[regra]]
+id = "baseline-shader-cache"
+descricao = "Shader cache do driver ligado"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 50
+motivo = "Evita recompilar shaders a cada sessão (engasgos no início das partidas)."
+evidencia = "Laboratório: ligado no global (padrão do driver), sem efeito colateral observado."
+
+[regra.aplicar]
+shader_cache = "on"
+
+[[regra]]
+id = "baseline-indicadores-desligados"
+descricao = "Indicadores de depuração (VRR, MFAA, triple buffering) desligados"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 50
+motivo = "Overlays só servem para verificação manual; o padrão do driver deixa o indicador de VRR ligado."
+evidencia = "Laboratório: indicador de VRR estava ligado (padrão) e foi desligado no global; MFAA e triple buffering zerados na limpeza do perfil global."
+
+[regra.aplicar]
+indicador_vrr = "off"
+indicador_mfaa = "off"
+indicador_triple_buffering = "off"
+
+[[regra]]
+id = "baseline-filtragem-pela-aplicacao"
+descricao = "Filtragem anisotrópica e antialiasing de volta ao controle da aplicação"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 50
+motivo = "Forçar AF/AA no driver brigaria com o pipeline do jogo (TAA/DLSS) e pode piorar a imagem ou o desempenho; o padrão da NVAPI é controle da aplicação."
+evidencia = "Laboratório: perfil global herdado de ferramenta de otimização forçava AF 'Off [Linear]' com otimizações ligadas; restaurado para controle da aplicação com otimizações em 0."
+
+[regra.aplicar]
+af_modo = "aplicacao"
+af_otimizacao = "off"
+af_otimizacao_amostras = "off"
+aa_modo = "aplicacao"
+
+# ── Sincronismo (traduz a preferência do usuário) ────────────────────────────
+
+[[regra]]
+id = "sincronismo-sem-sync"
+descricao = "Sem sincronismo: V-Sync forçado desligado e G-SYNC desligado"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 60
+motivo = "Menor latência e sem teto automático de FPS; aceita tearing. Desligar o recurso global e o estado herdado deixa o G-SYNC desligado de forma redundante."
+evidencia = "Laboratório, LoL: a estratégia anterior com G-SYNC + V-Sync + limite ficou em 224,3 FPS (contra 391,5 da linha-base) e entrada→fóton p99 5,27 ms (contra 3,58); sem sincronismo, Present→exibição média caiu de 0,86 para 0,64 ms."
+
+[regra.quando]
+sincronismo = ["sem_sync"]
+
+[regra.aplicar]
+vsync = "force_off"
+gsync_global = "off"
+gsync_app_state = "forcar_off"
+
+[[regra]]
+id = "sincronismo-gsync"
+descricao = "G-SYNC em tela cheia e janela, com V-Sync ligado"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 60
+motivo = "Combinação recomendada para VRR sem tearing: o V-Sync do driver cobre os picos acima do refresh e o modo janela cobre jogos em janela sem bordas."
+evidencia = "Laboratório, LoL (estado com G-SYNC): VRR ativo em janela sem bordas com o modo tela cheia e janela; o driver capou o FPS automaticamente (224,3 FPS a 240 Hz)."
+
+[regra.quando]
+sincronismo = ["gsync"]
+
+[regra.aplicar]
+gsync_global = "on"
+gsync_app_mode = "tela_cheia_e_janela"
+gsync_app_state = "permitir"
+vsync = "force_on"
+
+[[regra]]
+id = "sincronismo-gsync-limite"
+descricao = "Com G-SYNC, limite de FPS logo abaixo do refresh"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 60
+motivo = "Mantém o FPS dentro da janela de VRR e evita que o V-Sync entre em ação (fila e latência extras). Sem refresh conhecido, nenhum limite é gravado."
+evidencia = "Laboratório: com G-SYNC + V-Sync o FPS encostou no teto (224,3 FPS a 240 Hz); a versão anterior do perfil usava limite de 230 FPS. Margem de 3 FPS abaixo do refresh é a prática usual para VRR."
+
+[regra.quando]
+sincronismo = ["gsync"]
+refresh_conhecido = true
+
+[regra.aplicar]
+limite_fps = { refresh_menos = 3 }
+
+[[regra]]
+id = "sincronismo-vsync"
+descricao = "V-Sync tradicional forçado no driver, com G-SYNC desligado"
+status = "estavel"
+escopo = "global"
+impacto_visual = "nenhum"
+prioridade = 60
+motivo = "Para quem prefere imagem sem tearing e não tem (ou não quer) VRR. O G-SYNC é desligado no recurso global e no estado herdado, como em sem sincronismo: escolher V-Sync depois de G-SYNC não pode deixar o VRR ligado."
+evidencia = "Valor Force on (0x47814940) conferido no NvApiDriverSettings.h e no DRS do laboratório; não medido isoladamente. Desligamento do G-SYNC pelos mesmos valores da regra sincronismo-sem-sync."
+
+[regra.quando]
+sincronismo = ["vsync"]
+
+[regra.aplicar]
+vsync = "force_on"
+gsync_global = "off"
+gsync_app_state = "forcar_off"
+
+# ── DLSS ─────────────────────────────────────────────────────────────────────
+# Ada e Blackwell (FP8 nos Tensor Cores): o modelo transformer do jogo é
+# barato; nenhuma regra. GPU sem Tensor Cores (GTX 16): sem DLSS; nenhuma regra.
+
+[[regra]]
+id = "dlss-preset-e-turing"
+descricao = "DLSS-SR com preset E (CNN) forçado pelo driver em RTX 20"
+status = "estavel"
+escopo = "por_jogo"
+impacto_visual = "leve"
+prioridade = 50
+motivo = "Sem FP8, o modelo transformer (presets J/K) custa caro em Turing; o preset E (CNN) recupera FPS com perda visual pequena. Só usa o perfil do driver, sem tocar nos arquivos do jogo (seguro com anticheat de kernel)."
+evidencia = "Laboratório, WARDOGS (UE5, DLSS 310.6, RTX 2060 SUPER): override preset E no perfil do jogo deu +16,8% FPS médio, +15,7% 1% low, −14,1% frametime p99 e −15,1% entrada→fóton média, de 3 a 5 vezes a variação entre sessões; imagem aprovada pelo usuário."
+
+[regra.quando]
+arquitetura = ["turing"]
+tem_tensor_cores = true
+jogo_dlss = true
+
+[regra.aplicar]
+dlss_override = "on"
+dlss_perfil_preset = "personalizado"
+dlss_preset = "e"
+
+[[regra]]
+id = "dlss-preset-e-ampere"
+descricao = "DLSS-SR com preset E (CNN) forçado pelo driver em RTX 30"
+status = "experimental"
+escopo = "por_jogo"
+impacto_visual = "leve"
+prioridade = 50
+motivo = "Ampere também não tem FP8 nos Tensor Cores, então o raciocínio da regra de Turing deve valer, mas com mais folga de Tensor Cores o ganho pode ser menor."
+evidencia = "Extrapolação da medição em Turing (WARDOGS, +16,8% FPS); ainda sem medição em Ampere."
+
+[regra.quando]
+arquitetura = ["ampere"]
+tem_tensor_cores = true
+jogo_dlss = true
+
+[regra.aplicar]
+dlss_override = "on"
+dlss_perfil_preset = "personalizado"
+dlss_preset = "e"

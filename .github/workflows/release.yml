@@ -1,0 +1,82 @@
+name: Release
+
+# Gera o MSI e publica uma GitHub Release (pre-release) a cada tag v*.
+# A tag precisa bater com [workspace.package].version do Cargo.toml
+# (ex.: tag v0.1.0 <-> version = "0.1.0"); senão o job falha antes de compilar.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  DOTNET_NOLOGO: '1'
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
+jobs:
+  msi:
+    name: MSI e release
+    runs-on: windows-latest
+    permissions:
+      contents: write   # só para criar a release e anexar os arquivos
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Conferir tag x versão do Cargo.toml
+        shell: pwsh
+        run: |
+          $toml = Get-Content -Raw -Encoding UTF8 Cargo.toml
+          $m = [regex]::Match($toml, '(?ms)^\[workspace\.package\].*?^version\s*=\s*"([^"]+)"')
+          if (-not $m.Success) { throw 'Versão não encontrada em [workspace.package] do Cargo.toml.' }
+          $versao = $m.Groups[1].Value
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -ne "v$versao") { throw "A tag '$tag' não bate com a versão '$versao' do Cargo.toml (esperado v$versao)." }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar WiX (ferramenta local)
+        working-directory: instalador
+        run: dotnet tool restore
+
+      - name: Compilar (release)
+        run: cargo build --release -p nvt-service -p nvt-ui
+
+      - name: Gerar MSI (inclui validação ICE)
+        shell: pwsh
+        run: ./instalador/build-msi.ps1 -SemCompilar
+
+      - name: Conferir SHA256
+        id: hash
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem target/dist/*.msi | Select-Object -First 1
+          if (-not $msi) { throw 'MSI não encontrado em target/dist.' }
+          $hash = (Get-FileHash -Algorithm SHA256 $msi.FullName).Hash.ToLowerInvariant()
+          $registrado = ((Get-Content -Raw "$($msi.FullName).sha256") -split '\s+')[0]
+          if ($hash -ne $registrado) { throw "SHA256 divergente: $hash x $registrado" }
+          "msi=$($msi.FullName)" >> $env:GITHUB_OUTPUT
+          "sha=$($msi.FullName).sha256" >> $env:GITHUB_OUTPUT
+          "## $($msi.Name)`n`nSHA256: ``$hash``" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Criar release (pre-release)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            '${{ steps.hash.outputs.msi }}' '${{ steps.hash.outputs.sha }}' `
+            --prerelease --title "nv-tuner $env:GITHUB_REF_NAME" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "gh release create falhou ($LASTEXITCODE)" }
