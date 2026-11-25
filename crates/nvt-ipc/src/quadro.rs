@@ -230,10 +230,10 @@ mod testes {
     #[test]
     fn versao_conferida_antes_do_corpo() {
         // Corpo desconhecido para nós, mas a versão é o que importa reportar.
-        let payload = br#"{"versao":3,"corpo":{"tipo":"algo_do_futuro","x":1}}"#;
+        let payload = br#"{"versao":4,"corpo":{"tipo":"algo_do_futuro","x":1}}"#;
         assert!(matches!(
             decodificar::<Resposta>(payload),
-            Err(ErroIpc::VersaoIncompativel { recebida: 3, .. })
+            Err(ErroIpc::VersaoIncompativel { recebida: 4, .. })
         ));
     }
 
@@ -242,8 +242,8 @@ mod testes {
         for p in [
             &br#"{"corpo":{"tipo":"obter_estado"}}"#[..],
             br#"{"versao":"1","corpo":{"tipo":"obter_estado"}}"#,
-            br#"{"versao":2}"#,
-            br#"{"versao":2,"corpo":{"tipo":"obter_estado"},"extra":0}"#,
+            br#"{"versao":3}"#,
+            br#"{"versao":3,"corpo":{"tipo":"obter_estado"},"extra":0}"#,
             br#"[1,2]"#,
         ] {
             assert!(
@@ -260,7 +260,7 @@ mod testes {
             Err(ErroIpc::Json(_))
         ));
         assert!(matches!(
-            decodificar::<Requisicao>(br#"{"versao":2,"corpo":{"tipo":"formatar_disco"}}"#),
+            decodificar::<Requisicao>(br#"{"versao":3,"corpo":{"tipo":"formatar_disco"}}"#),
             Err(ErroIpc::Json(_))
         ));
     }

@@ -238,7 +238,7 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
     ));
     let r = enviar(
         &mut f,
-        br#"{"versao":2,"corpo":{"tipo":"executar","cmd":"x"}}"#,
+        br#"{"versao":3,"corpo":{"tipo":"executar","cmd":"x"}}"#,
     );
     assert!(matches!(
         r,
@@ -250,7 +250,7 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
     // Mensagem válida depois dos erros: o enquadramento segue alinhado.
     let r = enviar(&mut f, &codificar(&Requisicao::ObterPlano).unwrap());
     assert_eq!(r, Resposta::Ok);
-    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(PROTOCOL_VERSION, 3);
     drop(f);
     s.parar();
 }

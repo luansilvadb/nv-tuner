@@ -1029,6 +1029,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                     motivo: j.motivo.clone(),
                 })
                 .collect(),
+            jogos: jogos_ipc(diff, regras),
         }
     }
 }
@@ -1179,6 +1180,108 @@ pub fn prefs_ipc(p: &Preferences) -> nvt_ipc::Preferencias {
         },
         limite_fps: p.limite_fps,
     }
+}
+
+/// Jogos do diff (fatos, perfil e explicação) no formato do protocolo.
+/// O modo de visualização da UI faz a mesma conversão (`nvt-ui`,
+/// `local::jogos_ipc`).
+pub fn jogos_ipc(diff: &Diff, regras: &nvt_core::ConjuntoRegras) -> Vec<nvt_ipc::Jogo> {
+    use nvt_core::MotivoNaoAplicada as M;
+    use nvt_ipc::MotivoNaoAplicada as I;
+    let descricao = |id: &str| {
+        regras
+            .regras
+            .iter()
+            .find(|r| r.id == id)
+            .map_or_else(String::new, |r| r.descricao.clone())
+    };
+    let qualidade = |q: nvt_core::Qualidade| {
+        prefs_ipc(&Preferences {
+            qualidade: q,
+            ..Default::default()
+        })
+        .qualidade
+    };
+    let motivo = |m: &M| match m {
+        M::JogoSemDlss => I::JogoSemDlss,
+        M::ArquiteturaNaoPrecisa { arquitetura } => I::ArquiteturaNaoPrecisa {
+            arquitetura: arquitetura.nome_regra().to_owned(),
+        },
+        M::SemTensorCores => I::SemTensorCores,
+        M::Experimental => I::Experimental,
+        M::BloqueadaPeloTetoDeQualidade { teto, .. } => I::BloqueadaPeloTetoDeQualidade {
+            teto: qualidade(*teto),
+        },
+        M::EscolhaDoUsuario { setting } => I::EscolhaDoUsuario {
+            setting: setting.clone(),
+        },
+        M::ConflitoComRegraMaisEspecifica { regra } => I::ConflitoComRegraMaisEspecifica {
+            regra: regra.clone(),
+        },
+        M::FatoDesconhecido { fato } => I::FatoDesconhecido { fato: fato.clone() },
+        M::CondicaoNaoAtendida {
+            condicao,
+            esperado,
+            encontrado,
+        } => I::CondicaoNaoAtendida {
+            condicao: condicao.clone(),
+            esperado: esperado.clone(),
+            encontrado: encontrado.clone(),
+        },
+    };
+    diff.jogos
+        .iter()
+        .map(|j| {
+            let r = diff
+                .plano
+                .resumos
+                .get(&j.perfil)
+                .cloned()
+                .unwrap_or_default();
+            nvt_ipc::Jogo {
+                nome: j.entrada.nome.clone(),
+                perfil: j.perfil.clone(),
+                origem_perfil: match j.origem {
+                    nvt_engine::OrigemPerfil::Driver => nvt_ipc::OrigemPerfil::Driver,
+                    nvt_engine::OrigemPerfil::Usuario => nvt_ipc::OrigemPerfil::Usuario,
+                    nvt_engine::OrigemPerfil::CriadoPeloApp => nvt_ipc::OrigemPerfil::CriadoPeloApp,
+                    nvt_engine::OrigemPerfil::ACriar => nvt_ipc::OrigemPerfil::ACriar,
+                },
+                launcher: j.entrada.launcher.clone(),
+                api: j.entrada.api.nome_regra().to_owned(),
+                dlss: j.entrada.dlss.map(|v| {
+                    if v == nvt_core::Versao::default() {
+                        String::new()
+                    } else {
+                        v.to_string()
+                    }
+                }),
+                reflex: j.entrada.reflex,
+                anticheat_kernel: j.entrada.anticheat_kernel,
+                resumo: nvt_ipc::ResumoJogo {
+                    aplicadas: r
+                        .aplicadas
+                        .iter()
+                        .map(|a| nvt_ipc::RegraAplicada {
+                            regra: a.regra.clone(),
+                            descricao: descricao(&a.regra),
+                            settings: a.settings.clone(),
+                        })
+                        .collect(),
+                    nao_aplicadas: r
+                        .nao_aplicadas
+                        .iter()
+                        .map(|n| nvt_ipc::RegraNaoAplicada {
+                            regra: n.regra.clone(),
+                            descricao: descricao(&n.regra),
+                            motivo: motivo(&n.motivo),
+                        })
+                        .collect(),
+                    herda_do_global: r.herda_do_global,
+                },
+            }
+        })
+        .collect()
 }
 
 fn nao_permitida(setting: &str) -> Resposta {

@@ -8,6 +8,7 @@
 pub mod capabilities;
 pub mod catalogo;
 pub mod evaluator;
+pub mod explicacao;
 pub mod facts;
 pub mod plan;
 pub mod preferences;
@@ -17,6 +18,10 @@ pub mod versao;
 pub use capabilities::{Arquitetura, Capabilities};
 pub use catalogo::{Catalogo, DefSetting, Faixa, PreferenciaGovernante};
 pub use evaluator::avaliar;
+pub use explicacao::{
+    Falha, MotivoDeclarado, MotivoNaoAplicada, RegraAplicada, RegraNaoAplicada, ResumoJogo,
+    TipoMotivo,
+};
 pub use facts::{Api, GameFacts};
 pub use plan::{Descarte, Origem, Plan, Respeitada, SettingChange, Sugestao};
 pub use preferences::{Alvo, EscolhaUsuario, Preferences, Qualidade, Sincronismo};

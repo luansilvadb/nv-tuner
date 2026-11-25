@@ -10,6 +10,8 @@
 //! - `--tela <chave>`: tela inicial (`visao-geral`, `jogos`, `mudancas`,
 //!   `preferencias`, `historico`, `restaurar`).
 //! - `--sair-apos <segundos>`: fecha sozinha (capturas automatizadas).
+//! - `--expandir <jogo>`: abre já expandida a linha do jogo com esse nome ou perfil
+//!   na tela Jogos (repetível; para capturas).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -33,6 +35,7 @@ struct Opcoes {
     pipe: String,
     tela: Tela,
     sair_apos: Option<u64>,
+    expandir: Vec<String>,
 }
 
 fn ler_opcoes(args: impl IntoIterator<Item = String>) -> Result<Opcoes, String> {
@@ -40,6 +43,7 @@ fn ler_opcoes(args: impl IntoIterator<Item = String>) -> Result<Opcoes, String> 
         pipe: nvt_ipc::NOME_PIPE.to_string(),
         tela: Tela::VisaoGeral,
         sair_apos: None,
+        expandir: Vec::new(),
     };
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -53,6 +57,10 @@ fn ler_opcoes(args: impl IntoIterator<Item = String>) -> Result<Opcoes, String> 
             "--sair-apos" => {
                 let v = valor("--sair-apos")?;
                 o.sair_apos = Some(v.parse().map_err(|_| format!("número inválido: {v}"))?);
+            }
+            "--expandir" => {
+                let v = valor("--expandir")?;
+                o.expandir.push(v);
             }
             outro => return Err(format!("opção desconhecida: {outro}")),
         }
@@ -86,8 +94,9 @@ fn main() {
             ..Default::default()
         };
         let tela = opcoes.tela;
+        let expandir = opcoes.expandir.clone();
         gpui_kit::open_window(opcoes_janela, cx, move |_, cx| {
-            cx.new(|cx| ui::Janela::new(tela, canal, cx))
+            cx.new(|cx| ui::Janela::new(tela, expandir, canal, cx))
         })
         .expect("falha ao abrir a janela");
         if let Some(s) = opcoes.sair_apos {
@@ -114,6 +123,7 @@ mod testes {
         assert_eq!(o.pipe, nvt_ipc::NOME_PIPE);
         assert_eq!(o.tela, Tela::VisaoGeral);
         assert_eq!(o.sair_apos, None);
+        assert!(o.expandir.is_empty());
     }
 
     #[test]
@@ -125,17 +135,23 @@ mod testes {
             "historico",
             "--sair-apos",
             "10",
+            "--expandir",
+            "WARDOGS",
+            "--expandir",
+            "League of Legends",
         ]))
         .unwrap();
         assert_eq!(o.pipe, r"\\.\pipe\teste");
         assert_eq!(o.tela, Tela::Historico);
         assert_eq!(o.sair_apos, Some(10));
+        assert_eq!(o.expandir, ["WARDOGS", "League of Legends"]);
     }
 
     #[test]
     fn opcoes_invalidas() {
         assert!(ler_opcoes(args(&["--tela", "nada"])).is_err());
         assert!(ler_opcoes(args(&["--pipe"])).is_err());
+        assert!(ler_opcoes(args(&["--expandir"])).is_err());
         assert!(ler_opcoes(args(&["--sair-apos", "x"])).is_err());
         assert!(ler_opcoes(args(&["--xyz"])).is_err());
     }

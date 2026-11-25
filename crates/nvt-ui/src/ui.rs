@@ -3,6 +3,7 @@
 //! Só lê [`EstadoUi`] e envia [`Comando`]s para a thread de comunicação; a
 //! thread da janela nunca bloqueia em E/S.
 
+use std::collections::BTreeSet;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
@@ -21,13 +22,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use nvt_ipc::{
-    Aviso, ImpactoVisual, JogoIgnorado, LIMITE_FPS_MAX, LIMITE_FPS_MIN, NivelAviso, Qualidade,
-    Reversao, Sincronismo, StatusMudanca,
+    Aviso, ImpactoVisual, Jogo, JogoIgnorado, LIMITE_FPS_MAX, LIMITE_FPS_MIN, NivelAviso,
+    Qualidade, Reversao, Sincronismo, StatusMudanca,
 };
 
 use crate::modelo::{
     Comando, Conexao, EstadoUi, Evento, GrupoMudancas, ItemMudanca, Tela, TipoMensagem,
-    formatar_data,
+    formatar_data, linha_setting,
 };
 use crate::servico::Canal;
 use crate::textos as t;
@@ -48,10 +49,12 @@ const FPS_PADRAO: u32 = 141;
 pub struct Janela {
     ui: EstadoUi,
     comandos: Sender<Comando>,
+    /// Perfis dos jogos com a linha expandida na tela Jogos.
+    expandidos: BTreeSet<String>,
 }
 
 impl Janela {
-    pub fn new(tela: Tela, canal: Canal, cx: &mut Context<Self>) -> Self {
+    pub fn new(tela: Tela, expandidos: Vec<String>, canal: Canal, cx: &mut Context<Self>) -> Self {
         let eventos = canal.eventos;
         // Consome os eventos da thread de comunicação sem bloquear a janela.
         cx.spawn(async move |this, cx| {
@@ -78,6 +81,7 @@ impl Janela {
         Self {
             ui: EstadoUi::new(tela),
             comandos: canal.comandos,
+            expandidos: expandidos.into_iter().collect(),
         }
     }
 
@@ -435,9 +439,6 @@ impl Janela {
     fn tabela_jogos(&self, cx: &mut Context<Self>) -> Div {
         let tema = cx.theme().clone();
         let jogos = self.ui.jogos();
-        if self.ui.jogos.is_none() {
-            return v_flex().child(div().text_color(tema.muted_foreground).child(t::CARREGANDO));
-        }
         if jogos.is_empty() {
             return v_flex().child(div().text_color(tema.muted_foreground).child(t::SEM_JOGOS));
         }
@@ -456,6 +457,7 @@ impl Janela {
             .py_2()
             .border_b_1()
             .border_color(tema.border)
+            .child(div().w(px(14.)).flex_shrink_0())
             .child(
                 div()
                     .flex_1()
@@ -465,62 +467,212 @@ impl Janela {
                     .text_color(tema.muted_foreground)
                     .child(t::COL_JOGO),
             )
-            .child(cab(t::COL_LAUNCHER, 96.))
+            .child(cab(t::COL_LAUNCHER, 80.))
             .child(cab(t::COL_API, 84.))
-            .child(cab(t::COL_DLSS, 64.))
-            .child(cab(t::COL_REFLEX, 52.))
-            .child(cab(t::COL_ANTICHEAT, 72.))
-            .child(cab(t::COL_APLICADO, 220.));
+            .child(cab(t::COL_DLSS, 56.))
+            .child(cab(t::COL_REFLEX, 48.))
+            .child(cab(t::COL_ANTICHEAT, 64.))
+            .child(cab(t::COL_APLICADO, 300.));
         let linhas = jogos.into_iter().enumerate().map(|(i, j)| {
             let cel = |w: f32| div().w(px(w)).flex_shrink_0().text_sm();
-            h_flex()
-                .gap_3()
-                .px_3()
-                .py_2()
-                .items_start()
+            let aberto = self.expandidos.contains(&j.perfil) || self.expandidos.contains(&j.nome);
+            let (perfil, nome) = (j.perfil.clone(), j.nome.clone());
+            let herda = t::herda_globais(j.resumo.herda_do_global.len());
+            let linha =
+                h_flex()
+                    .id(("jogo", i))
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .items_start()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(tema.list_hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if aberto {
+                            this.expandidos.remove(&perfil);
+                            this.expandidos.remove(&nome);
+                        } else {
+                            this.expandidos.insert(perfil.clone());
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .w(px(14.))
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(tema.muted_foreground)
+                            .child(if aberto { "▾" } else { "▸" }),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .child(div().text_sm().font_semibold().child(j.nome.clone()))
+                            .child(div().text_xs().text_color(tema.muted_foreground).child(
+                                format!("“{}” · {}", j.perfil, t::origem_perfil(j.origem_perfil)),
+                            )),
+                    )
+                    .child(cel(80.).child(if j.launcher.is_empty() {
+                        "?".to_string()
+                    } else {
+                        j.launcher.clone()
+                    }))
+                    .child(cel(84.).child(t::api_grafica(&j.api)))
+                    .child(cel(56.).child(match &j.dlss {
+                        None => t::NAO.to_string(),
+                        Some(v) if v.is_empty() => t::SIM.to_string(),
+                        Some(v) => v.clone(),
+                    }))
+                    .child(cel(48.).child(t::talvez(j.reflex)))
+                    .child(cel(64.).child(match j.anticheat_kernel {
+                        Some(true) => t::ANTICHEAT_KERNEL,
+                        _ => "?",
+                    }))
+                    .child(
+                        v_flex()
+                            .w(px(300.))
+                            .flex_shrink_0()
+                            .text_xs()
+                            .child(
+                                div()
+                                    .when(j.resumo.aplicadas.is_empty(), |d| {
+                                        d.text_color(tema.muted_foreground)
+                                    })
+                                    .child(t::resumo_curto(&j.resumo)),
+                            )
+                            .when(!herda.is_empty(), |d| {
+                                d.child(div().text_color(tema.muted_foreground).child(herda))
+                            }),
+                    );
+            v_flex()
                 .when(i % 2 == 1, |d| d.bg(tema.table_even))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w(px(160.))
-                        .child(div().text_sm().font_semibold().child(j.nome.clone()))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(tema.muted_foreground)
-                                .child(format!("“{}” · {}", j.perfil, j.origem_perfil)),
-                        ),
-                )
-                .child(cel(96.).child(j.launcher.clone()))
-                .child(cel(84.).child(j.api.clone()))
-                .child(cel(64.).child(match &j.dlss {
-                    None => t::NAO.to_string(),
-                    Some(v) if v.is_empty() => t::SIM.to_string(),
-                    Some(v) => v.clone(),
-                }))
-                .child(cel(52.).child(t::talvez(j.reflex)))
-                .child(cel(72.).child(match j.anticheat_kernel {
-                    Some(true) => t::ANTICHEAT_KERNEL,
-                    _ => "?",
-                }))
-                .child(
-                    v_flex()
-                        .w(px(220.))
-                        .flex_shrink_0()
-                        .text_xs()
-                        .when(j.aplicado.is_empty(), |d| {
-                            d.text_color(tema.muted_foreground)
-                                .child(t::NENHUM_APLICADO)
-                        })
-                        .children(j.aplicado.iter().map(|a| div().child(a.clone()))),
-                )
+                .child(linha)
+                .when(aberto, |d| d.child(self.detalhe_jogo(&j, &tema)))
         });
         v_flex()
-            .rounded_lg()
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(tema.muted_foreground)
+                    .child(t::DETALHE_EXPANDIR),
+            )
+            .child(
+                v_flex()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(tema.border)
+                    .child(cabecalho)
+                    .children(linhas),
+            )
+    }
+
+    /// Lista completa de um jogo: regras aplicadas (com as settings),
+    /// não aplicadas (com o motivo) e o que herda do global.
+    fn detalhe_jogo(&self, j: &Jogo, tema: &Theme) -> Div {
+        let titulo = |s: &'static str| {
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(tema.muted_foreground)
+                .child(s)
+        };
+        let nenhuma = || {
+            div()
+                .text_sm()
+                .text_color(tema.muted_foreground)
+                .child(t::DETALHE_NENHUMA)
+        };
+        let r = &j.resumo;
+        let aplicadas = v_flex()
+            .gap_1()
+            .child(titulo(t::DETALHE_APLICADAS))
+            .when(r.aplicadas.is_empty(), |d| d.child(nenhuma()))
+            .children(r.aplicadas.iter().map(|a| {
+                v_flex()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .text_color(tema.success)
+                                    .child(t::nome_regra(&a.regra, &a.descricao)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(tema.muted_foreground)
+                                    .child(a.regra.clone()),
+                            ),
+                    )
+                    .children(a.settings.iter().map(|s| {
+                        div().text_xs().pl_3().child(format!(
+                            "• {}",
+                            linha_setting(&self.ui.dados.grupos, &j.perfil, s)
+                        ))
+                    }))
+            }));
+        let nao_aplicadas = v_flex()
+            .gap_1()
+            .child(titulo(t::DETALHE_NAO_APLICADAS))
+            .when(r.nao_aplicadas.is_empty(), |d| d.child(nenhuma()))
+            .children(r.nao_aplicadas.iter().map(|n| {
+                v_flex()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .child(t::nome_regra(&n.regra, &n.descricao)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(tema.muted_foreground)
+                                    .child(n.regra.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .pl_3()
+                            .text_color(tema.muted_foreground)
+                            .child(t::motivo_longo(&n.motivo)),
+                    )
+            }));
+        let herda = v_flex().gap_1().child(titulo(t::DETALHE_HERDA)).child(
+            if r.herda_do_global.is_empty() {
+                nenhuma()
+            } else {
+                div().text_xs().child(format!(
+                    "{}: {}",
+                    t::herda_globais_lista(r.herda_do_global.len()),
+                    r.herda_do_global
+                        .iter()
+                        .map(|s| t::setting_legivel(s))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            },
+        );
+        v_flex()
+            .gap_3()
+            .ml(px(26.))
+            .mr_3()
+            .mb_3()
+            .p_3()
+            .rounded_md()
             .border_1()
             .border_color(tema.border)
-            .child(cabecalho)
-            .children(linhas)
+            .bg(tema.background)
+            .child(aplicadas)
+            .child(nao_aplicadas)
+            .child(herda)
     }
 
     // -----------------------------------------------------------------------

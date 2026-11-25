@@ -428,6 +428,105 @@ pub struct Plano {
     pub reversoes: Vec<Reversao>,
     /// Jogos deixados de fora do plano, com o motivo.
     pub ignorados: Vec<JogoIgnorado>,
+    /// Jogos do plano com os fatos detectados e o que o app faz em cada um.
+    pub jogos: Vec<Jogo>,
+}
+
+/// Jogo do plano: fatos detectados, perfil do driver e explicação.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Jogo {
+    /// Nome no launcher.
+    pub nome: String,
+    /// Nome do perfil no driver (existente ou a criar).
+    pub perfil: String,
+    pub origem_perfil: OrigemPerfil,
+    /// Launcher (ex.: `"Steam"`, `"Riot"`); vazio se desconhecido.
+    pub launcher: String,
+    /// API gráfica (`dx9`, `dx11`, `dx12`, `vulkan`, `opengl`, `desconhecida`).
+    pub api: String,
+    /// Versão do DLSS; `None` = sem DLSS; `Some("")` = DLSS sem versão legível.
+    pub dlss: Option<String>,
+    /// `None` = não determinado.
+    pub reflex: Option<bool>,
+    /// `None` = não determinado.
+    pub anticheat_kernel: Option<bool>,
+    pub resumo: ResumoJogo,
+}
+
+/// De onde vem o perfil do driver de um jogo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrigemPerfil {
+    /// Perfil predefinido pela NVIDIA.
+    Driver,
+    /// Perfil que já existia (criado por outra ferramenta ou pelo usuário).
+    Usuario,
+    /// Perfil criado pelo nv-tuner.
+    CriadoPeloApp,
+    /// Sem perfil: será criado se houver mudança.
+    ACriar,
+}
+
+/// O que o plano faz por um jogo.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResumoJogo {
+    /// Regras aplicadas no perfil do jogo.
+    pub aplicadas: Vec<RegraAplicada>,
+    /// Regras por jogo não aplicadas (ou com setting suprimida), com motivo.
+    pub nao_aplicadas: Vec<RegraNaoAplicada>,
+    /// Settings do perfil global que o jogo herda (nomes simbólicos).
+    pub herda_do_global: Vec<String>,
+}
+
+/// Regra aplicada no perfil do jogo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegraAplicada {
+    pub regra: String,
+    /// Descrição da regra (pt-BR, do TOML).
+    pub descricao: String,
+    /// Settings gravadas (nomes simbólicos).
+    pub settings: Vec<String>,
+}
+
+/// Regra por jogo que não foi aplicada, com o motivo estruturado.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegraNaoAplicada {
+    pub regra: String,
+    /// Descrição da regra (pt-BR, do TOML).
+    pub descricao: String,
+    pub motivo: MotivoNaoAplicada,
+}
+
+/// Por que uma regra não foi aplicada. O texto é gerado pela UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "tipo", rename_all = "snake_case")]
+pub enum MotivoNaoAplicada {
+    /// O jogo não tem DLSS.
+    JogoSemDlss,
+    /// A arquitetura da GPU não precisa do ajuste (ex.: `"ada"`).
+    ArquiteturaNaoPrecisa { arquitetura: String },
+    /// A GPU não tem Tensor Cores.
+    SemTensorCores,
+    /// Regra experimental: só sugestão, aguardando confirmação por medição.
+    Experimental,
+    /// Impacto visual acima do teto de qualidade.
+    BloqueadaPeloTetoDeQualidade { teto: Qualidade },
+    /// O usuário travou a setting.
+    EscolhaDoUsuario { setting: String },
+    /// Outra regra (ou `preferencia:<nome>`) venceu o conflito.
+    ConflitoComRegraMaisEspecifica { regra: String },
+    /// Fato que a detecção não determinou (nome da condição, ex.: `"jogo_reflex"`).
+    FatoDesconhecido { fato: String },
+    /// Condição não atendida, sem motivo específico.
+    CondicaoNaoAtendida {
+        condicao: String,
+        esperado: String,
+        encontrado: String,
+    },
 }
 
 /// Setting gerida pelo app que o plano atual não quer mais (preferência
@@ -615,6 +714,134 @@ mod testes {
         v
     }
 
+    /// Um motivo de cada tipo. O `match` garante que nenhum fique sem teste.
+    fn todos_os_motivos() -> Vec<MotivoNaoAplicada> {
+        let v = vec![
+            MotivoNaoAplicada::JogoSemDlss,
+            MotivoNaoAplicada::ArquiteturaNaoPrecisa {
+                arquitetura: "ada".into(),
+            },
+            MotivoNaoAplicada::SemTensorCores,
+            MotivoNaoAplicada::Experimental,
+            MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade {
+                teto: Qualidade::Qualidade,
+            },
+            MotivoNaoAplicada::EscolhaDoUsuario {
+                setting: "dlss_preset".into(),
+            },
+            MotivoNaoAplicada::ConflitoComRegraMaisEspecifica {
+                regra: "outra".into(),
+            },
+            MotivoNaoAplicada::FatoDesconhecido {
+                fato: "jogo_reflex".into(),
+            },
+            MotivoNaoAplicada::CondicaoNaoAtendida {
+                condicao: "arquitetura".into(),
+                esperado: "ampere".into(),
+                encontrado: "turing".into(),
+            },
+        ];
+        for m in &v {
+            match m {
+                MotivoNaoAplicada::JogoSemDlss
+                | MotivoNaoAplicada::ArquiteturaNaoPrecisa { .. }
+                | MotivoNaoAplicada::SemTensorCores
+                | MotivoNaoAplicada::Experimental
+                | MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade { .. }
+                | MotivoNaoAplicada::EscolhaDoUsuario { .. }
+                | MotivoNaoAplicada::ConflitoComRegraMaisEspecifica { .. }
+                | MotivoNaoAplicada::FatoDesconhecido { .. }
+                | MotivoNaoAplicada::CondicaoNaoAtendida { .. } => {}
+            }
+        }
+        v
+    }
+
+    fn jogo_exemplo() -> Jogo {
+        Jogo {
+            nome: "WARDOGS".into(),
+            perfil: "WARDOGS".into(),
+            origem_perfil: OrigemPerfil::Usuario,
+            launcher: "Steam".into(),
+            api: "dx12".into(),
+            dlss: Some("310.6.0.0".into()),
+            reflex: Some(true),
+            anticheat_kernel: None,
+            resumo: ResumoJogo {
+                aplicadas: vec![RegraAplicada {
+                    regra: "dlss-preset-e-turing".into(),
+                    descricao: "DLSS-SR com preset E".into(),
+                    settings: vec!["dlss_override".into(), "dlss_preset".into()],
+                }],
+                nao_aplicadas: todos_os_motivos()
+                    .into_iter()
+                    .map(|motivo| RegraNaoAplicada {
+                        regra: "r".into(),
+                        descricao: "d".into(),
+                        motivo,
+                    })
+                    .collect(),
+                herda_do_global: vec!["energia".into(), "vsync".into()],
+            },
+        }
+    }
+
+    #[test]
+    fn formato_json_do_jogo_e_dos_motivos() {
+        use serde_json::{from_value, json, to_value};
+        for m in todos_os_motivos() {
+            assert_eq!(
+                from_value::<MotivoNaoAplicada>(to_value(&m).unwrap()).unwrap(),
+                m
+            );
+        }
+        assert_eq!(
+            to_value(MotivoNaoAplicada::ArquiteturaNaoPrecisa {
+                arquitetura: "ada".into()
+            })
+            .unwrap(),
+            json!({"tipo":"arquitetura_nao_precisa","arquitetura":"ada"})
+        );
+        assert_eq!(
+            to_value(MotivoNaoAplicada::JogoSemDlss).unwrap(),
+            json!({"tipo":"jogo_sem_dlss"})
+        );
+        assert_eq!(
+            to_value(MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade {
+                teto: Qualidade::Qualidade
+            })
+            .unwrap(),
+            json!({"tipo":"bloqueada_pelo_teto_de_qualidade","teto":"qualidade"})
+        );
+        for (o, s) in [
+            (OrigemPerfil::Driver, "driver"),
+            (OrigemPerfil::Usuario, "usuario"),
+            (OrigemPerfil::CriadoPeloApp, "criado_pelo_app"),
+            (OrigemPerfil::ACriar, "a_criar"),
+        ] {
+            assert_eq!(to_value(o).unwrap(), json!(s));
+        }
+        let j = to_value(jogo_exemplo()).unwrap();
+        assert_eq!(j["origem_perfil"], json!("usuario"));
+        assert_eq!(
+            j["resumo"]["aplicadas"][0]["regra"],
+            json!("dlss-preset-e-turing")
+        );
+        assert_eq!(j["resumo"]["herda_do_global"], json!(["energia", "vsync"]));
+        assert_eq!(from_value::<Jogo>(j.clone()).unwrap(), jogo_exemplo());
+        // Campo desconhecido no jogo é recusado.
+        let mut extra = j;
+        extra["extra"] = json!(1);
+        assert!(from_value::<Jogo>(extra).is_err());
+        // Plano da versão 2 (sem `jogos`) não é aceito pela versão 3.
+        assert!(
+            from_value::<Plano>(json!({
+                "gerado_unix":0,"perfis":[],"reversoes":[],"ignorados":[]
+            }))
+            .is_err()
+        );
+    }
+
     fn todas_respostas() -> Vec<Resposta> {
         let v = vec![
             Resposta::Estado(Estado {
@@ -677,6 +904,7 @@ mod testes {
                 perfis: vec![],
                 reversoes: vec![],
                 ignorados: vec![],
+                jogos: vec![],
             }),
             Resposta::Plano(Plano {
                 gerado_unix: 1_790_000_000,
@@ -710,6 +938,7 @@ mod testes {
                     exe: String::new(),
                     motivo: "executável vazio".into(),
                 }],
+                jogos: vec![jogo_exemplo()],
             }),
             Resposta::Historico {
                 entradas: vec![EntradaHistorico {
@@ -823,10 +1052,10 @@ mod testes {
         .unwrap();
         assert_eq!(
             json,
-            r#"{"versao":2,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
+            r#"{"versao":3,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
         );
         let json = String::from_utf8(codificar(&Resposta::Ok).unwrap()).unwrap();
-        assert_eq!(json, r#"{"versao":2,"corpo":{"tipo":"ok"}}"#);
+        assert_eq!(json, r#"{"versao":3,"corpo":{"tipo":"ok"}}"#);
     }
 
     #[test]

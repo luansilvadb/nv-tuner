@@ -68,6 +68,35 @@ dlss_preset = "e"
 `descricao`, `motivo` e `evidencia` são obrigatórios e não podem ser vazios.
 Campos desconhecidos são erro (protege contra erro de digitação).
 
+### Motivo quando a regra não se aplica (`motivo_quando_nao_aplica`)
+
+Opcional. Diz à UI **por que** uma regra por jogo não foi aplicada quando uma
+condição-chave falha, em vez do genérico “condição não atendida”:
+
+```toml
+[regra.motivo_quando_nao_aplica]
+# condição = motivo (vale sempre que a condição falhar)
+jogo_dlss = "jogo_sem_dlss"
+# condição de lista = { valor encontrado = motivo } (outros valores: genérico)
+arquitetura = { ada = "arquitetura_nao_precisa", blackwell = "arquitetura_nao_precisa" }
+```
+
+- Motivos aceitos: `jogo_sem_dlss`, `arquitetura_nao_precisa`,
+  `sem_tensor_cores`.
+- A chave precisa ser uma condição presente em `quando`. A forma de tabela só
+  vale para condições de lista (`arquitetura`, `jogo_api`, `sincronismo`,
+  `qualidade`); cada chave dela precisa ser um valor aceito pela condição e
+  **fora** da lista (senão a condição nunca falharia com ele). Erros saem como
+  `ErroRegra::MotivoInvalido`.
+- **Padrões** (sem declarar): `jogo_dlss = true` ou `jogo_dlss_min` num jogo
+  sem DLSS → `jogo_sem_dlss`; `tem_tensor_cores = true` numa GPU sem Tensor
+  Cores → `sem_tensor_cores`. Um motivo declarado para a condição substitui o
+  padrão dela.
+- Por que por valor: a regra de Turing falha na arquitetura tanto numa Ada
+  (que não precisa do ajuste) quanto numa Ampere (que tem regra própria).
+  Só o primeiro caso é “arquitetura não precisa”; o segundo fica como
+  condição não atendida (“a regra pede Turing; aqui é Ampere”).
+
 ### Condições (`quando`)
 
 | Condição | Tipo | Casa quando |
@@ -132,6 +161,44 @@ contraditórias detectáveis (`jogo_dlss = false` com `jogo_dlss_min`) são erro
 Entre perfis diferentes não há conflito: o perfil do jogo tem precedência
 sobre o global no próprio driver.
 
+## Explicação por jogo (`plan.resumos`)
+
+Para cada jogo avaliado, `plan.resumos[id]` (`ResumoJogo`, módulo
+`explicacao`) traz:
+
+- `aplicadas`: regras por jogo que gravam no perfil, com as settings de cada
+  uma (as que venceram e não estão travadas);
+- `nao_aplicadas`: regras por jogo que ficaram de fora, com um **motivo
+  estruturado** (`MotivoNaoAplicada`). Uma regra aplicada também aparece aqui
+  se uma setting dela foi travada ou perdeu um conflito;
+- `herda_do_global`: settings do plano global que o perfil do jogo não
+  sobrescreve (a UI mostra “herda N ajustes globais”).
+
+| Motivo | Quando |
+|---|---|
+| `JogoSemDlss` | condição de DLSS falhou num jogo sem DLSS (padrão ou declarado) |
+| `ArquiteturaNaoPrecisa { arquitetura }` | declarado em `motivo_quando_nao_aplica` |
+| `SemTensorCores` | `tem_tensor_cores = true` numa GPU sem Tensor Cores (padrão ou declarado) |
+| `Experimental` | regra experimental que casou (só sugestão) |
+| `BloqueadaPeloTetoDeQualidade { teto, impacto }` | impacto visual acima do teto |
+| `EscolhaDoUsuario { setting }` | setting travada pelo usuário |
+| `ConflitoComRegraMaisEspecifica { regra }` | outra regra (ou `preferencia:<nome>`) venceu a setting |
+| `FatoDesconhecido { fato }` | a condição depende de um fato não detectado (ex.: `jogo_reflex`) |
+| `CondicaoNaoAtendida { condicao, esperado, encontrado }` | qualquer outra falha |
+
+Escolha do motivo quando a regra não casa: `Condicoes::falhas` lista as
+condições que falharam em ordem fixa — **fatos do jogo** (`jogo_dlss`,
+`jogo_dlss_min`, `jogo_api`, `jogo_reflex`, `jogo_anticheat_kernel`), depois
+`tem_tensor_cores`, `tensor_fp8`, `arquitetura`, demais capacidades e por fim
+preferências. Vence a primeira falha com motivo declarado ou padrão; se
+nenhuma tiver, a primeira falha vira `FatoDesconhecido` (fato `None`) ou
+`CondicaoNaoAtendida`. Assim, um jogo sem DLSS diz “jogo sem DLSS” em
+qualquer GPU, e uma GTX 16 diz “sem Tensor Cores” antes de falar de
+arquitetura. `casa` é exatamente `falhas().is_empty()` (teste
+`falhas_e_casa_concordam`).
+
+O núcleo não gera texto: a UI traduz cada motivo (`nvt-ui`, `textos.rs`).
+
 O plano diz só o que gravar. Uma setting que o app já gravou e que deixou de
 estar no plano (preferência trocada, teto de qualidade mais alto, regra que
 deixou de casar ou foi removida) é revertida ao valor original pelo motor
@@ -160,14 +227,18 @@ outras.
 | `dlss-preset-e-ampere` | experimental | por jogo | Idem para RTX 30, só sugestão |
 
 Ada e Blackwell (FP8) e GPUs sem Tensor Cores (GTX 16) não recebem override
-de DLSS.
+de DLSS. As duas regras de DLSS declaram
+`arquitetura = { ada = "arquitetura_nao_precisa", blackwell = "arquitetura_nao_precisa" }`
+em `motivo_quando_nao_aplica`, para a UI explicar por que nada foi aplicado
+numa RTX 40/50.
 
 ## Como contribuir com uma regra
 
 1. Garanta que as settings existem em `regras/settings.toml`. Setting nova
    exige ID e valores com fonte (NVAPI `NvApiDriverSettings.h` ou NPI) — e
    entra na lista permitida do serviço, então justifique no PR.
-2. Escreva a regra com `motivo` e `evidencia`. Evidência boa é medição
+2. Escreva a regra com `motivo` e `evidencia` (e, se uma condição-chave
+   falhar por um motivo que o usuário precisa entender, `motivo_quando_nao_aplica`). Evidência boa é medição
    (PresentMon, mediana de várias capturas, comparada com a variação entre
    sessões) ou fonte oficial. **Não inclua dados pessoais**: nomes de
    usuário, caminhos da sua máquina, IDs de hardware.

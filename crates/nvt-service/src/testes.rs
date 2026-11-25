@@ -911,3 +911,61 @@ fn rv10_perfil_nao_gerenciavel_e_limite_de_travas() {
     assert!(mensagem.contains("limite de 500"), "{mensagem}");
     assert_eq!(n.engine().estado().travadas.len(), nvt_engine::MAX_TRAVADAS);
 }
+
+// ── Jogos e explicação por jogo no protocolo ──────────────────────────────
+
+#[test]
+fn plano_envia_jogos_com_fatos_e_explicacao() {
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let d2 = d.clone();
+    let s2 = s.clone();
+    let mut n = Nucleo::novo(
+        Box::new(move || Ok(d2.clone())),
+        Box::new(|| {
+            let mut v = jogos();
+            v[0].launcher = "Steam".into();
+            v[1].launcher = "Riot".into();
+            v
+        }),
+        Box::new(move || Some(s2.borrow().clone())),
+        Some(dir.0.clone()),
+        cfg(false),
+        t0,
+    )
+    .unwrap();
+    n.iniciar(t0);
+    let p = plano_de(&mut n, Requisicao::ObterPlano, t0);
+    assert_eq!(p.jogos.len(), 2);
+    let w = p.jogos.iter().find(|j| j.nome == "WARDOGS").unwrap();
+    assert_eq!(w.launcher, "Steam");
+    assert_eq!(w.api, "dx12");
+    assert_eq!(w.dlss.as_deref(), Some("310.6"));
+    assert_eq!((w.reflex, w.anticheat_kernel), (Some(true), Some(true)));
+    assert_eq!(w.resumo.aplicadas.len(), 1);
+    assert_eq!(w.resumo.aplicadas[0].regra, "dlss-preset-e-turing");
+    assert!(!w.resumo.aplicadas[0].descricao.is_empty());
+    assert_eq!(w.resumo.aplicadas[0].settings.len(), 3);
+    assert!(!w.resumo.herda_do_global.is_empty());
+    let l = p
+        .jogos
+        .iter()
+        .find(|j| j.nome == "League of Legends")
+        .unwrap();
+    assert_eq!(l.launcher, "Riot");
+    assert_eq!(l.dlss, None);
+    assert!(l.resumo.aplicadas.is_empty());
+    assert!(
+        l.resumo
+            .nao_aplicadas
+            .iter()
+            .all(|r| r.motivo == nvt_ipc::MotivoNaoAplicada::JogoSemDlss),
+        "{:?}",
+        l.resumo.nao_aplicadas
+    );
+    // A resposta inteira passa pelo enquadramento do protocolo.
+    let bytes = nvt_ipc::codificar(&Resposta::Plano(p.clone())).unwrap();
+    assert_eq!(
+        nvt_ipc::decodificar::<Resposta>(&bytes).unwrap(),
+        Resposta::Plano(p)
+    );
+}

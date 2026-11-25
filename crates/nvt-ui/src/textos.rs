@@ -4,8 +4,8 @@
 //! não contém frases de interface, só referências a este módulo.
 
 use nvt_ipc::{
-    AcaoHistorico, AcaoReversao, Aviso, CodigoErro, ImpactoVisual, NivelAviso, Qualidade,
-    Sincronismo, StatusMudanca, codigo_aviso,
+    AcaoHistorico, AcaoReversao, Aviso, CodigoErro, ImpactoVisual, MotivoNaoAplicada, NivelAviso,
+    OrigemPerfil, Qualidade, ResumoJogo, Sincronismo, StatusMudanca, codigo_aviso,
 };
 
 pub const TITULO_JANELA: &str = "nv-tuner";
@@ -72,9 +72,15 @@ pub const COL_API: &str = "API";
 pub const COL_DLSS: &str = "DLSS";
 pub const COL_REFLEX: &str = "Reflex";
 pub const COL_ANTICHEAT: &str = "Anticheat";
-pub const COL_APLICADO: &str = "Aplicado pelo app";
+pub const COL_APLICADO: &str = "O que o app fez";
 pub const ANTICHEAT_KERNEL: &str = "kernel";
-pub const NENHUM_APLICADO: &str = "nada aplicado";
+pub const NENHUM_AJUSTE: &str = "Nenhum ajuste específico";
+pub const EXPERIMENTAL_CURTO: &str = "Experimental: aguardando confirmação";
+pub const DETALHE_APLICADAS: &str = "Regras aplicadas no perfil do jogo";
+pub const DETALHE_NAO_APLICADAS: &str = "Regras não aplicadas";
+pub const DETALHE_HERDA: &str = "Herdado do perfil global";
+pub const DETALHE_NENHUMA: &str = "nenhuma";
+pub const DETALHE_EXPANDIR: &str = "Clique na linha para ver as regras e os motivos.";
 pub const SEM_JOGOS: &str = "Nenhum jogo detectado.";
 pub const PERFIL_DRIVER: &str = "perfil da NVIDIA";
 pub const PERFIL_USUARIO: &str = "perfil existente";
@@ -505,4 +511,227 @@ pub fn nome_valor(valor: &str) -> String {
         s.replace_range(0..1, &maiuscula);
     }
     s
+}
+
+// Explicação por jogo ------------------------------------------------------
+
+/// Origem do perfil do driver de um jogo.
+pub fn origem_perfil(o: OrigemPerfil) -> &'static str {
+    match o {
+        OrigemPerfil::Driver => PERFIL_DRIVER,
+        OrigemPerfil::Usuario => PERFIL_USUARIO,
+        OrigemPerfil::CriadoPeloApp => PERFIL_APP,
+        OrigemPerfil::ACriar => PERFIL_A_CRIAR,
+    }
+}
+
+/// Nome curto de uma regra (para a coluna “O que o app fez”); sem nome
+/// próprio, a descrição da regra (ou o id).
+pub fn nome_regra(id: &str, descricao: &str) -> String {
+    let fixo = match id {
+        "dlss-preset-e-turing" => "Preset E do DLSS (Turing)",
+        "dlss-preset-e-ampere" => "Preset E do DLSS (Ampere)",
+        _ if descricao.is_empty() => id,
+        _ => descricao,
+    };
+    fixo.to_owned()
+}
+
+/// Arquitetura em forma curta (“Ada”, não “Ada Lovelace”).
+fn arquitetura_curta(nome_regra: &str) -> String {
+    match nome_regra {
+        "ada" => "Ada".into(),
+        outra => arquitetura(outra),
+    }
+}
+
+/// Nome legível de uma setting (nome simbólico se não houver).
+pub fn setting_legivel(setting: &str) -> String {
+    nome_setting(setting).map_or_else(|| setting.to_owned(), str::to_owned)
+}
+
+/// Nome legível de uma condição das regras (`quando`).
+pub fn nome_condicao(condicao: &str) -> String {
+    let fixo = match condicao {
+        "arquitetura" => "arquitetura da GPU",
+        "tem_tensor_cores" => "Tensor Cores",
+        "tensor_fp8" => "FP8 nos Tensor Cores",
+        "frame_gen" => "geração de quadros",
+        "mfg" => "geração múltipla de quadros",
+        "rebar_suportado" => "Resizable BAR suportado",
+        "rebar_ativo" => "Resizable BAR ativo",
+        "vram_mb_min" => "VRAM mínima (MB)",
+        "driver_min" => "versão mínima do driver",
+        "refresh_conhecido" => "taxa de atualização do monitor",
+        "jogo_api" => "API gráfica do jogo",
+        "jogo_dlss" => "DLSS no jogo",
+        "jogo_dlss_min" => "versão mínima do DLSS",
+        "jogo_reflex" => "Reflex no jogo",
+        "jogo_anticheat_kernel" => "anticheat de kernel",
+        "sincronismo" => "sincronismo",
+        "qualidade" => "teto de qualidade",
+        "limite_fps_definido" => "limite de FPS",
+        "aplicar" => "valor calculado",
+        outro => outro,
+    };
+    fixo.to_owned()
+}
+
+/// Valor de condição legível (`"true"` → “sim”, `"ampere"` → “Ampere”…).
+fn valor_condicao(v: &str) -> String {
+    v.split(", ")
+        .map(|x| match x {
+            "true" => "sim".to_owned(),
+            "false" => "não".to_owned(),
+            "turing" | "ampere" | "ada" | "blackwell" => arquitetura(x),
+            "desconhecida" => DESCONHECIDO.to_owned(),
+            "dx9" | "dx11" | "dx12" | "vulkan" | "opengl" => api_grafica(x).to_owned(),
+            outro => outro.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ou ")
+}
+
+/// Motivo em poucas palavras (completa “Nenhum ajuste específico — …”).
+pub fn motivo_curto(m: &MotivoNaoAplicada) -> String {
+    match m {
+        MotivoNaoAplicada::JogoSemDlss => "jogo sem DLSS".into(),
+        MotivoNaoAplicada::ArquiteturaNaoPrecisa { arquitetura } => format!(
+            "GPU {} roda o DLSS padrão sem custo extra",
+            arquitetura_curta(arquitetura)
+        ),
+        MotivoNaoAplicada::SemTensorCores => "GPU sem Tensor Cores (sem DLSS)".into(),
+        MotivoNaoAplicada::Experimental => EXPERIMENTAL_CURTO.into(),
+        MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade { teto } => {
+            format!(
+                "bloqueado pelo teto de qualidade “{}”",
+                nome_qualidade(*teto)
+            )
+        }
+        MotivoNaoAplicada::EscolhaDoUsuario { setting } => {
+            format!("você travou “{}”", setting_legivel(setting))
+        }
+        MotivoNaoAplicada::ConflitoComRegraMaisEspecifica { .. } => {
+            "outra regra mais específica prevaleceu".into()
+        }
+        MotivoNaoAplicada::FatoDesconhecido { fato } => {
+            format!("não foi possível detectar: {}", nome_condicao(fato))
+        }
+        MotivoNaoAplicada::CondicaoNaoAtendida { .. } => "condições da regra não atendidas".into(),
+    }
+}
+
+/// Motivo completo (lista expandida de um jogo).
+pub fn motivo_longo(m: &MotivoNaoAplicada) -> String {
+    match m {
+        MotivoNaoAplicada::JogoSemDlss => "O jogo não tem DLSS (nenhum nvngx_dlss.dll \
+            encontrado), então não há preset do DLSS para ajustar."
+            .into(),
+        MotivoNaoAplicada::ArquiteturaNaoPrecisa { arquitetura: a } => match a.as_str() {
+            "ada" | "blackwell" => format!(
+                "GPU {}: o modelo padrão do DLSS já roda com FP8, forçar outro preset não \
+                 ganharia desempenho.",
+                arquitetura(a)
+            ),
+            _ => format!(
+                "GPU {}: esta arquitetura não precisa deste ajuste.",
+                arquitetura(a)
+            ),
+        },
+        MotivoNaoAplicada::SemTensorCores => "A GPU não tem Tensor Cores (GTX 16), então não \
+            roda DLSS."
+            .into(),
+        MotivoNaoAplicada::Experimental => "Experimental: aguardando confirmação por medição \
+            nesta arquitetura. Aparece só como sugestão em Mudanças; não é aplicada."
+            .into(),
+        MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade { teto } => format!(
+            "Bloqueada pelo teto de qualidade “{}”: a regra muda a imagem além do que esse \
+             teto permite (ajuste em Preferências).",
+            nome_qualidade(*teto)
+        ),
+        MotivoNaoAplicada::EscolhaDoUsuario { setting } => format!(
+            "Você mudou “{}” manualmente; o app respeita a sua escolha (destrave em Mudanças \
+             para voltar ao automático).",
+            setting_legivel(setting)
+        ),
+        MotivoNaoAplicada::ConflitoComRegraMaisEspecifica { regra } => {
+            match regra.strip_prefix("preferencia:") {
+                Some(p) => format!("A sua preferência “{p}” prevalece nesta setting."),
+                None => format!(
+                    "Outra regra mais específica (“{regra}”) define a mesma setting e \
+                     prevaleceu."
+                ),
+            }
+        }
+        MotivoNaoAplicada::FatoDesconhecido { fato } => format!(
+            "Depende de “{}”, que a detecção não conseguiu determinar neste jogo.",
+            nome_condicao(fato)
+        ),
+        MotivoNaoAplicada::CondicaoNaoAtendida {
+            condicao,
+            esperado,
+            encontrado,
+        } => format!(
+            "Condição “{}” não atendida: a regra pede {}; aqui é {}.",
+            nome_condicao(condicao),
+            valor_condicao(esperado),
+            valor_condicao(encontrado)
+        ),
+    }
+}
+
+/// Peso de um motivo na escolha do texto curto (menor = mais relevante).
+fn relevancia(m: &MotivoNaoAplicada) -> u8 {
+    match m {
+        MotivoNaoAplicada::Experimental => 0,
+        MotivoNaoAplicada::EscolhaDoUsuario { .. } => 1,
+        MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade { .. } => 2,
+        MotivoNaoAplicada::SemTensorCores => 3,
+        MotivoNaoAplicada::ArquiteturaNaoPrecisa { .. } => 4,
+        MotivoNaoAplicada::JogoSemDlss => 5,
+        MotivoNaoAplicada::FatoDesconhecido { .. } => 6,
+        MotivoNaoAplicada::ConflitoComRegraMaisEspecifica { .. } => 7,
+        MotivoNaoAplicada::CondicaoNaoAtendida { .. } => 8,
+    }
+}
+
+/// Texto curto da coluna “O que o app fez”: as regras aplicadas, ou por que
+/// nada específico foi feito.
+pub fn resumo_curto(r: &ResumoJogo) -> String {
+    if !r.aplicadas.is_empty() {
+        return r
+            .aplicadas
+            .iter()
+            .map(|a| nome_regra(&a.regra, &a.descricao))
+            .collect::<Vec<_>>()
+            .join(" + ");
+    }
+    match r
+        .nao_aplicadas
+        .iter()
+        .map(|n| &n.motivo)
+        .min_by_key(|m| relevancia(m))
+    {
+        None => NENHUM_AJUSTE.into(),
+        Some(MotivoNaoAplicada::Experimental) => EXPERIMENTAL_CURTO.into(),
+        Some(m) => format!("{NENHUM_AJUSTE} — {}", motivo_curto(m)),
+    }
+}
+
+/// “herda N ajustes globais” (vazio se não herda nada).
+pub fn herda_globais(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => "herda 1 ajuste global".into(),
+        n => format!("herda {n} ajustes globais"),
+    }
+}
+
+/// Início da lista de herdados na linha expandida (“Herda N ajustes globais”).
+pub fn herda_globais_lista(n: usize) -> String {
+    let s = herda_globais(n);
+    match s.strip_prefix('h') {
+        Some(resto) => format!("H{resto}"),
+        None => s,
+    }
 }

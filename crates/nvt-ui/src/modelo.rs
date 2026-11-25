@@ -4,7 +4,7 @@
 //! incorpora. A renderização só lê o estado e emite [`Comando`]s.
 
 use nvt_ipc::{
-    AlertaDeriva, Aviso, EntradaHistorico, Estado, ImpactoVisual, JogoIgnorado, Plano,
+    AlertaDeriva, Aviso, EntradaHistorico, Estado, ImpactoVisual, Jogo, JogoIgnorado, Plano,
     Preferencias, Qualidade, Reversao, Sincronismo, StatusMudanca,
 };
 
@@ -68,23 +68,6 @@ pub enum Conexao {
     Servico,
     /// Serviço ausente: dados calculados localmente, somente leitura.
     Visualizacao,
-}
-
-/// Jogo detectado, pronto para exibição.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JogoInfo {
-    pub nome: String,
-    pub launcher: String,
-    pub api: String,
-    /// Versão do DLSS (`Some("")` = tem DLSS, versão desconhecida).
-    pub dlss: Option<String>,
-    pub reflex: Option<bool>,
-    pub anticheat_kernel: Option<bool>,
-    /// Perfil do driver usado pelo jogo.
-    pub perfil: String,
-    pub origem_perfil: &'static str,
-    /// O que o app aplicou no perfil (“setting: valor”), segundo o estado salvo.
-    pub aplicado: Vec<String>,
 }
 
 /// Uma linha da tela de mudanças.
@@ -151,6 +134,8 @@ pub struct Dados {
     pub reversoes: Vec<Reversao>,
     /// Jogos deixados de fora do plano.
     pub ignorados: Vec<JogoIgnorado>,
+    /// Jogos do plano (fatos e explicação), do serviço ou do cálculo local.
+    pub jogos: Vec<Jogo>,
 }
 
 /// Ações que o usuário pode disparar.
@@ -196,8 +181,6 @@ pub enum Evento {
     Servico(Dados),
     /// Serviço ausente; dados locais somente leitura (ou erro ao calculá-los).
     Visualizacao(Result<Dados, String>),
-    /// Jogos detectados localmente (vale nos dois modos).
-    Jogos(Vec<JogoInfo>),
     /// Serviço com versão de protocolo diferente (mensagem com a instrução
     /// de atualizar) ou `None` quando deixa de valer.
     Incompativel(Option<String>),
@@ -251,7 +234,6 @@ pub struct EstadoUi {
     pub tela: Tela,
     pub conexao: Conexao,
     pub dados: Dados,
-    pub jogos: Option<Vec<JogoInfo>>,
     /// Erro ao montar o modo de visualização local.
     pub erro_local: Option<String>,
     /// Serviço de outra versão do protocolo: instrução para atualizar.
@@ -276,7 +258,6 @@ impl EstadoUi {
             tela,
             conexao: Conexao::Conectando,
             dados: Dados::default(),
-            jogos: None,
             erro_local: None,
             incompativel: None,
             mensagem: None,
@@ -343,15 +324,11 @@ impl EstadoUi {
         self.pode_escrever() && self.restauracao_bloqueada().is_none()
     }
 
-    /// Jogos com o que foi aplicado em cada perfil. Com o serviço, o plano
-    /// dele (mudanças aplicadas ou já no valor) prevalece sobre o estado local.
-    pub fn jogos(&self) -> Vec<JogoInfo> {
-        let mut jogos = self.jogos.clone().unwrap_or_default();
-        if self.conexao == Conexao::Servico {
-            for j in &mut jogos {
-                j.aplicado = aplicado_no_perfil(&self.dados.grupos, &j.perfil);
-            }
-        }
+    /// Jogos em ordem alfabética: do plano do serviço quando conectado, do
+    /// cálculo local no modo de visualização (mesmo formato).
+    pub fn jogos(&self) -> Vec<Jogo> {
+        let mut jogos = self.dados.jogos.clone();
+        jogos.sort_by_key(|j| j.nome.to_lowercase());
         jogos
     }
 
@@ -383,7 +360,6 @@ impl EstadoUi {
                     self.rascunho = self.preferencias_atuais();
                 }
             }
-            Evento::Jogos(j) => self.jogos = Some(j),
             Evento::Incompativel(m) => self.incompativel = m,
             Evento::Ocupado(c) => {
                 self.ocupado = Some(c);
@@ -405,24 +381,32 @@ impl EstadoUi {
     }
 }
 
-/// O que o serviço aplicou (ou já encontrou no valor) num perfil.
-pub fn aplicado_no_perfil(grupos: &[GrupoMudancas], perfil: &str) -> Vec<String> {
+/// Item do plano de uma setting num perfil (para mostrar valor e situação
+/// das settings de uma regra aplicada).
+pub fn item_no_perfil<'a>(
+    grupos: &'a [GrupoMudancas],
+    perfil: &str,
+    setting: &str,
+) -> Option<&'a ItemMudanca> {
     grupos
         .iter()
         .filter(|g| g.perfil.eq_ignore_ascii_case(perfil))
         .flat_map(|g| &g.itens)
-        .filter(|i| {
-            !i.experimental
-                && matches!(i.status, StatusMudanca::Aplicada | StatusMudanca::JaNoValor)
-        })
-        .map(|i| {
-            format!(
-                "{}: {}",
-                i.nome_legivel,
-                i.depois.as_deref().unwrap_or(textos::NAO_DEFINIDO)
-            )
-        })
-        .collect()
+        .find(|i| !i.experimental && i.setting == setting)
+}
+
+/// Linha de uma setting aplicada: “Nome: valor (situação)”.
+pub fn linha_setting(grupos: &[GrupoMudancas], perfil: &str, setting: &str) -> String {
+    let nome = textos::setting_legivel(setting);
+    match item_no_perfil(grupos, perfil, setting) {
+        Some(i) => format!(
+            "{}: {} ({})",
+            i.nome_legivel,
+            i.depois.as_deref().unwrap_or(textos::NAO_DEFINIDO),
+            textos::status_mudanca(i.status)
+        ),
+        None => nome,
+    }
 }
 
 /// Converte o plano do serviço em grupos e itens respeitados.
@@ -535,7 +519,10 @@ pub fn formatar_data(unix: u64) -> String {
 #[cfg(test)]
 mod testes {
     use super::*;
-    use nvt_ipc::{CodigoErro, Mudanca, PlanoPerfil};
+    use nvt_ipc::{
+        CodigoErro, MotivoNaoAplicada, Mudanca, OrigemPerfil, PlanoPerfil, RegraAplicada,
+        RegraNaoAplicada, ResumoJogo,
+    };
 
     fn mudanca(setting: &str, status: StatusMudanca) -> Mudanca {
         Mudanca {
@@ -579,6 +566,7 @@ mod testes {
             ],
             reversoes: vec![],
             ignorados: vec![],
+            jogos: vec![],
         }
     }
 
@@ -647,13 +635,17 @@ mod testes {
     }
 
     #[test]
-    fn aplicado_no_perfil_usa_aplicadas_e_ja_no_valor() {
+    fn linha_de_setting_mostra_valor_e_situacao() {
         let (g, _) = grupos_do_plano(&plano());
         assert_eq!(
-            aplicado_no_perfil(&g, "wardogs"),
-            vec!["Nome dlss_preset: Ligado".to_string()]
+            linha_setting(&g, "wardogs", "dlss_preset"),
+            "Nome dlss_preset: Ligado (já no valor)"
         );
-        assert!(aplicado_no_perfil(&g, "outro").is_empty());
+        // Fora do plano: só o nome legível.
+        assert_eq!(
+            linha_setting(&g, "outro", "dlss_preset"),
+            "DLSS: preset forçado"
+        );
     }
 
     #[test]
@@ -733,33 +725,164 @@ mod testes {
         assert!(!ui.rascunho_alterado());
     }
 
-    #[test]
-    fn jogos_com_servico_usam_o_plano() {
-        let mut ui = EstadoUi::new(Tela::Jogos);
-        let jogo = JogoInfo {
-            nome: "WARDOGS".into(),
+    fn jogo(nome: &str, resumo: ResumoJogo) -> Jogo {
+        Jogo {
+            nome: nome.into(),
+            perfil: nome.into(),
+            origem_perfil: OrigemPerfil::Usuario,
             launcher: "Steam".into(),
-            api: "DirectX 12".into(),
-            dlss: Some("3.7".into()),
+            api: "dx12".into(),
+            dlss: Some("310.6".into()),
             reflex: Some(true),
             anticheat_kernel: None,
-            perfil: "WARDOGS".into(),
-            origem_perfil: textos::PERFIL_USUARIO,
-            aplicado: vec!["local".into()],
-        };
-        ui.aplicar(Evento::Jogos(vec![jogo]));
-        ui.aplicar(Evento::Visualizacao(Ok(Dados::default())));
-        assert_eq!(ui.jogos()[0].aplicado, vec!["local".to_string()]);
-        let (grupos, respeitadas) = grupos_do_plano(&plano());
+            resumo,
+        }
+    }
+
+    #[test]
+    fn jogos_vem_do_servico_ou_do_calculo_local() {
+        let mut ui = EstadoUi::new(Tela::Jogos);
+        ui.aplicar(Evento::Visualizacao(Ok(Dados {
+            jogos: vec![jogo("local", ResumoJogo::default())],
+            ..Default::default()
+        })));
+        assert_eq!(ui.jogos()[0].nome, "local");
         ui.aplicar(Evento::Servico(Dados {
-            grupos,
-            respeitadas,
+            jogos: vec![
+                jogo("Zeta", ResumoJogo::default()),
+                jogo("alfa", ResumoJogo::default()),
+            ],
             ..Default::default()
         }));
+        let nomes: Vec<String> = ui.jogos().into_iter().map(|j| j.nome).collect();
+        assert_eq!(nomes, ["alfa", "Zeta"], "do serviço, em ordem alfabética");
+    }
+
+    fn nao(regra: &str, motivo: MotivoNaoAplicada) -> RegraNaoAplicada {
+        RegraNaoAplicada {
+            regra: regra.into(),
+            descricao: format!("descrição de {regra}"),
+            motivo,
+        }
+    }
+
+    #[test]
+    fn textos_da_coluna_o_que_o_app_fez() {
+        let turing = ResumoJogo {
+            aplicadas: vec![RegraAplicada {
+                regra: "dlss-preset-e-turing".into(),
+                descricao: "DLSS-SR com preset E".into(),
+                settings: vec!["dlss_preset".into()],
+            }],
+            nao_aplicadas: vec![nao(
+                "dlss-preset-e-ampere",
+                MotivoNaoAplicada::CondicaoNaoAtendida {
+                    condicao: "arquitetura".into(),
+                    esperado: "ampere".into(),
+                    encontrado: "turing".into(),
+                },
+            )],
+            herda_do_global: vec!["energia".into(); 12],
+        };
+        assert_eq!(textos::resumo_curto(&turing), "Preset E do DLSS (Turing)");
+        assert_eq!(textos::herda_globais(12), "herda 12 ajustes globais");
+        assert_eq!(textos::herda_globais(1), "herda 1 ajuste global");
+        assert_eq!(textos::herda_globais(0), "");
+        assert_eq!(textos::herda_globais_lista(2), "Herda 2 ajustes globais");
         assert_eq!(
-            ui.jogos()[0].aplicado,
-            vec!["Nome dlss_preset: Ligado".to_string()]
+            textos::motivo_longo(&turing.nao_aplicadas[0].motivo),
+            "Condição “arquitetura da GPU” não atendida: a regra pede Ampere; aqui é Turing."
         );
+
+        let ada = MotivoNaoAplicada::ArquiteturaNaoPrecisa {
+            arquitetura: "ada".into(),
+        };
+        let r = ResumoJogo {
+            nao_aplicadas: vec![nao("a", ada.clone()), nao("b", ada.clone())],
+            ..Default::default()
+        };
+        assert_eq!(
+            textos::resumo_curto(&r),
+            "Nenhum ajuste específico — GPU Ada roda o DLSS padrão sem custo extra"
+        );
+        assert_eq!(
+            textos::motivo_longo(&ada),
+            "GPU Ada Lovelace: o modelo padrão do DLSS já roda com FP8, forçar outro preset \
+             não ganharia desempenho."
+        );
+
+        let sem_dlss = ResumoJogo {
+            nao_aplicadas: vec![nao("a", MotivoNaoAplicada::JogoSemDlss)],
+            ..Default::default()
+        };
+        assert_eq!(
+            textos::resumo_curto(&sem_dlss),
+            "Nenhum ajuste específico — jogo sem DLSS"
+        );
+
+        // Experimental vence o motivo de arquitetura da outra regra.
+        let ampere = ResumoJogo {
+            nao_aplicadas: vec![
+                nao("ampere", MotivoNaoAplicada::Experimental),
+                nao(
+                    "turing",
+                    MotivoNaoAplicada::CondicaoNaoAtendida {
+                        condicao: "arquitetura".into(),
+                        esperado: "turing".into(),
+                        encontrado: "ampere".into(),
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            textos::resumo_curto(&ampere),
+            "Experimental: aguardando confirmação"
+        );
+        assert!(
+            textos::motivo_longo(&MotivoNaoAplicada::Experimental)
+                .contains("aguardando confirmação por medição")
+        );
+
+        assert_eq!(
+            textos::resumo_curto(&ResumoJogo {
+                nao_aplicadas: vec![nao("a", MotivoNaoAplicada::SemTensorCores)],
+                ..Default::default()
+            }),
+            "Nenhum ajuste específico — GPU sem Tensor Cores (sem DLSS)"
+        );
+        let teto = MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade {
+            teto: Qualidade::Qualidade,
+        };
+        assert_eq!(
+            textos::motivo_curto(&teto),
+            "bloqueado pelo teto de qualidade “Fidelidade”"
+        );
+        let travada = MotivoNaoAplicada::EscolhaDoUsuario {
+            setting: "dlss_preset".into(),
+        };
+        assert_eq!(
+            textos::motivo_curto(&travada),
+            "você travou “DLSS: preset forçado”"
+        );
+        assert!(textos::motivo_longo(&travada).contains("destrave em Mudanças"));
+        assert_eq!(
+            textos::motivo_curto(&MotivoNaoAplicada::FatoDesconhecido {
+                fato: "jogo_reflex".into()
+            }),
+            "não foi possível detectar: Reflex no jogo"
+        );
+        assert!(
+            textos::motivo_longo(&MotivoNaoAplicada::ConflitoComRegraMaisEspecifica {
+                regra: "preferencia:sincronismo".into()
+            })
+            .contains("preferência “sincronismo”")
+        );
+        assert_eq!(
+            textos::resumo_curto(&ResumoJogo::default()),
+            "Nenhum ajuste específico"
+        );
+        assert_eq!(textos::COL_APLICADO, "O que o app fez");
     }
 
     #[test]

@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 use crate::capabilities::Capabilities;
 use crate::catalogo::{Catalogo, PreferenciaGovernante};
+use crate::explicacao::{MotivoNaoAplicada, RegraAplicada, RegraNaoAplicada, ResumoJogo};
 use crate::facts::GameFacts;
 use crate::plan::{Descarte, Origem, Plan, Respeitada, SettingChange, Sugestao};
 use crate::preferences::{Alvo, Preferences};
@@ -43,6 +44,20 @@ pub fn avaliar(
     let teto = prefs.qualidade.impacto_maximo();
     let mut plan = Plan::default();
     let mut candidatos: BTreeMap<(Alvo, String), Vec<Candidato>> = BTreeMap::new();
+    // Explicação por jogo: motivos de regras por jogo que ficaram de fora.
+    let mut nao_aplicadas: BTreeMap<String, Vec<RegraNaoAplicada>> = BTreeMap::new();
+    let mut nao = |alvo: &Alvo, regra: &str, motivo: MotivoNaoAplicada| {
+        if let Alvo::Jogo(id) = alvo {
+            let lista = nao_aplicadas.entry(id.clone()).or_default();
+            let item = RegraNaoAplicada {
+                regra: regra.to_owned(),
+                motivo,
+            };
+            if !lista.contains(&item) {
+                lista.push(item);
+            }
+        }
+    };
 
     for regra in &conjunto.regras {
         let alvos: Vec<(Alvo, Option<&GameFacts>)> = match regra.escopo {
@@ -54,9 +69,25 @@ pub fn avaliar(
         };
         for (alvo, jogo) in alvos {
             if !regra.quando.casa(caps, jogo, prefs) {
+                if jogo.is_some() {
+                    let falhas = regra.quando.falhas(caps, jogo, prefs);
+                    nao(
+                        &alvo,
+                        &regra.id,
+                        regra.motivo_nao_casou(&falhas, caps.arquitetura),
+                    );
+                }
                 continue;
             }
             if regra.impacto_visual > teto {
+                nao(
+                    &alvo,
+                    &regra.id,
+                    MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade {
+                        teto: prefs.qualidade,
+                        impacto: regra.impacto_visual,
+                    },
+                );
                 plan.descartes.push(Descarte {
                     regra: Some(regra.id.clone()),
                     alvo,
@@ -69,9 +100,22 @@ pub fn avaliar(
                 continue;
             }
             let mudancas = resolver(regra, caps, catalogo, &alvo, &mut plan.descartes);
+            if mudancas.is_empty() {
+                // Todas as ações descartadas (ex.: refresh − margem fora da faixa).
+                nao(
+                    &alvo,
+                    &regra.id,
+                    MotivoNaoAplicada::CondicaoNaoAtendida {
+                        condicao: "aplicar".into(),
+                        esperado: "valor aceito pelo catálogo".into(),
+                        encontrado: "fora da faixa".into(),
+                    },
+                );
+            }
             match regra.status {
                 Status::Experimental => {
                     if !mudancas.is_empty() {
+                        nao(&alvo, &regra.id, MotivoNaoAplicada::Experimental);
                         plan.experimentais.push(Sugestao {
                             regra: regra.id.clone(),
                             alvo,
@@ -136,6 +180,8 @@ pub fn avaliar(
         }
     }
 
+    // Settings aplicadas por (jogo, regra).
+    let mut aplicadas: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
     for ((alvo, setting), mut cands) in candidatos {
         cands.sort_by(|a, b| b.chave.cmp(&a.chave));
         let mut iter = cands.into_iter();
@@ -143,7 +189,17 @@ pub fn avaliar(
             continue;
         };
         let nome_vencedor = descrever(&vencedor.mudanca.origem);
+        let id_vencedor = id_origem(&vencedor.mudanca.origem);
         for perdedor in iter {
+            if let Some(r) = perdedor.mudanca.origem.regra() {
+                nao(
+                    &alvo,
+                    r,
+                    MotivoNaoAplicada::ConflitoComRegraMaisEspecifica {
+                        regra: id_vencedor.clone(),
+                    },
+                );
+            }
             plan.descartes.push(Descarte {
                 regra: perdedor.mudanca.origem.regra().map(str::to_owned),
                 alvo: alvo.clone(),
@@ -152,6 +208,13 @@ pub fn avaliar(
             });
         }
         if prefs.travada(&alvo, &setting) {
+            nao(
+                &alvo,
+                &id_vencedor,
+                MotivoNaoAplicada::EscolhaDoUsuario {
+                    setting: setting.clone(),
+                },
+            );
             plan.respeitadas.push(Respeitada {
                 alvo,
                 mudanca: vencedor.mudanca,
@@ -160,11 +223,60 @@ pub fn avaliar(
         }
         match alvo {
             Alvo::Global => plan.global.push(vencedor.mudanca),
-            Alvo::Jogo(id) => plan.por_jogo.entry(id).or_default().push(vencedor.mudanca),
+            Alvo::Jogo(id) => {
+                aplicadas
+                    .entry(id.clone())
+                    .or_default()
+                    .entry(id_vencedor)
+                    .or_default()
+                    .push(setting);
+                plan.por_jogo.entry(id).or_default().push(vencedor.mudanca);
+            }
         }
     }
 
+    for j in jogos {
+        let proprias: Vec<&str> = plan
+            .mudancas(&Alvo::Jogo(j.id.clone()))
+            .iter()
+            .map(|m| m.setting.as_str())
+            .collect();
+        let herda_do_global = plan
+            .global
+            .iter()
+            .filter(|m| !proprias.contains(&m.setting.as_str()))
+            .map(|m| m.setting.clone())
+            .collect();
+        let mut nao_aplicadas = nao_aplicadas.remove(&j.id).unwrap_or_default();
+        nao_aplicadas.sort_by(|a, b| a.regra.cmp(&b.regra));
+        let aplicadas = aplicadas
+            .remove(&j.id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(regra, settings)| RegraAplicada { regra, settings })
+            .collect();
+        plan.resumos.insert(
+            j.id.clone(),
+            ResumoJogo {
+                aplicadas,
+                nao_aplicadas,
+                herda_do_global,
+            },
+        );
+    }
+
     plan
+}
+
+/// Id estável da origem: o id da regra ou `preferencia:<nome>`.
+fn id_origem(origem: &Origem) -> String {
+    match origem.regra() {
+        Some(r) => r.to_owned(),
+        None => match origem {
+            Origem::Preferencia { preferencia, .. } => format!("preferencia:{preferencia}"),
+            Origem::Regra { id } => id.clone(),
+        },
+    }
 }
 
 fn descrever(origem: &Origem) -> String {

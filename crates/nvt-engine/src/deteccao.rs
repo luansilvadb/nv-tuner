@@ -12,6 +12,8 @@ use crate::store::DriverStore;
 pub struct JogoEntrada {
     /// Nome no launcher (vira nome do perfil se o app precisar criá-lo).
     pub nome: String,
+    /// Launcher onde o jogo foi encontrado (ex.: `Steam`); vazio se desconhecido.
+    pub launcher: String,
     /// Nome do arquivo do exe principal (ex.: `League of Legends.exe`).
     pub exe: String,
     pub api: Api,
@@ -26,6 +28,7 @@ impl JogoEntrada {
     pub fn new(nome: impl Into<String>, exe: impl Into<String>) -> Self {
         Self {
             nome: nome.into(),
+            launcher: String::new(),
             exe: exe.into(),
             api: Api::Desconhecida,
             dlss: None,
@@ -89,6 +92,7 @@ pub fn jogo_de_traits(j: &DetectedGame, t: &GameTraits) -> Option<JogoEntrada> {
     let anticheat_kernel = t.anticheat_kernel().then_some(true);
     Some(JogoEntrada {
         nome: j.nome.clone(),
+        launcher: j.launcher.to_string(),
         exe: exe.into_owned(),
         api,
         dlss,

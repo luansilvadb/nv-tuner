@@ -77,7 +77,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 ## Envelope e versão
 
 ```json
-{"versao": 2, "corpo": { "tipo": "...", ... }}
+{"versao": 3, "corpo": { "tipo": "...", ... }}
 ```
 
 - `versao` é conferida **antes** de interpretar `corpo`. Versão diferente de
@@ -98,6 +98,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 |---|---|
 | 1 | protocolo inicial |
 | 2 | `estado.avisos`; `plano.reversoes` e `plano.ignorados` |
+| 3 | `plano.jogos` (fatos por jogo e explicação: regras aplicadas e não aplicadas com motivo, herança do global) |
 
 ## Requisições (`corpo.tipo`)
 
@@ -127,7 +128,7 @@ validação semântica (lista permitida, existência do perfil) é do serviço.
 Exemplo:
 
 ```json
-{"versao":2,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
+{"versao":3,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
 ```
 
 ## Respostas (`corpo.tipo`)
@@ -135,7 +136,7 @@ Exemplo:
 | Tipo        | Conteúdo                                                        |
 |-------------|-----------------------------------------------------------------|
 | `estado`    | `versao_servico`, `driver`, `gpu` (com `capacidades`), `preferencias`, `jogos`, `ultima_aplicacao`, `alertas_deriva`, `avisos` |
-| `plano`     | `gerado_unix`, `perfis[]` → `perfil`, `nome_legivel`, `mudancas[]`; `reversoes[]`; `ignorados[]` |
+| `plano`     | `gerado_unix`, `perfis[]` → `perfil`, `nome_legivel`, `mudancas[]`; `reversoes[]`; `ignorados[]`; `jogos[]` |
 | `historico` | `entradas[]`                                                    |
 | `ok`        | —                                                               |
 | `erro`      | `codigo`, `mensagem`                                            |
@@ -198,6 +199,54 @@ saiu do plano) e `status` (`pendente` no `obter_plano`; `aplicada` ou
 `ignorados[]`: jogos deixados de fora por um erro só deles (nome/executável
 inválido, falha da NVAPI no perfil): `nome`, `exe` (nome do arquivo) e
 `motivo`. Os demais jogos e o perfil global seguem.
+
+### Jogos (`plano.jogos`)
+
+Jogos do plano (os ignorados ficam em `ignorados`), com os fatos detectados e
+o que o app faz em cada um:
+
+| Campo | Conteúdo |
+|---|---|
+| `nome`, `perfil` | nome no launcher; perfil do driver (existente ou a criar) |
+| `origem_perfil` | `driver` \| `usuario` \| `criado_pelo_app` \| `a_criar` |
+| `launcher` | ex.: `Steam`, `Riot` (vazio se desconhecido) |
+| `api` | `dx9` \| `dx11` \| `dx12` \| `vulkan` \| `opengl` \| `desconhecida` |
+| `dlss` | versão; `null` = sem DLSS; `""` = DLSS com versão ilegível |
+| `reflex`, `anticheat_kernel` | `true`/`false`; `null` = não determinado |
+| `resumo.aplicadas[]` | `regra`, `descricao`, `settings[]` (nomes simbólicos) |
+| `resumo.nao_aplicadas[]` | `regra`, `descricao`, `motivo` |
+| `resumo.herda_do_global[]` | settings do perfil global que o jogo herda |
+
+`motivo` é um objeto com `tipo` (a UI gera o texto; semântica em
+`docs/regras.md`, “Explicação por jogo”):
+
+| `tipo` | Campos |
+|---|---|
+| `jogo_sem_dlss` | — |
+| `arquitetura_nao_precisa` | `arquitetura` (`ada`, `blackwell`…) |
+| `sem_tensor_cores` | — |
+| `experimental` | — |
+| `bloqueada_pelo_teto_de_qualidade` | `teto` (`desempenho` \| `equilibrado` \| `qualidade`) |
+| `escolha_do_usuario` | `setting` |
+| `conflito_com_regra_mais_especifica` | `regra` (id ou `preferencia:<nome>`) |
+| `fato_desconhecido` | `fato` (nome da condição, ex.: `jogo_reflex`) |
+| `condicao_nao_atendida` | `condicao`, `esperado`, `encontrado` (forma do TOML) |
+
+Exemplo:
+
+```json
+{"nome":"WARDOGS","perfil":"WARDOGS","origem_perfil":"driver","launcher":"Steam",
+ "api":"dx12","dlss":"310.6","reflex":true,"anticheat_kernel":true,
+ "resumo":{"aplicadas":[{"regra":"dlss-preset-e-turing","descricao":"…",
+   "settings":["dlss_override","dlss_perfil_preset","dlss_preset"]}],
+  "nao_aplicadas":[{"regra":"dlss-preset-e-ampere","descricao":"…",
+   "motivo":{"tipo":"condicao_nao_atendida","condicao":"arquitetura",
+             "esperado":"ampere","encontrado":"turing"}}],
+  "herda_do_global":["aa_modo","af_modo","…"]}}
+```
+
+O serviço monta a lista a partir do `Diff` (`nucleo::jogos_ipc`); o modo de
+visualização da UI faz a mesma conversão localmente (`local::jogos_ipc`).
 
 Datas são segundos desde a época Unix (UTC).
 
@@ -268,7 +317,8 @@ estão em `AU` e ficam sem acesso. O cliente abre o pipe pedindo exatamente
 ## Testes
 
 - Unitários: ida e volta de todas as requisições e respostas, formato JSON
-  estável (inclusive de avisos, reversões e jogos ignorados), ordenação dos
+  estável (inclusive de avisos, reversões, jogos ignorados, jogos e todos os
+  motivos de regra não aplicada; plano da versão 2 recusado), ordenação dos
   avisos e `restauracao_bloqueada`, validação de forma, enquadramento
   (quadro truncado, tamanho acima do limite na leitura e na escrita, versão
   errada, envelope malformado).

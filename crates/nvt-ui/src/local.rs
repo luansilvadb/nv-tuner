@@ -21,15 +21,16 @@ use nvt_drs::{
 };
 use nvt_engine::{
     AcaoReversao as AcaoMotor, Armazem, CodigoAviso, Diff, DriverStore, DrsReal, Engine,
-    JogoEntrada, MudancaPlanejada, OrigemPerfil, OrigemRegistro, PerfilEncontrado, VERSAO_ESTADO,
+    MudancaPlanejada, OrigemPerfil, OrigemRegistro, PerfilEncontrado, VERSAO_ESTADO,
 };
 use nvt_ipc::{
     AcaoHistorico, AcaoReversao, AlertaDeriva, Aplicacao, Aviso, Capacidades, Driver,
-    EntradaHistorico, Estado, Gpu, ImpactoVisual, JogoIgnorado, NivelAviso, Preferencias,
-    Qualidade, Reversao, Sincronismo, StatusMudanca, codigo_aviso,
+    EntradaHistorico, Estado, Gpu, ImpactoVisual, Jogo, JogoIgnorado, MotivoNaoAplicada,
+    NivelAviso, OrigemPerfil as OrigemPerfilIpc, Preferencias, Qualidade, RegraAplicada,
+    RegraNaoAplicada, ResumoJogo, Reversao, Sincronismo, StatusMudanca, codigo_aviso,
 };
 
-use crate::modelo::{Dados, GrupoMudancas, ItemMudanca, JogoInfo, Respeitada, ler_iso};
+use crate::modelo::{Dados, GrupoMudancas, ItemMudanca, Respeitada, ler_iso};
 use crate::textos;
 
 /// Limite de entradas do histórico exibidas.
@@ -55,7 +56,12 @@ impl<S: DriverStore> DriverStore for SomenteLeitura<S> {
         self.0.versao_driver()
     }
     fn gpus(&self) -> ResultadoDrs<Vec<GpuInfo>> {
-        self.0.gpus()
+        let gpus = self.0.gpus()?;
+        #[cfg(debug_assertions)]
+        if let Some(g) = gpu_simulada() {
+            return Ok(vec![g]);
+        }
+        Ok(gpus)
     }
     fn perfil_do_exe(&self, exe: &str) -> ResultadoDrs<Option<PerfilEncontrado>> {
         self.0.perfil_do_exe(exe)
@@ -89,39 +95,53 @@ impl<S: DriverStore> DriverStore for SomenteLeitura<S> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Detecção
-// ---------------------------------------------------------------------------
+/// Variável de ambiente que simula outra GPU no modo de visualização (só em
+/// build de depuração, para testes e capturas): `ada`, `ampere`,
+/// `blackwell`, `turing` ou `gtx16`. O driver real continua sendo lido; só a
+/// GPU informada ao motor muda. Nada é gravado (o modo é somente leitura).
+#[cfg(debug_assertions)]
+pub const VAR_SIMULAR_GPU: &str = "NVT_UI_SIMULAR_GPU";
 
-/// Jogo detectado com o launcher (que `nvt_engine::jogos_da_maquina` descarta).
-struct Detectado {
-    launcher: String,
-    entrada: JogoEntrada,
+/// GPU simulada por [`VAR_SIMULAR_GPU`], se definida e conhecida.
+#[cfg(debug_assertions)]
+fn gpu_simulada() -> Option<GpuInfo> {
+    gpu_simulada_de(&std::env::var(VAR_SIMULAR_GPU).ok()?)
 }
 
-fn detectar() -> Vec<Detectado> {
-    let rel = nvt_detect::varrer_bibliotecas();
-    let servicos = nvt_detect::ServicosSistema::ler();
-    rel.jogos
-        .iter()
-        .filter_map(|j| {
-            let t = nvt_detect::analisar_jogo(j, &servicos);
-            nvt_engine::jogo_de_traits(j, &t).map(|entrada| Detectado {
-                launcher: j.launcher.to_string(),
-                entrada,
-            })
-        })
-        .collect()
-}
-
-/// Resultado do cálculo local.
-pub struct Local {
-    pub dados: Dados,
-    pub jogos: Vec<JogoInfo>,
+#[cfg(debug_assertions)]
+pub fn gpu_simulada_de(nome: &str) -> Option<GpuInfo> {
+    let (architecture, implementation, nome, vram_mb) = match nome {
+        "turing" => (
+            0x160,
+            0x06,
+            "NVIDIA GeForce RTX 2060 SUPER (simulada)",
+            8192,
+        ),
+        "gtx16" => (
+            0x160,
+            0x08,
+            "NVIDIA GeForce GTX 1660 SUPER (simulada)",
+            6144,
+        ),
+        "ampere" => (0x170, 0x04, "NVIDIA GeForce RTX 3060 Ti (simulada)", 8192),
+        "ada" => (0x190, 0x06, "NVIDIA GeForce RTX 4060 Ti (simulada)", 8192),
+        "blackwell" => (0x1B0, 0x06, "NVIDIA GeForce RTX 5070 (simulada)", 12288),
+        _ => return None,
+    };
+    Some(GpuInfo {
+        index: 0,
+        name: nome.into(),
+        arch: Some(nvt_drs::ArchInfo {
+            architecture,
+            implementation,
+            revision: 0,
+        }),
+        vram_kib: Some(vram_mb * 1024),
+    })
 }
 
 /// Roda o pipeline local somente leitura.
-pub fn calcular() -> Result<Local, String> {
+pub fn calcular() -> Result<Dados, String> {
     let api = NvApi::load().map_err(|e| textos::erro_local(&e.to_string()))?;
     let store = DrsReal::abrir(&api).map_err(|e| textos::erro_local(&e.to_string()))?;
     let agora = agora_unix();
@@ -138,8 +158,7 @@ pub fn calcular() -> Result<Local, String> {
     }
     let engine = Engine::new(SomenteLeitura(store), armazem)
         .map_err(|e| textos::erro_local(&e.to_string()))?;
-    let detectados = detectar();
-    let entradas: Vec<JogoEntrada> = detectados.iter().map(|d| d.entrada.clone()).collect();
+    let (entradas, _) = nvt_engine::jogos_da_maquina();
     let diff = engine
         .planejar(&entradas)
         .map_err(|e| textos::erro_local(&e.to_string()))?;
@@ -159,8 +178,8 @@ pub fn calcular() -> Result<Local, String> {
     if let Some(e) = &mut dados.estado {
         e.avisos = avisos;
     }
-    let jogos = montar_jogos(&engine, &diff, &detectados);
-    Ok(Local { dados, jogos })
+    dados.jogos = jogos_ipc(&engine, &diff);
+    Ok(dados)
 }
 
 fn agora_unix() -> u64 {
@@ -608,6 +627,7 @@ fn montar_dados<S: DriverStore>(
         historico,
         reversoes: reversoes(e, diff),
         ignorados: ignorados(diff),
+        jogos: Vec::new(),
     }
 }
 
@@ -657,47 +677,72 @@ pub fn ignorados(diff: &Diff) -> Vec<JogoIgnorado> {
         .collect()
 }
 
-fn origem_perfil(o: OrigemPerfil) -> &'static str {
-    match o {
-        OrigemPerfil::Driver => textos::PERFIL_DRIVER,
-        OrigemPerfil::Usuario => textos::PERFIL_USUARIO,
-        OrigemPerfil::CriadoPeloApp => textos::PERFIL_APP,
-        OrigemPerfil::ACriar => textos::PERFIL_A_CRIAR,
-    }
-}
-
-fn montar_jogos<S: DriverStore>(
-    e: &Engine<S>,
-    diff: &Diff,
-    detectados: &[Detectado],
-) -> Vec<JogoInfo> {
-    let mut jogos: Vec<JogoInfo> = diff
-        .jogos
+/// Jogos do diff (fatos, perfil e explicação) no formato do protocolo, como
+/// o serviço os envia (`nvt-service`, `nucleo::jogos_ipc`).
+pub fn jogos_ipc<S: DriverStore>(e: &Engine<S>, diff: &Diff) -> Vec<Jogo> {
+    use nvt_core::MotivoNaoAplicada as M;
+    let regras = &e.regras().regras;
+    let descricao = |id: &str| {
+        regras
+            .iter()
+            .find(|r| r.id == id)
+            .map_or_else(String::new, |r| r.descricao.clone())
+    };
+    let motivo = |m: &M| match m {
+        M::JogoSemDlss => MotivoNaoAplicada::JogoSemDlss,
+        M::ArquiteturaNaoPrecisa { arquitetura } => MotivoNaoAplicada::ArquiteturaNaoPrecisa {
+            arquitetura: arquitetura.nome_regra().to_owned(),
+        },
+        M::SemTensorCores => MotivoNaoAplicada::SemTensorCores,
+        M::Experimental => MotivoNaoAplicada::Experimental,
+        M::BloqueadaPeloTetoDeQualidade { teto, .. } => {
+            MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade {
+                teto: preferencias_ipc(&nvt_core::Preferences {
+                    qualidade: *teto,
+                    ..Default::default()
+                })
+                .qualidade,
+            }
+        }
+        M::EscolhaDoUsuario { setting } => MotivoNaoAplicada::EscolhaDoUsuario {
+            setting: setting.clone(),
+        },
+        M::ConflitoComRegraMaisEspecifica { regra } => {
+            MotivoNaoAplicada::ConflitoComRegraMaisEspecifica {
+                regra: regra.clone(),
+            }
+        }
+        M::FatoDesconhecido { fato } => MotivoNaoAplicada::FatoDesconhecido { fato: fato.clone() },
+        M::CondicaoNaoAtendida {
+            condicao,
+            esperado,
+            encontrado,
+        } => MotivoNaoAplicada::CondicaoNaoAtendida {
+            condicao: condicao.clone(),
+            esperado: esperado.clone(),
+            encontrado: encontrado.clone(),
+        },
+    };
+    diff.jogos
         .iter()
         .map(|j| {
-            let launcher = detectados
-                .iter()
-                .find(|d| d.entrada == j.entrada)
-                .map(|d| d.launcher.clone())
+            let r = diff
+                .plano
+                .resumos
+                .get(&j.perfil)
+                .cloned()
                 .unwrap_or_default();
-            let alvo = Alvo::Jogo(j.perfil.clone());
-            let aplicado = e
-                .estado()
-                .esperado
-                .iter()
-                .filter(|x| x.alvo == alvo)
-                .map(|x| {
-                    format!(
-                        "{}: {}",
-                        nome_legivel(e, &x.setting),
-                        valor(e, &x.setting, Some(x.valor)).unwrap_or_default()
-                    )
-                })
-                .collect();
-            JogoInfo {
+            Jogo {
                 nome: j.entrada.nome.clone(),
-                launcher,
-                api: textos::api_grafica(j.entrada.api.nome_regra()).into(),
+                perfil: j.perfil.clone(),
+                origem_perfil: match j.origem {
+                    OrigemPerfil::Driver => OrigemPerfilIpc::Driver,
+                    OrigemPerfil::Usuario => OrigemPerfilIpc::Usuario,
+                    OrigemPerfil::CriadoPeloApp => OrigemPerfilIpc::CriadoPeloApp,
+                    OrigemPerfil::ACriar => OrigemPerfilIpc::ACriar,
+                },
+                launcher: j.entrada.launcher.clone(),
+                api: j.entrada.api.nome_regra().to_owned(),
                 dlss: j.entrada.dlss.map(|v| {
                     if v == nvt_core::Versao::default() {
                         String::new()
@@ -707,20 +752,36 @@ fn montar_jogos<S: DriverStore>(
                 }),
                 reflex: j.entrada.reflex,
                 anticheat_kernel: j.entrada.anticheat_kernel,
-                perfil: j.perfil.clone(),
-                origem_perfil: origem_perfil(j.origem),
-                aplicado,
+                resumo: ResumoJogo {
+                    aplicadas: r
+                        .aplicadas
+                        .iter()
+                        .map(|a| RegraAplicada {
+                            regra: a.regra.clone(),
+                            descricao: descricao(&a.regra),
+                            settings: a.settings.clone(),
+                        })
+                        .collect(),
+                    nao_aplicadas: r
+                        .nao_aplicadas
+                        .iter()
+                        .map(|n| RegraNaoAplicada {
+                            regra: n.regra.clone(),
+                            descricao: descricao(&n.regra),
+                            motivo: motivo(&n.motivo),
+                        })
+                        .collect(),
+                    herda_do_global: r.herda_do_global,
+                },
             }
         })
-        .collect();
-    jogos.sort_by_key(|j| j.nome.to_lowercase());
-    jogos
+        .collect()
 }
 
 #[cfg(test)]
 mod testes {
     use super::*;
-    use nvt_engine::DriverFalso;
+    use nvt_engine::{DriverFalso, JogoEntrada};
 
     #[test]
     fn somente_leitura_recusa_toda_escrita() {
@@ -979,6 +1040,108 @@ mod testes {
         assert_eq!(ig.len(), 1);
         assert_eq!(ig[0].nome, "Jogo Ruim");
         assert_eq!(falso.gravacoes(), gravacoes, "nada gravado no modo local");
+    }
+
+    fn jogos_de_teste() -> Vec<JogoEntrada> {
+        let mut w = JogoEntrada::new("WARDOGS", "WardogsClient-Win64-Shipping.exe");
+        w.launcher = "Steam".into();
+        w.api = nvt_core::Api::Dx12;
+        w.dlss = Some(nvt_core::Versao::new(310, 6, 0, 0));
+        let mut l = JogoEntrada::new("League of Legends", "League of Legends.exe");
+        l.launcher = "Riot".into();
+        l.api = nvt_core::Api::Dx11;
+        vec![w, l]
+    }
+
+    fn resumo<'a>(jogos: &'a [Jogo], nome: &str) -> &'a ResumoJogo {
+        &jogos.iter().find(|j| j.nome == nome).unwrap().resumo
+    }
+
+    #[test]
+    fn jogos_locais_tem_o_mesmo_formato_do_servico() {
+        let falso = DriverFalso::turing();
+        let e = Engine::new(SomenteLeitura(falso.clone()), Armazem::em_memoria()).unwrap();
+        let diff = e.planejar(&jogos_de_teste()).unwrap();
+        let jogos = jogos_ipc(&e, &diff);
+        assert_eq!(jogos.len(), 2);
+        let w = jogos.iter().find(|j| j.nome == "WARDOGS").unwrap();
+        assert_eq!((w.launcher.as_str(), w.api.as_str()), ("Steam", "dx12"));
+        assert_eq!(w.origem_perfil, OrigemPerfilIpc::ACriar);
+        assert_eq!(textos::resumo_curto(&w.resumo), "Preset E do DLSS (Turing)");
+        assert_eq!(
+            textos::resumo_curto(resumo(&jogos, "League of Legends")),
+            "Nenhum ajuste específico — jogo sem DLSS"
+        );
+        assert!(!w.resumo.herda_do_global.is_empty());
+        assert_eq!((falso.gravacoes(), falso.salvamentos()), (0, 0));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn gpu_ada_simulada_explica_por_que_nada_foi_aplicado() {
+        let ada = gpu_simulada_de("ada").unwrap();
+        assert!(ada.name.contains("simulada"));
+        assert!(gpu_simulada_de("rtx9090").is_none());
+        // Mesma decisão do motor com a GPU simulada: a arquitetura vem dela.
+        let falso = DriverFalso::turing();
+        let e = Engine::new(SomenteLeitura(falso.clone()), Armazem::em_memoria()).unwrap();
+        let mut diff = e.planejar(&jogos_de_teste()).unwrap();
+        let caps = nvt_engine::capacidades(&GpuFixa(ada)).unwrap();
+        assert_eq!(caps.arquitetura, nvt_core::Arquitetura::Ada);
+        assert!(caps.tensor_fp8);
+        let fatos: Vec<_> = diff.jogos.iter().map(|j| j.fatos.clone()).collect();
+        diff.plano = nvt_core::avaliar(&caps, &fatos, &Default::default(), e.regras());
+        let jogos = jogos_ipc(&e, &diff);
+        assert_eq!(
+            textos::resumo_curto(resumo(&jogos, "WARDOGS")),
+            "Nenhum ajuste específico — GPU Ada roda o DLSS padrão sem custo extra"
+        );
+        assert_eq!(
+            textos::resumo_curto(resumo(&jogos, "League of Legends")),
+            "Nenhum ajuste específico — jogo sem DLSS"
+        );
+    }
+
+    /// Driver mínimo que só informa uma GPU (para `nvt_engine::capacidades`).
+    struct GpuFixa(GpuInfo);
+
+    impl DriverStore for GpuFixa {
+        fn versao_driver(&self) -> ResultadoDrs<DriverVersion> {
+            DriverFalso::turing().versao_driver()
+        }
+        fn gpus(&self) -> ResultadoDrs<Vec<GpuInfo>> {
+            Ok(vec![self.0.clone()])
+        }
+        fn perfil_do_exe(&self, _: &str) -> ResultadoDrs<Option<PerfilEncontrado>> {
+            Ok(None)
+        }
+        fn perfil_existe(&self, _: &str) -> ResultadoDrs<bool> {
+            Ok(false)
+        }
+        fn criar_perfil(&mut self, _: &str) -> ResultadoDrs<()> {
+            Err(recusa())
+        }
+        fn criar_aplicacao(&mut self, _: &str, _: &str) -> ResultadoDrs<()> {
+            Err(recusa())
+        }
+        fn ler_setting(&self, _: &ProfileRef, _: u32) -> ResultadoDrs<Option<Setting>> {
+            Ok(None)
+        }
+        fn gravar_setting(&mut self, _: &ProfileRef, _: u32, _: &SettingValue) -> ResultadoDrs<()> {
+            Err(recusa())
+        }
+        fn remover_setting(&mut self, _: &ProfileRef, _: u32, _: bool) -> ResultadoDrs<()> {
+            Err(recusa())
+        }
+        fn settings_do_perfil(&self, _: &ProfileRef) -> ResultadoDrs<Vec<Setting>> {
+            Ok(Vec::new())
+        }
+        fn capturar(&self, exes: &[&str]) -> ResultadoDrs<Snapshot> {
+            DriverFalso::turing().capturar(exes)
+        }
+        fn salvar(&mut self) -> ResultadoDrs<()> {
+            Err(recusa())
+        }
     }
 
     #[test]

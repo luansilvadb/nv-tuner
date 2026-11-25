@@ -3,7 +3,7 @@
   Instalador MSI do nv-tuner (WiX Toolset 5.0.2, esquema v4).
 
   Variáveis de pré-processador (passadas pelo build-msi.ps1 com -d):
-    Versao   versão MSI (major.minor.build), ex.: 0.0.1
+    Versao   versão MSI (major.minor.build), ex.: 0.0.2
     BinDir   pasta com nvt-service.exe e nvt-ui.exe (target\release)
     RaizRepo raiz do repositório (para o LICENSE)
 
@@ -15,7 +15,7 @@
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
-  <?ifndef Versao?><?define Versao = "0.0.1"?><?endif?>
+  <?ifndef Versao?><?define Versao = "0.0.2"?><?endif?>
   <?ifndef BinDir?><?define BinDir = "..\target\release"?><?endif?>
   <?ifndef RaizRepo?><?define RaizRepo = ".."?><?endif?>
 

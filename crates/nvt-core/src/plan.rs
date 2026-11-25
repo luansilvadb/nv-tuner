@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::explicacao::ResumoJogo;
 use crate::preferences::Alvo;
 
 /// De onde veio uma mudança.
@@ -88,6 +89,11 @@ pub struct Plan {
     pub respeitadas: Vec<Respeitada>,
     /// Regras ou mudanças descartadas (teto de qualidade, conflito etc.).
     pub descartes: Vec<Descarte>,
+    /// Explicação por jogo (`GameFacts::id`): regras aplicadas, não
+    /// aplicadas com o motivo, e settings herdadas do global. Todo jogo
+    /// avaliado tem uma entrada.
+    #[serde(default)]
+    pub resumos: BTreeMap<String, ResumoJogo>,
 }
 
 impl Plan {

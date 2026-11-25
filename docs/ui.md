@@ -19,6 +19,13 @@ target\release\nvt-ui.exe [opções]
 | `--pipe <nome>` | usa outro named pipe (testes); padrão `\\.\pipe\nv-tuner` |
 | `--tela <chave>` | tela inicial: `visao-geral`, `jogos`, `mudancas`, `preferencias`, `historico`, `restaurar` |
 | `--sair-apos <s>` | fecha sozinha depois de `s` segundos (capturas automatizadas) |
+| `--expandir <jogo>` | abre já expandida, na tela Jogos, a linha do jogo com esse nome ou perfil (repetível; capturas) |
+
+Só em build de depuração, a variável `NVT_UI_SIMULAR_GPU` (`turing`,
+`gtx16`, `ampere`, `ada`, `blackwell`) troca a GPU informada ao motor **no
+modo de visualização** (o driver real continua sendo lido, nada é gravado).
+Serve para testes e capturas de outra arquitetura; não existe no binário de
+release.
 
 ## Modos de operação
 
@@ -72,10 +79,10 @@ target\release\nvt-ui.exe [opções]
 4. Comandos de escrita recebidos sem serviço são recusados pela própria
    thread de comunicação, antes de qualquer E/S.
 
-A lista de jogos não faz parte do protocolo; por isso ela é sempre obtida
-pela detecção local (somente leitura), também com o serviço conectado. Nesse
-caso, “o que o app aplicou” vem do plano do serviço (mudanças `aplicada` ou
-`já no valor`); no modo de visualização, do estado salvo (`esperado`).
+A lista de jogos vem do serviço (`plano.jogos`, protocolo v3) quando
+conectado; no modo de visualização, do cálculo local, convertido para os
+mesmos DTOs (`local::jogos_ipc`). Com o serviço conectado a UI não varre mais
+as bibliotecas localmente.
 
 ## Thread de comunicação
 
@@ -118,9 +125,35 @@ No modo de visualização, VRR aparece como “Não” porque o monitor ainda n�
 
 Tabela com jogo, perfil do driver usado (e a origem: perfil da NVIDIA,
 existente, criado pelo app ou a criar), launcher, API gráfica, versão do
-DLSS, Reflex, anticheat de kernel e o que o app aplicou no perfil. Abaixo,
-se houver, **Ignorados pelo plano**: jogos deixados de fora por um problema
-só deles, com executável e motivo.
+DLSS, Reflex, anticheat de kernel e **O que o app fez**: um texto curto
+(`textos::resumo_curto`) e “herda N ajustes globais”. Exemplos:
+
+| Situação | Texto |
+|---|---|
+| Turing + jogo com DLSS | Preset E do DLSS (Turing) |
+| Ampere + jogo com DLSS | Experimental: aguardando confirmação |
+| Ada/Blackwell + jogo com DLSS | Nenhum ajuste específico — GPU Ada roda o DLSS padrão sem custo extra |
+| GTX 16 | Nenhum ajuste específico — GPU sem Tensor Cores (sem DLSS) |
+| jogo sem DLSS | Nenhum ajuste específico — jogo sem DLSS |
+| teto Fidelidade | Nenhum ajuste específico — bloqueado pelo teto de qualidade “Fidelidade” |
+
+Sem regra aplicada, o motivo mostrado é o mais relevante entre as regras não
+aplicadas (experimental > escolha sua > teto > sem Tensor Cores > arquitetura
+> jogo sem DLSS > fato desconhecido > conflito > condição genérica).
+
+Clicar na linha expande a explicação completa: **Regras aplicadas no perfil
+do jogo** (cada setting com valor e situação no plano), **Regras não
+aplicadas** com o motivo por extenso (`textos::motivo_longo`, ex.: “GPU Ada
+Lovelace: o modelo padrão do DLSS já roda com FP8, forçar outro preset não
+ganharia desempenho.”) e **Herdado do perfil global** (as settings). O modo
+de visualização mostra o mesmo. Abaixo da tabela, se houver, **Ignorados
+pelo plano**: jogos deixados de fora por um problema só deles, com executável
+e motivo.
+
+Capturas: `jogos.png` (esta máquina, Turing: WARDOGS com preset E expandido;
+LoL e TFT “jogo sem DLSS”) e `jogos-ada.png` (mesma máquina com
+`NVT_UI_SIMULAR_GPU=ada`). Ambas no modo de visualização (`--pipe` para um
+pipe inexistente, `--tela jogos --expandir WARDOGS`), sem gravar nada.
 
 ### Mudanças (`mudancas.png`)
 
@@ -209,10 +242,12 @@ Iniciar.
 
 `cargo test -p nvt-ui` (sem janela): chaves das telas e opções da linha de
 comando; conversão do plano em grupos e itens respeitados; contagem de
-conformidade (experimentais não contam); “aplicado” por perfil; escrita
+conformidade (experimentais não contam); valor e situação de cada setting aplicada; escrita
 permitida só com serviço ocioso; queda do serviço libera a operação
-pendente; erros viram mensagem; rascunho de preferências; jogos com
-serviço usam o plano; `SomenteLeitura` recusa toda escrita (inclusive via
+pendente; erros viram mensagem; rascunho de preferências; jogos vêm do
+serviço ou do cálculo local; textos de “O que o app fez” e dos motivos
+(Turing, Ampere, Ada, GTX 16, sem DLSS, teto, escolha travada); jogos locais
+no mesmo formato do serviço e GPU Ada simulada; `SomenteLeitura` recusa toda escrita (inclusive via
 `Engine::aplicar`); mapeamentos de impacto, preferências e histórico;
 datas (civil ↔ Unix, ISO 8601); snapshot indisponível desabilita só a
 restauração; alerta de versão incompatível até reconectar; textos de

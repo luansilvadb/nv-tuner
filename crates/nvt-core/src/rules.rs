@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::capabilities::{Arquitetura, Capabilities};
 use crate::catalogo::{Catalogo, PreferenciaGovernante, VERSAO_SCHEMA};
+use crate::explicacao::{
+    DLSS_AUSENTE, Falha, MotivoDeclarado, MotivoNaoAplicada, TipoMotivo, motivo_padrao,
+};
 use crate::facts::{Api, GameFacts};
 use crate::preferences::{Preferences, Qualidade, Sincronismo};
 use crate::versao::Versao;
@@ -127,45 +130,196 @@ impl Condicoes {
 
     /// Avalia as condições. `jogo` é `None` para regras globais.
     pub fn casa(&self, caps: &Capabilities, jogo: Option<&GameFacts>, prefs: &Preferences) -> bool {
-        fn lista(l: &Option<Vec<String>>, nome: &str) -> bool {
-            l.as_ref().is_none_or(|l| l.iter().any(|n| n == nome))
+        if jogo.is_none() && self.usa_fatos_de_jogo() {
+            return false;
         }
-        fn igual(c: Option<bool>, v: bool) -> bool {
-            c.is_none_or(|c| c == v)
+        self.falhas(caps, jogo, prefs).is_empty()
+    }
+
+    /// Condições que não casam, na ordem usada para explicar: fatos do jogo,
+    /// Tensor Cores, arquitetura, demais capacidades e preferências. Vazia =
+    /// a regra casa. Com `jogo = None`, condições `jogo_*` são ignoradas.
+    /// Fato desconhecido vira `encontrado = None` (nunca casa).
+    pub fn falhas(
+        &self,
+        caps: &Capabilities,
+        jogo: Option<&GameFacts>,
+        prefs: &Preferences,
+    ) -> Vec<Falha> {
+        fn add(
+            f: &mut Vec<Falha>,
+            condicao: &'static str,
+            esperado: String,
+            achado: Option<String>,
+        ) {
+            f.push(Falha {
+                condicao,
+                esperado,
+                encontrado: achado,
+            });
         }
-        fn igual_opt(c: Option<bool>, v: Option<bool>) -> bool {
-            c.is_none_or(|c| v == Some(c))
-        }
-
-        let caps_ok = lista(&self.arquitetura, caps.arquitetura.nome_regra())
-            && igual(self.tem_tensor_cores, caps.tem_tensor_cores)
-            && igual(self.tensor_fp8, caps.tensor_fp8)
-            && igual(self.frame_gen, caps.frame_gen)
-            && igual(self.mfg, caps.mfg)
-            && igual(self.rebar_suportado, caps.rebar_suportado)
-            && igual_opt(self.rebar_ativo, caps.rebar_ativo)
-            && self.vram_mb_min.is_none_or(|m| caps.vram_mb >= m)
-            && self.driver_min.is_none_or(|m| caps.driver_version >= m)
-            && igual(self.refresh_conhecido, caps.refresh_hz.is_some());
-
-        let prefs_ok = lista(&self.sincronismo, prefs.sincronismo.nome_regra())
-            && lista(&self.qualidade, prefs.qualidade.nome_regra())
-            && igual(self.limite_fps_definido, prefs.limite_fps.is_some());
-
-        let jogo_ok = match jogo {
-            None => !self.usa_fatos_de_jogo(),
-            Some(j) => {
-                lista(&self.jogo_api, j.api.nome_regra())
-                    && igual(self.jogo_dlss, j.dlss.is_some())
-                    && self
-                        .jogo_dlss_min
-                        .is_none_or(|m| j.dlss.is_some_and(|v| v >= m))
-                    && igual_opt(self.jogo_reflex, j.reflex)
-                    && igual_opt(self.jogo_anticheat_kernel, j.anticheat_kernel)
+        fn booleano(f: &mut Vec<Falha>, condicao: &'static str, c: Option<bool>, v: Option<bool>) {
+            if let Some(c) = c
+                && v != Some(c)
+            {
+                add(f, condicao, c.to_string(), v.map(|v| v.to_string()));
             }
-        };
+        }
+        fn lista(
+            f: &mut Vec<Falha>,
+            condicao: &'static str,
+            l: &Option<Vec<String>>,
+            nome: &str,
+            conhecido: bool,
+        ) {
+            if let Some(l) = l
+                && !l.iter().any(|n| n == nome)
+            {
+                add(
+                    f,
+                    condicao,
+                    l.join(", "),
+                    conhecido.then(|| nome.to_owned()),
+                );
+            }
+        }
 
-        caps_ok && prefs_ok && jogo_ok
+        let mut f = Vec::new();
+        if let Some(j) = jogo {
+            booleano(&mut f, "jogo_dlss", self.jogo_dlss, Some(j.dlss.is_some()));
+            if let Some(m) = self.jogo_dlss_min
+                && !j.dlss.is_some_and(|v| v >= m)
+            {
+                let achado = j
+                    .dlss
+                    .map_or_else(|| DLSS_AUSENTE.to_owned(), |v| v.to_string());
+                add(&mut f, "jogo_dlss_min", m.to_string(), Some(achado));
+            }
+            lista(
+                &mut f,
+                "jogo_api",
+                &self.jogo_api,
+                j.api.nome_regra(),
+                j.api != Api::Desconhecida,
+            );
+            booleano(&mut f, "jogo_reflex", self.jogo_reflex, j.reflex);
+            booleano(
+                &mut f,
+                "jogo_anticheat_kernel",
+                self.jogo_anticheat_kernel,
+                j.anticheat_kernel,
+            );
+        }
+
+        booleano(
+            &mut f,
+            "tem_tensor_cores",
+            self.tem_tensor_cores,
+            Some(caps.tem_tensor_cores),
+        );
+        booleano(&mut f, "tensor_fp8", self.tensor_fp8, Some(caps.tensor_fp8));
+        lista(
+            &mut f,
+            "arquitetura",
+            &self.arquitetura,
+            caps.arquitetura.nome_regra(),
+            true,
+        );
+        booleano(&mut f, "frame_gen", self.frame_gen, Some(caps.frame_gen));
+        booleano(&mut f, "mfg", self.mfg, Some(caps.mfg));
+        booleano(
+            &mut f,
+            "rebar_suportado",
+            self.rebar_suportado,
+            Some(caps.rebar_suportado),
+        );
+        booleano(&mut f, "rebar_ativo", self.rebar_ativo, caps.rebar_ativo);
+        if let Some(m) = self.vram_mb_min
+            && caps.vram_mb < m
+        {
+            add(
+                &mut f,
+                "vram_mb_min",
+                m.to_string(),
+                Some(caps.vram_mb.to_string()),
+            );
+        }
+        if let Some(m) = self.driver_min
+            && caps.driver_version < m
+        {
+            add(
+                &mut f,
+                "driver_min",
+                m.to_string(),
+                Some(caps.driver_version.to_string()),
+            );
+        }
+        booleano(
+            &mut f,
+            "refresh_conhecido",
+            self.refresh_conhecido,
+            Some(caps.refresh_hz.is_some()),
+        );
+
+        lista(
+            &mut f,
+            "sincronismo",
+            &self.sincronismo,
+            prefs.sincronismo.nome_regra(),
+            true,
+        );
+        lista(
+            &mut f,
+            "qualidade",
+            &self.qualidade,
+            prefs.qualidade.nome_regra(),
+            true,
+        );
+        booleano(
+            &mut f,
+            "limite_fps_definido",
+            self.limite_fps_definido,
+            Some(prefs.limite_fps.is_some()),
+        );
+        f
+    }
+
+    /// Verdadeiro se a condição `nome` está presente.
+    pub fn presente(&self, nome: &str) -> bool {
+        match nome {
+            "arquitetura" => self.arquitetura.is_some(),
+            "tem_tensor_cores" => self.tem_tensor_cores.is_some(),
+            "tensor_fp8" => self.tensor_fp8.is_some(),
+            "frame_gen" => self.frame_gen.is_some(),
+            "mfg" => self.mfg.is_some(),
+            "rebar_suportado" => self.rebar_suportado.is_some(),
+            "rebar_ativo" => self.rebar_ativo.is_some(),
+            "vram_mb_min" => self.vram_mb_min.is_some(),
+            "driver_min" => self.driver_min.is_some(),
+            "refresh_conhecido" => self.refresh_conhecido.is_some(),
+            "jogo_api" => self.jogo_api.is_some(),
+            "jogo_dlss" => self.jogo_dlss.is_some(),
+            "jogo_dlss_min" => self.jogo_dlss_min.is_some(),
+            "jogo_reflex" => self.jogo_reflex.is_some(),
+            "jogo_anticheat_kernel" => self.jogo_anticheat_kernel.is_some(),
+            "sincronismo" => self.sincronismo.is_some(),
+            "qualidade" => self.qualidade.is_some(),
+            "limite_fps_definido" => self.limite_fps_definido.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Itens da condição de lista `nome` e os valores que ela aceita
+    /// (`None` se `nome` não é condição de lista).
+    fn lista_de(&self, nome: &str) -> Option<(&[String], &'static [&'static str])> {
+        let (l, aceitos): (&Option<Vec<String>>, &'static [&'static str]) = match nome {
+            "arquitetura" => (&self.arquitetura, &Arquitetura::NOMES_REGRA),
+            "jogo_api" => (&self.jogo_api, &Api::NOMES_REGRA),
+            "sincronismo" => (&self.sincronismo, &Sincronismo::NOMES_REGRA),
+            "qualidade" => (&self.qualidade, &Qualidade::NOMES_REGRA),
+            _ => return None,
+        };
+        Some((l.as_deref().unwrap_or(&[]), aceitos))
     }
 }
 
@@ -183,8 +337,46 @@ pub struct Rule {
     pub prioridade: i32,
     pub motivo: String,
     pub evidencia: String,
+    /// Motivo a mostrar quando uma condição não casa
+    /// (`motivo_quando_nao_aplica`), por nome de condição.
+    pub motivos: BTreeMap<String, MotivoDeclarado>,
     /// Arquivo de origem (para mensagens).
     pub arquivo: String,
+}
+
+impl Rule {
+    /// Por que a regra não casou, a partir das falhas de
+    /// [`Condicoes::falhas`] (na ordem delas): a primeira falha com motivo
+    /// declarado em `motivo_quando_nao_aplica` ou com motivo padrão
+    /// ([`motivo_padrao`]) vence; sem nenhuma, a primeira falha vira
+    /// `FatoDesconhecido` ou `CondicaoNaoAtendida`.
+    pub fn motivo_nao_casou(
+        &self,
+        falhas: &[Falha],
+        arquitetura: Arquitetura,
+    ) -> MotivoNaoAplicada {
+        let especifico = falhas.iter().find_map(|f| {
+            let declarado = self
+                .motivos
+                .get(f.condicao)
+                .and_then(|m| m.para(f.encontrado.as_deref()));
+            declarado.or_else(|| {
+                // O declarado substitui o padrão da condição.
+                (!self.motivos.contains_key(f.condicao))
+                    .then(|| motivo_padrao(f))
+                    .flatten()
+            })
+        });
+        match (especifico, falhas.first()) {
+            (Some(t), _) => MotivoNaoAplicada::de_tipo(t, arquitetura),
+            (None, Some(f)) => MotivoNaoAplicada::generico(f),
+            (None, None) => MotivoNaoAplicada::CondicaoNaoAtendida {
+                condicao: String::new(),
+                esperado: String::new(),
+                encontrado: String::new(),
+            },
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -202,6 +394,8 @@ struct RegraBruta {
     prioridade: i32,
     motivo: String,
     evidencia: String,
+    #[serde(default)]
+    motivo_quando_nao_aplica: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Deserialize)]
@@ -262,6 +456,11 @@ pub enum ErroRegra {
         setting: String,
         preferencias: String,
     },
+    /// `motivo_quando_nao_aplica` inválido.
+    MotivoInvalido {
+        regra: String,
+        mensagem: String,
+    },
 }
 
 impl fmt::Display for ErroRegra {
@@ -315,6 +514,12 @@ impl fmt::Display for ErroRegra {
                 "regra \"{regra}\": \"{setting}\" é governada pela preferência {preferencias}; \
                  a regra precisa ser condicionada a ela em `quando`"
             ),
+            Self::MotivoInvalido { regra, mensagem } => {
+                write!(
+                    f,
+                    "regra \"{regra}\": motivo_quando_nao_aplica inválido: {mensagem}"
+                )
+            }
         }
     }
 }
@@ -503,6 +708,8 @@ fn validar(
         ));
     }
 
+    let motivos = validar_motivos(&id, q, r.motivo_quando_nao_aplica, erros);
+
     // Ações.
     let mut aplicar = BTreeMap::new();
     for (setting, bruto) in r.aplicar {
@@ -575,6 +782,83 @@ fn validar(
         prioridade: r.prioridade,
         motivo: r.motivo,
         evidencia: r.evidencia,
+        motivos,
         arquivo: arquivo.to_owned(),
     })
+}
+
+/// Valida `motivo_quando_nao_aplica`: cada chave é uma condição presente em
+/// `quando`; o valor é um motivo de [`TipoMotivo::NOMES`] ou, para condições
+/// de lista, uma tabela `valor encontrado = motivo` com valores que a lista
+/// aceita mas não contém (senão a condição nunca falharia com eles).
+fn validar_motivos(
+    id: &str,
+    q: &Condicoes,
+    brutos: BTreeMap<String, toml::Value>,
+    erros: &mut Vec<ErroRegra>,
+) -> BTreeMap<String, MotivoDeclarado> {
+    let erro = |mensagem: String| ErroRegra::MotivoInvalido {
+        regra: id.to_owned(),
+        mensagem,
+    };
+    let tipo = |condicao: &str, v: &toml::Value| -> Result<TipoMotivo, String> {
+        v.as_str().and_then(TipoMotivo::de_nome).ok_or_else(|| {
+            format!(
+                "`{condicao}` = {v}: motivo desconhecido; aceitos: {}",
+                TipoMotivo::NOMES.join(", ")
+            )
+        })
+    };
+    let mut saida = BTreeMap::new();
+    for (condicao, valor) in brutos {
+        if !q.presente(&condicao) {
+            erros.push(erro(format!(
+                "`{condicao}` não é uma condição presente em `quando`"
+            )));
+            continue;
+        }
+        let declarado = match &valor {
+            toml::Value::Table(t) => {
+                let Some((lista, aceitos)) = q.lista_de(&condicao) else {
+                    erros.push(erro(format!(
+                        "`{condicao}` não é condição de lista; use um motivo só (texto)"
+                    )));
+                    continue;
+                };
+                if t.is_empty() {
+                    erros.push(erro(format!("`{condicao}` não pode ser tabela vazia")));
+                    continue;
+                }
+                let mut m = BTreeMap::new();
+                for (v, motivo) in t {
+                    if !aceitos.contains(&v.as_str()) {
+                        erros.push(erro(format!(
+                            "`{condicao}.{v}`: valor desconhecido; aceitos: {}",
+                            aceitos.join(", ")
+                        )));
+                    } else if lista.contains(v) {
+                        erros.push(erro(format!(
+                            "`{condicao}.{v}`: \"{v}\" está na lista da condição (ela nunca falharia com esse valor)"
+                        )));
+                    }
+                    match tipo(&format!("{condicao}.{v}"), motivo) {
+                        Ok(t) => {
+                            m.insert(v.clone(), t);
+                        }
+                        Err(e) => erros.push(erro(e)),
+                    }
+                }
+                MotivoDeclarado::PorValor(m)
+            }
+            outro => match tipo(&condicao, outro) {
+                Ok(t) => MotivoDeclarado::Sempre(t),
+                Err(e) => {
+                    erros.push(erro(e));
+                    continue;
+                }
+            },
+        };
+        saida.insert(condicao, declarado);
+    }
+    saida
 }

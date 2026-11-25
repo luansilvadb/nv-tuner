@@ -38,7 +38,7 @@ Implementações:
    VRAM + versão do driver. `rebar_ativo` e `refresh_hz` ainda ficam
    desconhecidos.
 2. **Jogos** (`jogos_da_maquina`): varredura do `nvt-detect` →
-   `JogoEntrada` (nome, exe principal, API, DLSS, Reflex, anticheat).
+   `JogoEntrada` (nome, launcher, exe principal, API, DLSS, Reflex, anticheat).
    Reflex só é afirmado com confiança média ou alta; anticheat de kernel só
    quando detectado (ausência vira "desconhecido").
 3. **Perfis** (`Engine::resolver_jogos`): para cada jogo, `find_application`
@@ -57,7 +57,9 @@ Implementações:
    esse jogo do plano: ele vai para `Diff::ignorados` com o motivo
    (`Engine::resolver_jogos_isolado`), e os demais e o perfil global seguem.
 4. **Avaliação**: `nvt_core::avaliar` com as preferências salvas e as
-   escolhas travadas.
+   escolhas travadas. O plano traz também a explicação por jogo
+   (`plan.resumos`, chave = nome do perfil; ver `docs/regras.md`), que segue
+   no `Diff` e vai para a UI em `plano.jogos` (`docs/ipc.md`).
 5. **Diff** (`Engine::planejar`, somente leitura): cada mudança do plano é
    comparada com o valor efetivo no driver; só as diferentes entram em
    `Diff::mudancas`, com `valor_anterior` preenchido. As iguais vão para

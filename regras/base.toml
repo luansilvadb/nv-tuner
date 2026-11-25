@@ -172,6 +172,12 @@ arquitetura = ["turing"]
 tem_tensor_cores = true
 jogo_dlss = true
 
+# Ada e Blackwell têm FP8 nos Tensor Cores: a regra não falha por engano,
+# a GPU simplesmente não precisa do ajuste. Jogo sem DLSS e GPU sem Tensor
+# Cores já têm motivo padrão (docs/regras.md).
+[regra.motivo_quando_nao_aplica]
+arquitetura = { ada = "arquitetura_nao_precisa", blackwell = "arquitetura_nao_precisa" }
+
 [regra.aplicar]
 dlss_override = "on"
 dlss_perfil_preset = "personalizado"
@@ -191,6 +197,12 @@ evidencia = "Extrapolação da medição em Turing (WARDOGS, +16,8% FPS); ainda 
 arquitetura = ["ampere"]
 tem_tensor_cores = true
 jogo_dlss = true
+
+# Ada e Blackwell têm FP8 nos Tensor Cores: a regra não falha por engano,
+# a GPU simplesmente não precisa do ajuste. Jogo sem DLSS e GPU sem Tensor
+# Cores já têm motivo padrão (docs/regras.md).
+[regra.motivo_quando_nao_aplica]
+arquitetura = { ada = "arquitetura_nao_precisa", blackwell = "arquitetura_nao_precisa" }
 
 [regra.aplicar]
 dlss_override = "on"

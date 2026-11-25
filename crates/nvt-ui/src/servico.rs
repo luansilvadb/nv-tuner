@@ -66,7 +66,6 @@ struct Trabalhador {
     pipe: String,
     eventos: Sender<Evento>,
     servico: bool,
-    jogos_carregados: bool,
     ultima_tentativa: Option<Instant>,
 }
 
@@ -76,7 +75,6 @@ impl Trabalhador {
             pipe,
             eventos,
             servico: false,
-            jogos_carregados: false,
             ultima_tentativa: None,
         }
     }
@@ -115,11 +113,11 @@ impl Trabalhador {
             Resposta::Estado(e) => Some(e),
             _ => None,
         };
-        let (grupos, respeitadas, reversoes, ignorados) =
+        let (grupos, respeitadas, reversoes, ignorados, jogos) =
             match self.requisitar(&Requisicao::ObterPlano)? {
                 Resposta::Plano(p) => {
                     let (g, r) = grupos_do_plano(&p);
-                    (g, r, p.reversoes, p.ignorados)
+                    (g, r, p.reversoes, p.ignorados, p.jogos)
                 }
                 _ => Default::default(),
             };
@@ -134,6 +132,7 @@ impl Trabalhador {
             historico,
             reversoes,
             ignorados,
+            jogos,
         })
     }
 
@@ -157,9 +156,6 @@ impl Trabalhador {
             Ok(d) => {
                 self.servico = true;
                 self.enviar(Evento::Servico(d));
-                if !self.jogos_carregados || forcar {
-                    self.carregar_jogos();
-                }
             }
             Err(Falha::Ausente(_)) | Err(Falha::Comunicacao(_)) | Err(Falha::Recusa(_))
                 if !self.servico && !forcar =>
@@ -173,22 +169,7 @@ impl Trabalhador {
     /// Calcula os dados localmente, somente leitura.
     fn modo_visualizacao(&mut self) {
         self.servico = false;
-        match local::calcular() {
-            Ok(l) => {
-                self.enviar(Evento::Jogos(l.jogos));
-                self.jogos_carregados = true;
-                self.enviar(Evento::Visualizacao(Ok(l.dados)));
-            }
-            Err(e) => self.enviar(Evento::Visualizacao(Err(e))),
-        }
-    }
-
-    /// Lista os jogos localmente (o protocolo não os transporta).
-    fn carregar_jogos(&mut self) {
-        if let Ok(l) = local::calcular() {
-            self.enviar(Evento::Jogos(l.jogos));
-            self.jogos_carregados = true;
-        }
+        self.enviar(Evento::Visualizacao(local::calcular()));
     }
 
     fn tratar(&mut self, c: Comando) {
