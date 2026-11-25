@@ -1,6 +1,8 @@
 name: Release
 
-# Gera o MSI e publica uma GitHub Release (pre-release) a cada tag v*.
+# Gera o MSI e publica uma GitHub Release (normal, marcada como Latest) a cada tag v*.
+# As notas saem de .github/release-notes-template.md + a seção [X.Y.Z] do CHANGELOG.md
+# (sem a seção, o job falha). Ver CONTRIBUTING.md, "Como lançar uma versão".
 # A tag precisa bater com [workspace.package].version do Cargo.toml
 # (ex.: tag v0.1.0 <-> version = "0.1.0"); senão o job falha antes de compilar.
 
@@ -28,6 +30,8 @@ jobs:
       contents: write   # só para criar a release e anexar os arquivos
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # traz as tags anteriores, para o link do changelog
 
       - name: Conferir tag x versão do Cargo.toml
         shell: pwsh
@@ -71,12 +75,79 @@ jobs:
           "sha=$($msi.FullName).sha256" >> $env:GITHUB_OUTPUT
           "## $($msi.Name)`n`nSHA256: ``$hash``" >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Criar release (pre-release)
+      - name: Montar notas da release
+        id: notas
+        shell: pwsh
+        env:
+          MSI: ${{ steps.hash.outputs.msi }}
+        run: |
+          # Notas = template + seção "## [X.Y.Z]" do CHANGELOG.md.
+          # Usa: GITHUB_REF_NAME (tag), GITHUB_REPOSITORY, MSI, RUNNER_TEMP, GITHUB_OUTPUT.
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          $versao = $tag -replace '^v', ''
+          $repo = $env:GITHUB_REPOSITORY
+
+          # Seção da versão: do cabeçalho até o próximo "## " ou as referências de link.
+          $linhas = @(Get-Content -Encoding UTF8 CHANGELOG.md)
+          $cab = '^## \[' + [regex]::Escape($versao) + '\]'
+          $ini = -1
+          for ($i = 0; $i -lt $linhas.Count; $i++) { if ($linhas[$i] -match $cab) { $ini = $i; break } }
+          if ($ini -lt 0) { throw "CHANGELOG.md não tem a seção '## [$versao]'. Adicione as novidades da versão antes de criar a tag $tag." }
+          $secao = New-Object System.Collections.Generic.List[string]
+          for ($i = $ini + 1; $i -lt $linhas.Count; $i++) {
+            if ($linhas[$i] -match '^## ' -or $linhas[$i] -match '^\[[^\]]+\]:\s') { break }
+            $secao.Add($linhas[$i])
+          }
+          while ($secao.Count -gt 0 -and $secao[0].Trim() -eq '') { $secao.RemoveAt(0) }
+          while ($secao.Count -gt 0 -and $secao[$secao.Count - 1].Trim() -eq '') { $secao.RemoveAt($secao.Count - 1) }
+
+          # Resumo opcional: primeira linha da seção em itálico (*Texto*) vira subtítulo do título.
+          $resumo = ''
+          if ($secao.Count -gt 0 -and $secao[0] -match '^\*([^*].*[^*])\*$') {
+            $resumo = $Matches[1].Trim().TrimEnd('.')
+            $secao.RemoveAt(0)
+            while ($secao.Count -gt 0 -and $secao[0].Trim() -eq '') { $secao.RemoveAt(0) }
+          }
+          if ($secao.Count -eq 0) { throw "A seção '## [$versao]' do CHANGELOG.md está vazia." }
+          # Subtítulos do Keep a Changelog descem um nível, abaixo de "## ✨ Novidades".
+          $novidades = ($secao | ForEach-Object { $_ -replace '^### ', '#### ' }) -join "`n"
+
+          # Tag anterior: a maior versão abaixo da atual.
+          $tags = @(git tag --list 'v*' --sort=-v:refname)
+          $pos = [array]::IndexOf($tags, $tag)
+          $anterior = if ($pos -ge 0 -and $pos + 1 -lt $tags.Count) { $tags[$pos + 1] } else { '' }
+
+          $msiNome = Split-Path -Leaf $env:MSI
+          $sha = ((Get-Content -Raw "$($env:MSI).sha256") -split '\s+')[0]
+
+          $t = (Get-Content -Raw -Encoding UTF8 .github/release-notes-template.md) -replace "`r`n", "`n"
+          if ($anterior) {
+            $t = $t.Replace('{{TAG_ANTERIOR}}', $anterior)
+          } else {
+            # Primeira versão: sem "Atualizando da..." e link do changelog para os commits.
+            $t = [regex]::Replace($t, '(?m)^\*\*Atualizando da \{\{TAG_ANTERIOR\}\}\?\*\*.*\n\n', '')
+            $t = [regex]::Replace($t, '(?m)^(\*\*Changelog completo:\*\* ).*$', "`${1}https://github.com/$repo/commits/$tag")
+          }
+          $t = $t.Replace('{{REPO}}', $repo).Replace('{{TAG}}', $tag).Replace('{{VERSAO}}', $versao)
+          $t = $t.Replace('{{MSI}}', $msiNome).Replace('{{SHA256}}', $sha).Replace('{{NOVIDADES}}', $novidades)
+          if ($t -match '\{\{[A-Z_]+\}\}') { throw "Marcador não preenchido no template: $($Matches[0])" }
+
+          $arquivo = Join-Path $env:RUNNER_TEMP "notas-$tag.md"
+          [IO.File]::WriteAllText($arquivo, $t, (New-Object System.Text.UTF8Encoding $false))
+          $titulo = if ($resumo) { "nv-tuner $tag — $resumo" } else { "nv-tuner $tag" }
+          "arquivo=$arquivo" >> $env:GITHUB_OUTPUT
+          "titulo=$titulo" >> $env:GITHUB_OUTPUT
+          "## $titulo`n`nNotas: ``$arquivo``" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Criar release (normal, Latest)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TITULO: ${{ steps.notas.outputs.titulo }}
+          NOTAS: ${{ steps.notas.outputs.arquivo }}
         run: |
           gh release create $env:GITHUB_REF_NAME `
             '${{ steps.hash.outputs.msi }}' '${{ steps.hash.outputs.sha }}' `
-            --prerelease --title "nv-tuner $env:GITHUB_REF_NAME" --generate-notes
+            --verify-tag --latest --title $env:TITULO --notes-file $env:NOTAS
           if ($LASTEXITCODE -ne 0) { throw "gh release create falhou ($LASTEXITCODE)" }
