@@ -9,7 +9,9 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
-*Interface para leigos e saúde do PC*
+## [0.3.0] - 2026-11-26
+
+*Interface nova e saúde do PC*
 
 ### Adicionado
 
@@ -21,7 +23,7 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - **Abrir inicialização**: abre a página Inicialização das Configurações do Windows, só por clique e bloqueado com jogo aberto. Os programas de inicialização são apenas detectados, nunca desativados.
 - Grupos **Inicialização** e **Manutenção** no Avançado.
 - Crate **`nvt-manutencao`**: limpeza segura de temporários (`%TEMP%` pelo agente, `C:\Windows\Temp` pelo serviço), só arquivos com 7 dias ou mais, sem seguir links, sem jogo aberto nem instalação em andamento, no máximo uma passada por dia. **Desligada nesta versão**; quando ligada, só libera espaço em disco.
-- Crate **`nvt-medicao`** e tela **Partidas**: gravação do desempenho das partidas (ETW Present e NVML, sem tocar no processo do jogo). **Só no build de teste do mantenedor** (`scripts\build-teste.ps1`); não entra nas releases, travada no `build.rs` e no `release.yml`.
+- A gravação do desempenho das partidas (tela **Partidas**) **não está nesta release**: existe só num build de teste interno.
 - Modo de demonstração da interface (`nvt-ui --demonstracao <cenário>`), com dados fictícios, usado nas capturas de `docs/ui-capturas/`.
 
 ### Alterado
@@ -113,7 +115,8 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - **Interface em GPUI** com 6 telas em português e restauração do estado original.
 - Instalador MSI.
 
-[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.2.0...HEAD
+[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.0.2...v0.1.0
 [0.0.2]: https://github.com/luansilvadb/nv-tuner/compare/v0.0.1...v0.0.2
