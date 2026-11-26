@@ -83,8 +83,8 @@ detecção ──► fatos + capacidades ──► regras (TOML) + preferências
    preferências.
 4. O resultado é um **plano de configuração**: lista auditável de alterações
    com valor anterior, valor novo e regra de origem.
-5. A UI envia o plano ao **serviço**, que valida e aplica, guardando o
-   histórico para rollback.
+5. O **serviço** calcula o plano, valida e aplica, guardando o histórico
+   para rollback; a UI só pede ações pelo named pipe.
 
 ## Modelo de decisão
 

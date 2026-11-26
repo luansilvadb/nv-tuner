@@ -61,7 +61,8 @@ Para voltar aos valores originais:
   ```
 
   Se a restauração falhar, a desinstalação continua mesmo assim, e o motivo
-  fica registrado no log. Os dados do app (snapshot e histórico) ficam em
+  fica registrado no log. Feche os jogos antes: com um jogo aberto, nada é
+  restaurado. Os dados do app (snapshot e histórico) ficam em
   `%ProgramData%\nv-tuner`: reinstalando o nv-tuner, **Restaurar original**
   volta a funcionar.
 
@@ -98,7 +99,11 @@ caminhos da sua máquina, números de série). Vulnerabilidades de segurança
   compartilhamento total) e adia qualquer gravação no driver enquanto detecta
   um jogo (instalado detectado ou da base competitiva) ou anticheat aberto.
   Como a detecção é por nome, ela pode falhar; por isso a promessa é “adia
-  enquanto detecta”.
+  enquanto detecta”. Enquanto isso, a faixa **Jogo aberto** da interface
+  mostra o que ficou pendente; o serviço confere a cada 15 s e executa a ação
+  quando o jogo fecha. A pendência fica só na memória do serviço: se ele
+  reiniciar, ela se perde (uma restauração perdida precisa ser pedida de
+  novo).
 
 ## Foco competitivo
 
@@ -108,10 +113,12 @@ caminhos da sua máquina, números de série). Vulnerabilidades de segurança
   Battlegrounds, Dota 2, Marvel Rivals, Deadlock e THE FINALS. Para cada um, o
   plano traz orientações **“Faça no jogo”** (por exemplo, Reflex em
   *On + Boost*, limitador de FPS do próprio jogo, tela cheia), que o app não
-  aplica: quem muda é você, no menu do jogo. A interface desta versão ainda
-  não mostra essas orientações; o serviço já as envia no plano.
+  aplica: quem muda é você, no menu do jogo. Na tela **Jogos**, esses jogos
+  ganham o selo **competitivo** (e **aberto**, se estavam em execução na
+  última varredura), e as orientações aparecem na seção **Faça no jogo** ao
+  expandir a linha.
 - **Taxa de atualização e VRR (G-SYNC)** do monitor principal lidos pela
-  NVAPI, com aviso quando o modo G-SYNC é escolhido sem VRR ativo.
+  NVAPI e mostrados na **Visão geral**, com aviso quando o modo G-SYNC é escolhido sem VRR ativo.
 - **Limite de FPS para G-SYNC** um pouco abaixo da taxa do monitor (por
   exemplo, 224 FPS a 240 Hz). Por ora a regra é *experimental*: aparece como
   sugestão e só passa a valer depois de validada em laboratório.

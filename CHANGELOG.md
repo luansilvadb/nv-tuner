@@ -14,9 +14,9 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 ### Adicionado
 
 - **Base curada de 14 jogos competitivos** (Counter-Strike 2, VALORANT, League of Legends, Fortnite, Apex Legends, Overwatch 2, Rainbow Six Siege, Call of Duty, Rocket League, PUBG: Battlegrounds, Dota 2, Marvel Rivals, Deadlock e THE FINALS), com Reflex, limitador próprio e anticheat de cada um. Esses fatos valem mais que os lidos do disco.
-- **Orientações “Faça no jogo”** por jogo da base (ex.: Reflex em *On + Boost*, limitador do jogo, tela cheia), enviadas no plano. O app não as aplica: são ajustes para você fazer no menu do jogo.
-- **Taxa de atualização e VRR (G-SYNC)** do monitor principal lidos pela NVAPI, com os avisos “G-SYNC sem VRR” e “VRR desligado no painel”.
-- **Gravação adiada com jogo aberto.** Enquanto um jogo detectado, um jogo da base ou um anticheat (EasyAntiCheat, BattlEye) estiver em execução, nada é gravado no driver, nem a reaplicação por deriva nem o **Restaurar original**: a ação fica pendente e roda quando o jogo fecha. A detecção usa só a lista de processos, por nome, sem abrir os processos.
+- **Orientações “Faça no jogo”** por jogo da base (ex.: Reflex em *On + Boost*, limitador do jogo, tela cheia), mostradas na seção **Faça no jogo** da tela Jogos. O app não as aplica: são ajustes para você fazer no menu do jogo. Os jogos da base ganham o selo **competitivo** e, se estavam em execução na última varredura, o selo **aberto**.
+- **Taxa de atualização e VRR (G-SYNC)** do monitor principal lidos pela NVAPI e mostrados na **Visão geral**, com os avisos “G-SYNC sem VRR” e “VRR desligado no painel”.
+- **Gravação adiada com jogo aberto.** Enquanto um jogo detectado, um jogo da base ou um anticheat (EasyAntiCheat, BattlEye) estiver em execução, nada é gravado no driver, nem a reaplicação por deriva nem o **Restaurar original**: a ação fica pendente (conferida a cada 15 s) e roda quando o jogo fecha, e a interface mostra a faixa **Jogo aberto** com o que ficou pendente. A pendência fica só na memória do serviço e se perde se ele reiniciar. Sem o serviço em execução, `apply`/`restore-original` pela linha de comando são recusados com jogo aberto. A detecção usa só a lista de processos, por nome, sem abrir os processos.
 - Regras novas de G-SYNC: limite de FPS logo abaixo da taxa do monitor (ex.: 224 FPS a 240 Hz) e, em jogos competitivos com Reflex, sem limite do driver. Entram como **experimentais**: aparecem como sugestão e não têm efeito até a validação em laboratório.
 
 ### Alterado
