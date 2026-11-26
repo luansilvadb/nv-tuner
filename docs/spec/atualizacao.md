@@ -202,7 +202,7 @@ proteção até a versão instalada, nunca abaixo (U-18).
     "log": "instalacao-0.1.0.log",
     "pid": 4242,
     "inicio_unix": 1764158460,
-    "sessoes_agente": [1, 3]
+    "sessoes_agente": [{ "sessao": 1, "sid": "S-1-5-21-…-1001" }]
   },
   "ultima_atualizacao": { "de": "0.0.3", "para": "0.1.0", "quando_unix": 1764158520, "codigo": 0 },
   "ultima_falha": { "versao": "0.1.0", "codigo": 1603, "quando_unix": 1764158520 }
@@ -231,7 +231,7 @@ começa durante uma gravação DRS.
 | `ocioso` | prazo `proxima_verificacao` | `verificando` | — |
 | `verificando` | rede/HTTP falha | `ocioso` | `espera_rede_s` = min(max(30 min, 2×anterior), 6 h); 403/429: max(espera, `Retry-After`) |
 | `verificando` | manifesto inválido / assinatura inválida | `ocioso` | `ultimo_resultado`, próxima em 6 h ± 30 min (não é falha de rede) |
-| `verificando` | versão ≤ instalada, ≤ `maior_vista` (≠ instalada) ou abandonada | `ocioso` | `sem_novidade`, próxima em 6 h ± 30 min |
+| `verificando` | versão ≤ instalada, < `maior_vista` ou abandonada (igual a `maior_vista` segue para `baixando`, U-17: senão um download interrompido nunca seria retomado) | `ocioso` | `sem_novidade`, próxima em 6 h ± 30 min |
 | `verificando` | versão nova válida | `baixando` | `maior_vista` = versão (antes de baixar) |
 | `baixando` | erro / tamanho / hash | `ocioso` | erro; espera exponencial (rede) ou 6 h (hash/tamanho) |
 | `baixando` | MSI verificado | `pronta` | `baixada` |
@@ -242,6 +242,7 @@ começa durante uma gravação DRS.
 | `instalando` | `CreateProcessW` falha | `ocioso` | conta falha (código = erro Win32) |
 | `instalando` | serviço novo inicia com versão própria = `para` | `ocioso` | `ultima_atualizacao` (código do log, 0/3010); limpa `falhas[para]`; relança agentes |
 | `instalando` | serviço inicia com versão = `de` e log com código | `ocioso` | 1618 → `adiada_msi_ocupado` sem contar; outro → `falhas[para]`+1; 3ª → `abandonadas` |
+| `instalando` | serviço inicia com versão = `de`, sem código no log e ≤ 2 h (ex.: serviço antigo religado pelo rollback enquanto o msiexec ainda termina) | `instalando` | nada; relê o log a cada 60 s; nenhuma verificação nova nem lançamento enquanto estiver aqui |
 | `instalando` | serviço inicia, sem código no log e > 2 h | `ocioso` | conta falha com código `-1` (“resultado desconhecido”) |
 | `instalando` | serviço antigo ainda vivo e msiexec terminou (espera opcional não bloqueante pelo handle de processo, §8.4) | `ocioso` | código real |
 
@@ -256,7 +257,10 @@ caminho de instalação e instala os três binários juntos).
 
 - **U-01** Primeira verificação entre 5 e 15 min após o serviço iniciar (uniforme);
   depois a cada 6 h ± 30 min. O jitter vem de `BCryptGenRandom`, nunca persistido nem
-  enviado. **T** (relógio falso).
+  enviado. Prazos contam em relógio monotônico (`Instant`); `proxima_verificacao_unix`
+  persistido é só informativo e, ao iniciar, um valor no passado ou a mais de 7 h no
+  futuro (relógio ajustado) é descartado e recalculado. Relógio errado que quebre o TLS
+  cai em U-02 (falha de rede). **T** (relógio falso, inclusive salto para trás de anos).
 - **U-02** Falha de rede/HTTP 5xx: espera 30 min, 60, 120, 240, 360 (teto 6 h); zera no
   primeiro sucesso. 403/429: espera = max(espera exponencial, `Retry-After` em segundos
   ou data HTTP, `x-ratelimit-reset`), teto 24 h. **T**.
@@ -297,6 +301,15 @@ caminho de instalação e instala os três binários juntos).
   `.parcial`. **T** (sistema de arquivos falso) + **T** Windows em pasta temporária.
 - **U-15** A chave embutida não é a de teste e decodifica como pública Minisign válida;
   em build de release não existe forma de substituí-la (sem `option_env!`). **T** + **I**.
+- **U-15a** Feature `laboratorio` (URL base e chave de ensaio) não vaza para release:
+  (a) teste normal confere que `CHAVE_OFICIAL` é igual à linha base64 de
+  `instalador/nv-tuner-minisign.pub` (`include_str!`) e diferente da chave de ensaio;
+  (b) a chave e a URL de ensaio só existem em código `#[cfg(feature = "laboratorio")]`,
+  e o crate tem `#[cfg(all(feature = "laboratorio", not(debug_assertions)))] compile_error!`;
+  (c) o `release.yml` compila com `--locked` sem `--features`/`--all-features` e um passo
+  falha se `cargo metadata`/`cargo tree -e features` mostrar `laboratorio` ativa; (d)
+  `nvt-assinar verificar` na release (U-63) usa `CHAVE_OFICIAL`, então um MSI de
+  laboratório assinado com a chave de ensaio nunca passa. **T** + **I**.
 - **U-16** O verificador é o mesmo código no serviço e em `nvt-assinar verificar`
   (crate `nvt-atualizacao`). **I**.
 - **U-17** Só instala se `versao > instalada` **e** `versao ≥ maior_vista` (igualdade só
@@ -363,7 +376,10 @@ caminho de instalação e instala os três binários juntos).
 - **U-31** Linha de comando exata:
   `"<System32>\msiexec.exe" /i "<pasta>\nv-tuner-X.Y.Z-x64.msi" /qn /norestart /l*v "<pasta>\instalacao-X.Y.Z.log"`.
   Nenhuma propriedade pública (`RESTAURAR_PERFIL` nunca é passada). Caminhos sem aspas
-  internas (garantido por U-23). **T**.
+  internas (garantido por U-23). A pasta vem de `SHGetKnownFolderPath(FOLDERID_ProgramData)`
+  (nunca de variável de ambiente) e é passada **sem** o prefixo `\\?\` que
+  `fs::canonicalize` devolve; a montagem recusa caminho com `"`, `%`, controle, ou que
+  não comece por letra de unidade + `:\`. **T** (inclusive pasta com espaços).
 - **U-32** `bInheritHandles = FALSE`; flags `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
   CREATE_UNICODE_ENVIRONMENT` (não combina com `DETACHED_PROCESS`, P§1);
   `CREATE_BREAKAWAY_FROM_JOB` só se `IsProcessInJob` = verdadeiro, e falha nessa
@@ -389,6 +405,11 @@ caminho de instalação e instala os três binários juntos).
 - **U-39** O upgrade preserva estado e ajustes: as ações de restauração do WiX já não
   rodam com `UPGRADINGPRODUCTCODE` (`instalador/nv-tuner.wxs`, `InstallExecuteSequence`)
   e nada nesta especificação as aciona. **I** + **L**.
+- **U-39a** Jogo aberto **durante** o upgrade: o msiexec só troca arquivos e para/inicia
+  o serviço e o agente; nada no pacote nem no atualizador escreve no DRS ou no registro de
+  vídeo. O serviço novo, ao iniciar, só grava pelo caminho comum, que já consulta o portão
+  imediatamente antes de cada gravação (L4). **I** + **L** (L-05b: abrir o processo
+  vigiado no meio do upgrade; nenhuma gravação DRS no log até fechá-lo).
 
 ### 8.5 Agente e UI após o upgrade (`U-40..U-49`)
 
@@ -402,7 +423,10 @@ caminho de instalação e instala os três binários juntos).
   “O nv-tuner foi atualizado. Feche e abra de novo.” e para de reconectar; não se
   relança. **T** (`crates/nvt-ui/src/modelo.rs`).
 - **U-43** O serviço novo, ao concluir U-35 com sucesso, relança o agente **uma vez** em
-  cada sessão de `sessoes_agente` que esteja `WTSActive` (`WTSEnumerateSessionsW`), e
+  cada sessão de `sessoes_agente` que esteja `WTSActive` (`WTSEnumerateSessionsW`) **e**
+  cujo token (`WTSQueryUserToken`) tenha o mesmo SID gravado com a sessão antes do upgrade
+  (`sessoes_agente` passa a guardar `[{sessao, sid}]`; id de sessão reaproveitado por
+  outro usuário não recebe agente), sem agente já presente (mutex), e
   então apaga `sessoes_agente` (persistido antes de relançar, para não repetir após
   queda). **T** (fachada WTS).
 - **U-44** Relançamento: `WTSQueryUserToken` → `CreateEnvironmentBlock(token, FALSE)` →
@@ -588,6 +612,13 @@ pasta nova + `nvt-assinar verificar`; (11) esperar CI verde (U-64; `permissions:
 actions: read`); (12) `gh release edit --draft=false --latest`. O secret entra só nos
 passos 2 e 7, via `env:`. `concurrency` mantido.
 
+Endurecimento obrigatório: `NV_TUNER_MINISIGN_KEY` é secret de **Environment** `release`
+com regra de implantação só para tags `v*` (sem aprovação manual, então não contraria
+“sem ninguém fazer nada”); sem isso qualquer workflow alterado num branch com permissão
+de push leria o secret. O job de release não usa `Swatinem/rust-cache` (cache
+compartilhado pode ser envenenado por outro ref e entraria no binário assinado). Passo
+(1b): falha se a feature `laboratorio` estiver ativa (U-15a).
+
 ### 11.3 `CONTRIBUTING.md` (“Chave de assinatura” e “Como lançar”)
 
 Comandos exatos a documentar (minisign 0.11+ oficial, fora do repositório):
@@ -663,7 +694,7 @@ lote) e as demais implementam.
 | 4.1 Agente | `crates/nvt-agente/src/ciclo.rs`, `crates/nvt-agente/src/ciclo_testes.rs` | U-41 |
 | 4.2 UI | `crates/nvt-ui/src/servico.rs`, `crates/nvt-ui/src/modelo.rs`, `crates/nvt-ui/src/textos.rs`, `crates/nvt-ui/src/ui.rs` | U-42, U-47, U-48 em testes de modelo/textos |
 
-### Lote 5 — release e documentação (depende de 1.1; paralelo aos lotes 2–4)
+### Lote 5 — release e documentação (depende de 1.1; paralelo aos lotes 2–4; 5.2 depende de 5.1, pois o ensaio roda `nvt-assinar`)
 
 | Tarefa | Escreve | Pronto quando |
 |---|---|---|
@@ -695,6 +726,7 @@ de um repositório de ensaio no GitHub (fork) para exercitar redirecionamentos r
 | L-03 | Agente e UI abertos durante o upgrade | RM fecha ambos sem 3010; UI mostra “reabra” se ainda viva; agente relançado (U-43) uma vez por sessão; console + RDP simultâneos |
 | L-04 | Serviço em job (`IsProcessInJob`) | registro do caso; breakaway tentado conforme U-32 |
 | L-05 | Jogo vigiado aberto (ex.: `cs2.exe` falso na lista) | adia; instala ≤ 60 s após fechar |
+| L-05b | Jogo vigiado aberto no meio do upgrade | upgrade conclui; nenhuma gravação DRS até fechar o jogo (U-39a) |
 | L-06 | Sem internet / proxy WinHTTP configurado / DNS falho | nada bloqueia; espera 30 min → 60 min…; com proxy, baixa |
 | L-07 | Assinatura inválida, de outra chave, legada, comentário trocado, MSI com 1 byte alterado | nada instalado; motivo visível |
 | L-08 | Manifesto com versão igual e menor | recusado (U-17) |
@@ -731,3 +763,18 @@ de um repositório de ensaio no GitHub (fork) para exercitar redirecionamentos r
 9. **Q9 — `maior_vista` versus release removida/retirada**: se o mantenedor publicar vX
    por engano e apagar, as máquinas que a viram recusam tudo abaixo de vX; a correção é
    publicar versão maior (coerente com “só sobe de versão”).
+10. **Q10 — commit/tag malicioso**: quem tem push cria tag e o workflow assina o que
+    estiver no commit; a assinatura não distingue. Proposto: ruleset de tags `v*` só para
+    o mantenedor e branch protection na `main`; ações do workflow fixadas por SHA
+    (hoje por tag móvel, `@v7`, `@stable`, `@v2`).
+11. **Q11 — mascaramento do secret de várias linhas**: o `.key` tem duas linhas; o
+    GitHub mascara por linha e a primeira (“untrusted comment: …”) é texto comum.
+    Proposto: gravar só a linha base64 e o `nvt-assinar` remontar a caixa; confirmar
+    no lote 5.1.
+12. **Q12 — serviço novo que não inicia**: `ServiceControl Wait="yes"` faz o MSI falhar e
+    reverter (rollback religa o antigo, que conta a falha via log); se iniciar e cair
+    depois, a recuperação do SCM (reinicia 2×, depois nada) deixa a máquina sem serviço e
+    sem atualizador até reinstalação manual. Aceitar ou pôr `ThirdFailureActionType`
+    também `restart` com `ResetPeriodInDays`.
+13. **Q13 — Q3**: recomenda-se **não** aceitar `*.githubusercontent.com`; a lista exata
+    é defesa em profundidade e mudança do GitHub vira falha de rede visível, não risco.
