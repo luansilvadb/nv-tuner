@@ -139,6 +139,26 @@ jobs:
           }
           Write-Host 'Feature laboratorio desligada.'
 
+      - name: Conferir features de teste desligadas
+        shell: pwsh
+        run: |
+          # medicao-partidas e build-de-teste só existem no build de teste local do
+          # mantenedor (scripts/build-teste.ps1; docs/spec/interface-e-saude.md §8.4).
+          # Árvore invertida em cada crate que declara as features: a árvore direta do
+          # workspace não lista as features dos próprios membros.
+          $crates = @('nvt-medicao', 'nvt-manutencao', 'nvt-service', 'nvt-agente', 'nvt-ui') |
+            Where-Object { Test-Path "crates/$_/Cargo.toml" }
+          $arvore = ''
+          foreach ($c in $crates) {
+            $arvore += cargo tree --locked --workspace -e features -i $c --target all 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "cargo tree -i $c falhou:`n$arvore" }
+          }
+          $ativas = @('medicao-partidas', 'build-de-teste') | Where-Object { $arvore -match ('feature "' + [regex]::Escape($_) + '"') }
+          if ($ativas) {
+            throw "Feature(s) de build de teste ativa(s) no build de release: $($ativas -join ', ')`n$arvore"
+          }
+          Write-Host 'Features medicao-partidas e build-de-teste desligadas.'
+
       - name: Compilar nvt-assinar (só para conferir a chave embutida)
         run: cargo build --release --locked -p nvt-assinar
 

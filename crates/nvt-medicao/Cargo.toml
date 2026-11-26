@@ -1,0 +1,33 @@
+[package]
+name = "nvt-medicao"
+description = "Medição de partidas (build de teste): núcleo puro de frametime/engasgo/1% low e fachadas ETW e NVML"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Só em build de teste (§8.4): build.rs recusa sem NVT_BUILD_DE_TESTE=1 ou com CI.
+medicao-partidas = ["dep:windows-sys"]
+
+[dependencies]
+serde.workspace = true
+nvt-ipc.workspace = true
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Etw",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_SystemInformation",
+    "Win32_System_Time",
+] }
+
+[lints]
+workspace = true

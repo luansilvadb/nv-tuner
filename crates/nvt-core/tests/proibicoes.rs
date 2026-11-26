@@ -83,12 +83,12 @@ const PERMITIDOS: &[(&str, &str, usize)] = &[
     // D3 (docs/spec/interface-e-saude.md): abrir `ms-settings:startupapps` (L4), numa
     // única chamada; a constante literal é conferida em `abrir_usa_so_a_constante...`.
     ("crates/nvt-ui/src/abrir.rs", "ShellExecuteW", 1),
-    // §8.3: sessão ETW da medição; contagens fixadas no L5, quando o arquivo nascer.
-    ("crates/nvt-medicao/src/etw.rs", "StartTraceW", 0), // L5
-    ("crates/nvt-medicao/src/etw.rs", "EnableTraceEx2", 0), // L5
-    ("crates/nvt-medicao/src/etw.rs", "OpenTraceW", 0),  // L5
-    ("crates/nvt-medicao/src/etw.rs", "ProcessTrace", 0), // L5
-    ("crates/nvt-medicao/src/etw.rs", "ControlTraceW", 0), // L5
+    // §8.3: sessão ETW da medição, uma linha por termo (contagens fixadas no L5).
+    ("crates/nvt-medicao/src/etw.rs", "StartTraceW", 1),
+    ("crates/nvt-medicao/src/etw.rs", "EnableTraceEx2", 1),
+    ("crates/nvt-medicao/src/etw.rs", "OpenTraceW", 1),
+    ("crates/nvt-medicao/src/etw.rs", "ProcessTrace", 1),
+    ("crates/nvt-medicao/src/etw.rs", "ControlTraceW", 1),
     // §8.3: exclusão da limpeza de temporários (L3): só `FileDispositionInfoEx` em
     // `ExcluidorReal`; `DeleteFileW` e `RemoveDirectoryW` seguem proibidos.
     ("crates/nvt-manutencao/src/windows.rs", "DeleteFileW", 0),

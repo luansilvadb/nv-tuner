@@ -45,10 +45,13 @@ pub enum Cenario {
     PrimeiraVez,
     /// Saúde em dia, programas novos na inicialização e limpeza em simulação.
     Saude,
+    /// Partidas fictícias (build de teste).
+    #[cfg(feature = "medicao-partidas")]
+    Partidas,
 }
 
 impl Cenario {
-    pub const TODOS: [Cenario; 9] = [
+    pub const TODOS: &[Cenario] = &[
         Cenario::Otimizado,
         Cenario::Melhorias,
         Cenario::Piorou,
@@ -58,6 +61,8 @@ impl Cenario {
         Cenario::SemServico,
         Cenario::PrimeiraVez,
         Cenario::Saude,
+        #[cfg(feature = "medicao-partidas")]
+        Cenario::Partidas,
     ];
 
     /// Chave de `--demonstracao`.
@@ -72,16 +77,22 @@ impl Cenario {
             Cenario::SemServico => "sem-servico",
             Cenario::PrimeiraVez => "primeira-vez",
             Cenario::Saude => "saude",
+            #[cfg(feature = "medicao-partidas")]
+            Cenario::Partidas => "partidas",
         }
     }
 
     pub fn de_chave(s: &str) -> Option<Cenario> {
-        Cenario::TODOS.into_iter().find(|c| c.chave() == s)
+        Cenario::TODOS.iter().copied().find(|c| c.chave() == s)
     }
 
     /// Lista para a mensagem de erro da linha de comando.
     pub fn chaves() -> String {
-        Cenario::TODOS.map(Cenario::chave).join(", ")
+        Cenario::TODOS
+            .iter()
+            .map(|c| c.chave())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Resposta fictícia de `ObterSaude` (só `piorou` e `saude`).
@@ -657,6 +668,96 @@ fn saude_simulacao() -> nvt_ipc::Saude {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Partidas fictícias (build de teste)
+// ---------------------------------------------------------------------------
+
+/// "Agora" das partidas fictícias (as datas relativas não dependem do relógio).
+#[cfg(feature = "medicao-partidas")]
+pub const AGORA_PARTIDAS: u64 = QUANDO;
+
+/// Partidas fictícias, da mais recente para a mais antiga (só `partidas`).
+#[cfg(feature = "medicao-partidas")]
+pub fn partidas(c: Cenario) -> Vec<nvt_ipc::Partida> {
+    if c != Cenario::Partidas {
+        return Vec::new();
+    }
+    const H: u64 = 3600;
+    const D: u64 = 24 * H;
+    // (id, jogo, exe, há quanto tempo, duração, fps base, engasgos, temp)
+    type Base<'a> = (u64, &'a str, &'a str, u64, u32, f32, u32, u8);
+    let base: [Base; 6] = [
+        (6, "cs2", "cs2.exe", 2 * H, 40 * 60, 287.0, 0, 71),
+        (
+            5,
+            "valorant",
+            "VALORANT-Win64-Shipping.exe",
+            D,
+            35 * 60,
+            240.0,
+            5,
+            68,
+        ),
+        (4, "cs2", "cs2.exe", D + 3 * H, 52 * 60, 281.0, 0, 70),
+        (3, "cs2", "cs2.exe", 8 * D, 45 * 60, 262.0, 3, 74),
+        (
+            2,
+            "valorant",
+            "VALORANT-Win64-Shipping.exe",
+            9 * D,
+            30 * 60,
+            236.0,
+            0,
+            67,
+        ),
+        (1, "cs2", "cs2.exe", 10 * D, 38 * 60, 258.0, 1, 73),
+    ];
+    base.into_iter()
+        .map(|(id, jogo, exe, ha, dur, fps, engasgos, temp)| {
+            let amostras: Vec<nvt_ipc::AmostraSegundo> = (0..dur)
+                .map(|t| {
+                    // Onda suave e quedas fixas nos engasgos (determinístico).
+                    let onda = ((t as f32) / 47.0).sin() * 18.0 + ((t as f32) / 13.0).cos() * 7.0;
+                    let queda = engasgos > 0 && t % (dur / (engasgos + 1)).max(1) == 0 && t > 0;
+                    let q = if queda { fps * 0.45 } else { fps + onda };
+                    nvt_ipc::AmostraSegundo {
+                        t_rel_s: t,
+                        quadros: q as u16,
+                        frametime_medio_us: (1_000_000.0 / q) as u32,
+                        frametime_max_us: (1_000_000.0 / q * if queda { 6.0 } else { 1.6 }) as u32,
+                        engasgos: u8::from(queda),
+                        gpu_uso_pct: Some(90),
+                        gpu_temp_c: Some(temp - 4 + (t % 5) as u8),
+                    }
+                })
+                .collect();
+            nvt_ipc::Partida {
+                resumo: nvt_ipc::ResumoPartida {
+                    id,
+                    jogo_id: jogo.into(),
+                    executavel: exe.into(),
+                    inicio_unix: QUANDO - ha,
+                    duracao_s: dur,
+                    quadros_total: (fps * dur as f32) as u64,
+                    fps_medio: fps,
+                    fps_mediana: fps + 4.0,
+                    fps_1pct_low: fps * 0.49,
+                    fps_01pct_low: fps * 0.31,
+                    engasgos,
+                    tempo_engasgado_ms: engasgos * 42,
+                    histograma: vec![0; nvt_ipc::FAIXAS_HISTOGRAMA],
+                    gpu_temp_max_c: Some(temp),
+                    gpu_uso_medio_pct: Some(88),
+                    perda_eventos_pct: 0.0,
+                    encerrada_por_erro: None,
+                    versao_formato: 1,
+                },
+                amostras,
+            }
+        })
+        .collect()
+}
+
 /// Dados fictícios completos do cenário.
 pub fn dados(c: Cenario) -> Dados {
     let js = jogos(c);
@@ -704,9 +805,18 @@ mod testes {
         );
     }
 
+    /// Sem a feature, o cenário e a tela de partidas não existem.
+    #[cfg(not(feature = "medicao-partidas"))]
+    #[test]
+    fn sem_partidas_no_build_normal() {
+        assert_eq!(Cenario::de_chave("partidas"), None);
+        assert_eq!(crate::ui::Destino::de_chave("partidas"), None);
+        assert!(!Cenario::chaves().contains("partidas"));
+    }
+
     #[test]
     fn chaves_dos_cenarios() {
-        for c in Cenario::TODOS {
+        for &c in Cenario::TODOS {
             assert_eq!(Cenario::de_chave(c.chave()), Some(c));
         }
         assert_eq!(Cenario::de_chave("nada"), None);
@@ -714,7 +824,7 @@ mod testes {
 
     #[test]
     fn cada_cenario_tem_o_veredito_esperado() {
-        for c in Cenario::TODOS {
+        for &c in Cenario::TODOS {
             let ui = ui(c);
             let v = veredito(&Fatos::de_ui(&ui, false), ui.saude().as_ref());
             if let Some(s) = c.saude() {
@@ -725,6 +835,8 @@ mod testes {
                 | Cenario::Atualizado
                 | Cenario::PrimeiraVez
                 | Cenario::Saude => v == Veredito::Otimizado,
+                #[cfg(feature = "medicao-partidas")]
+                Cenario::Partidas => v == Veredito::Otimizado,
                 Cenario::Melhorias => v == Veredito::Melhorias { quantidade: 3 },
                 Cenario::Piorou => matches!(v, Veredito::Piorou(TipoSinal::EspacoLivre)),
                 Cenario::JogoAberto => v == Veredito::EsperandoJogo,

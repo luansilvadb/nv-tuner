@@ -31,8 +31,6 @@ const NAV_AVANCADO: &str = "Avançado";
 #[cfg(feature = "medicao-partidas")]
 const NAV_PARTIDAS: &str = "Partidas";
 #[cfg(feature = "medicao-partidas")]
-const PARTIDAS_VAZIO: &str = "Nenhuma partida gravada ainda.";
-#[cfg(feature = "medicao-partidas")]
 const BUILD_DE_TESTE: &str = "Build de teste";
 const VERSAO: &str = concat!("versão ", env!("CARGO_PKG_VERSION"));
 
@@ -250,12 +248,18 @@ impl Janela {
         match self.secao {
             Secao::Inicio => super::inicio::render(self, cx),
             Secao::Jogos => super::jogos::render(self, cx),
-            Secao::Avancado => super::avancado::render(self, window, cx),
+            Secao::Avancado => {
+                let a = super::avancado::render(self, window, cx);
+                #[cfg(feature = "medicao-partidas")]
+                let a = v_flex()
+                    .gap(px(tema::ESP_8))
+                    .child(a)
+                    .child(super::partidas::grupo_metricas(self, cx))
+                    .into_any_element();
+                a
+            }
             #[cfg(feature = "medicao-partidas")]
-            Secao::Partidas => div()
-                .text_color(cx.theme().muted_foreground)
-                .child(PARTIDAS_VAZIO)
-                .into_any_element(),
+            Secao::Partidas => super::partidas::render(self, cx),
         }
     }
 }

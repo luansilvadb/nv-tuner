@@ -442,6 +442,16 @@ fn falha_inicio(e: ErroIpc) -> FalhaInicio {
     }
 }
 
+/// Pedido de partidas numa conexão própria (bloqueante; chamar fora da
+/// thread da janela). `RecursoAusente` = serviço sem a gravação.
+#[cfg(feature = "medicao-partidas")]
+pub fn requisitar(req: &Requisicao) -> Result<Resposta, FalhaInicio> {
+    let pipe = PIPE.get().ok_or(FalhaInicio::SemServico)?;
+    let cfg = nvt_ipc::pipe::ConfigCliente::default();
+    let mut c = nvt_ipc::pipe::Cliente::conectar(pipe, &cfg).map_err(falha_inicio)?;
+    c.requisitar(req).map_err(falha_inicio)
+}
+
 #[cfg(test)]
 mod testes_inicio {
     use super::*;

@@ -4609,6 +4609,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvt-medicao"
+version = "0.2.0"
+dependencies = [
+ "nvt-ipc",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "nvt-service"
 version = "0.2.0"
 dependencies = [

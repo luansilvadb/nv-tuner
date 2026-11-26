@@ -18,6 +18,11 @@
 .PARAMETER SemValidar
   Pula a validação ICE ('wix msi validate').
 
+.PARAMETER SufixoTeste
+  Só para o build de teste (scripts\build-teste.ps1): acrescenta '-<sufixo>' ao nome do
+  MSI e grava em target\dist-<sufixo>\, separado dos MSIs normais. Vazio (padrão): MSI
+  normal em target\dist\, comportamento inalterado.
+
 .PARAMETER Dotnet
   Caminho do dotnet.exe. Padrão: $env:NVT_DOTNET ou o 'dotnet' do PATH.
 
@@ -29,6 +34,8 @@ param(
     [string]$Versao,
     [switch]$SemCompilar,
     [switch]$SemValidar,
+    [ValidatePattern('^[a-z0-9]*$')]
+    [string]$SufixoTeste = '',
     [string]$Dotnet
 )
 
@@ -51,6 +58,12 @@ $Raiz = Split-Path -Parent $Instalador
 $BinDir = Join-Path $Raiz 'target\release'
 $Dist = Join-Path $Raiz 'target\dist'
 $Obj = Join-Path $Raiz 'target\wix'
+$SufixoNome = ''
+if ($SufixoTeste) {
+    $Dist = Join-Path $Raiz "target\dist-$SufixoTeste"
+    $Obj = Join-Path $Raiz "target\wix-$SufixoTeste"
+    $SufixoNome = "-$SufixoTeste"
+}
 
 # Versão a partir do Cargo.toml da raiz.
 if (-not $Versao) {
@@ -85,7 +98,7 @@ foreach ($exe in 'nvt-service.exe', 'nvt-ui.exe', 'nvt-agente.exe') {
 }
 
 New-Item -ItemType Directory -Force $Dist, $Obj | Out-Null
-$Msi = Join-Path $Dist "nv-tuner-$VersaoMsi-x64.msi"
+$Msi = Join-Path $Dist "nv-tuner-$VersaoMsi$SufixoNome-x64.msi"
 
 # 2. WiX (ferramenta local + extensões UI e Util, cacheadas em instalador\.wix\).
 Push-Location $Instalador
