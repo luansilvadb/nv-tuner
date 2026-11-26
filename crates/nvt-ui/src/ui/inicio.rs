@@ -8,13 +8,14 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt, h_flex, v_flex,
+    ActiveTheme, Disableable, Sizable, StyledExt, WindowExt, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::estrutura::Janela;
-use super::estrutura::Secao;
+use super::estrutura::{Secao, estado_vazio, icone_destaque, superficie};
+use crate::demonstracao;
 use crate::local;
 use crate::modelo::{
     Fatos, MotivoIndisponivel, Saude, StatusJogo, Veredito, status_jogo, veredito,
@@ -223,9 +224,12 @@ fn executar(acao: AcaoInicio, cx: &mut Context<Janela>) {
     estado.ocupado = Some(acao);
     estado.resultado = None;
     cx.notify();
-    let tarefa = cx
-        .background_executor()
-        .spawn(async move { servico::executar_inicio(acao) });
+    let tarefa = cx.background_executor().spawn(async move {
+        match demonstracao::ativo() {
+            Some(c) => demonstracao::executar_inicio(c, acao),
+            None => servico::executar_inicio(acao),
+        }
+    });
     cx.spawn(async move |this, cx| {
         let r = tarefa.await;
         let _ = this.update(cx, |janela, cx| {
@@ -241,7 +245,10 @@ fn executar(acao: AcaoInicio, cx: &mut Context<Janela>) {
 
 /// "Começar" nas boas-vindas: grava a marca (falha não bloqueia) e segue.
 pub(super) fn concluir_boas_vindas(cx: &mut Context<Janela>) {
-    let _ = local::marcar_boas_vindas();
+    // Na demonstração nada é gravado.
+    if demonstracao::ativo().is_none() {
+        let _ = local::marcar_boas_vindas();
+    }
     cx.default_global::<EstadoInicio>().boas_vindas_vista = Some(true);
     cx.notify();
 }
@@ -269,43 +276,68 @@ fn abrir_confirmacao(window: &mut Window, cx: &mut Context<Janela>) {
 // Desenho
 // ---------------------------------------------------------------------------
 
-fn cartao(tema: &component::Theme) -> Div {
-    v_flex()
-        .w_full()
-        .gap(px(tema::ESP_3))
-        .p(px(tema::ESP_6))
-        .rounded(px(tema::RAIO))
-        .border_1()
-        .border_color(tema.border)
-        .bg(tema.group_box)
-}
-
-fn titulo_secao(texto: &'static str) -> impl IntoElement {
-    div()
-        .text_size(px(tema::TAM_TITULO_CARTAO))
-        .font_semibold()
-        .child(texto)
-}
-
-/// As boas-vindas ainda não foram vistas (lê a marca do disco uma vez).
+/// As boas-vindas ainda não foram vistas (lê a marca do disco uma vez; na
+/// demonstração, decide o cenário e nada é lido).
 pub(super) fn boas_vindas_pendente(cx: &mut App) -> bool {
     let e = cx.default_global::<EstadoInicio>();
     !*e.boas_vindas_vista
-        .get_or_insert_with(local::boas_vindas_vista)
+        .get_or_insert_with(|| match demonstracao::ativo() {
+            Some(c) => !c.boas_vindas(),
+            None => local::boas_vindas_vista(),
+        })
+}
+
+/// Tom visual do veredito: cor do ícone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TomVeredito {
+    /// Tudo certo (verde).
+    Bom,
+    /// Informação ou ação sugerida (ciano).
+    Destaque,
+    /// Pede atenção (âmbar).
+    Atencao,
+    /// Nada a fazer aqui (cinza).
+    Neutro,
+}
+
+pub(super) fn tom(v: &Veredito) -> TomVeredito {
+    match v {
+        Veredito::Otimizado | Veredito::NadaAFazer => TomVeredito::Bom,
+        Veredito::Melhorias { .. } | Veredito::Verificando | Veredito::AjustesDesligados => {
+            TomVeredito::Destaque
+        }
+        Veredito::Piorou(_) | Veredito::EsperandoJogo | Veredito::Indisponivel(_) => {
+            TomVeredito::Atencao
+        }
+        Veredito::SemPlacaNvidia => TomVeredito::Neutro,
+    }
+}
+
+pub(super) fn cor_tom(t: TomVeredito, tema: &component::Theme) -> Hsla {
+    match t {
+        TomVeredito::Bom => tema.success,
+        TomVeredito::Destaque => tema::cor(tema::DESTAQUE),
+        TomVeredito::Atencao => tema.warning,
+        TomVeredito::Neutro => tema.muted_foreground,
+    }
 }
 
 /// Conteúdo da seção Início (as boas-vindas são desenhadas pela estrutura).
 pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
     let estado = cx.global::<EstadoInicio>().clone();
-    let fatos = Fatos::de_ui(&janela.ui, false);
-    // A UI ainda não consulta `ObterSaude`: sem dados, a seção não aparece.
-    let saude: Option<&Saude> = None;
-    let v = veredito(&fatos, saude);
+    let fatos = janela.fatos();
+    // A UI ainda não consulta `ObterSaude`: sem dados, a seção não aparece
+    // (a demonstração traz sinais fictícios no cenário `piorou`).
+    let saude = demonstracao::ativo().and_then(|c| c.saude());
+    let v = veredito(&fatos, saude.as_ref());
     let texto = t::veredito(&v);
     let b = botoes(&v, &fatos);
     let tema = cx.theme().clone();
     let ocupado = estado.ocupado;
+    let cor = cor_tom(tom(&v), &tema);
 
+    // Um só botão primário (aplicar ou voltar a ajustar); "Desfazer tudo"
+    // é a ação destrutiva, com estilo próprio e confirmação.
     let mut acoes = h_flex().gap(px(tema::ESP_3)).items_center().flex_wrap();
     let mut motivo = None;
     if let Some(a) = b.aplicar {
@@ -319,6 +351,8 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
         acoes = acoes.child(
             Button::new("aplicar-recomendadas")
                 .primary()
+                .large()
+                .h(px(tema::ALTURA_BOTAO))
                 .label(t::BOTAO_APLICAR_RECOMENDADAS)
                 .disabled(desabilitado || ocupado.is_some())
                 .loading(ocupado == Some(AcaoInicio::AplicarRecomendadas))
@@ -329,6 +363,8 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
         acoes = acoes.child(
             Button::new("voltar-a-ajustar")
                 .primary()
+                .large()
+                .h(px(tema::ALTURA_BOTAO))
                 .label(t::BOTAO_VOLTAR_A_AJUSTAR)
                 .disabled(ocupado.is_some())
                 .loading(ocupado == Some(AcaoInicio::VoltarAAjustar))
@@ -338,7 +374,10 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
     if b.desfazer {
         acoes = acoes.child(
             Button::new("desfazer-tudo")
+                .danger()
                 .outline()
+                .large()
+                .h(px(tema::ALTURA_BOTAO))
                 .label(t::BOTAO_DESFAZER_TUDO)
                 .disabled(ocupado.is_some())
                 .loading(ocupado == Some(AcaoInicio::DesfazerTudo))
@@ -352,46 +391,35 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
         Tom::Informacao => tema.foreground,
         Tom::Erro => tema.danger,
     };
-    let veredito_el = cartao(&tema)
-        .id("veredito")
+    let legenda = |s: &'static str| {
+        div()
+            .text_size(px(tema::TAM_LEGENDA))
+            .text_color(tema.muted_foreground)
+            .child(s)
+    };
+    let corpo = v_flex()
+        .flex_1()
+        .min_w_0()
+        .gap(px(tema::ESP_4))
         .child(
-            h_flex()
-                .gap(px(tema::ESP_4))
-                .items_center()
+            v_flex()
+                .gap(px(tema::ESP_1))
                 .child(
-                    Icon::new(icone(&v))
-                        .size(px(40.))
-                        .text_color(tema::cor(tema::DESTAQUE)),
+                    div()
+                        .text_size(px(tema::TAM_SUBTITULO))
+                        .font_semibold()
+                        .child(texto.titulo),
                 )
                 .child(
-                    v_flex()
-                        .gap(px(tema::ESP_1))
-                        .child(div().text_size(px(20.)).font_semibold().child(texto.titulo))
-                        .child(
-                            div()
-                                .text_size(px(tema::TAM_CORPO))
-                                .text_color(tema.muted_foreground)
-                                .child(texto.frase),
-                        ),
+                    div()
+                        .text_size(px(tema::TAM_CORPO))
+                        .text_color(tema.muted_foreground)
+                        .child(texto.frase),
                 ),
         )
         .when(tem_acoes, |c| c.child(acoes))
-        .when_some(motivo, |c, m| {
-            c.child(
-                div()
-                    .text_size(px(tema::TAM_LEGENDA))
-                    .text_color(tema.muted_foreground)
-                    .child(m),
-            )
-        })
-        .when(ocupado.is_some(), |c| {
-            c.child(
-                div()
-                    .text_size(px(tema::TAM_LEGENDA))
-                    .text_color(tema.muted_foreground)
-                    .child(t::AGUARDE),
-            )
-        })
+        .when_some(motivo, |c, m| c.child(legenda(m)))
+        .when(ocupado.is_some(), |c| c.child(legenda(t::AGUARDE)))
         .when_some(estado.resultado.clone(), |c, (tom, m)| {
             c.child(
                 div()
@@ -400,64 +428,111 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                     .child(m),
             )
         });
+    let veredito_el = superficie(&tema).id("veredito").p(px(tema::ESP_6)).child(
+        h_flex()
+            .gap(px(tema::ESP_6))
+            .items_start()
+            .child(icone_destaque(icone(&v), cor))
+            .child(corpo),
+    );
 
     let esperando = fatos.esperando_jogo;
     let (linhas, resto) = resumo_jogos(
         janela
             .ui
-            .dados
-            .jogos
+            .jogos()
             .iter()
             .map(|j| (j.nome.clone(), status_jogo(j, esperando))),
         JOGOS_NO_RESUMO,
     );
-    let jogos_el = cartao(&tema)
+    let vazio = linhas.is_empty();
+    let lista = v_flex().children(linhas.into_iter().enumerate().map(|(i, (nome, status))| {
+        h_flex()
+            .justify_between()
+            .gap(px(tema::ESP_4))
+            .py(px(tema::ESP_3))
+            .when(i > 0, |d| d.border_t_1().border_color(tema.border))
+            .text_size(px(tema::TAM_CORPO))
+            .child(nome)
+            .child(div().text_color(tema.muted_foreground).child(status))
+    }));
+    let jogos_el = superficie(&tema)
+        .p(px(tema::ESP_4))
+        .gap(px(tema::ESP_2))
         .child(
             h_flex()
                 .justify_between()
                 .items_center()
-                .child(titulo_secao(t::SECAO_JOGOS))
+                .child(
+                    div()
+                        .text_size(px(tema::TAM_CORPO))
+                        .font_semibold()
+                        .child(t::SECAO_JOGOS),
+                )
                 .child(
                     Button::new("ver-todos-jogos")
                         .ghost()
-                        .small()
                         .label(t::VER_TODOS)
                         .on_click(cx.listener(|this, _, _, cx| this.ir_secao(Secao::Jogos, cx))),
                 ),
         )
-        .when(linhas.is_empty(), |c| {
-            c.child(
-                div()
-                    .text_size(px(tema::TAM_CORPO))
-                    .text_color(tema.muted_foreground)
-                    .child(tj::NENHUM_JOGO),
-            )
+        .when(vazio, |c| {
+            c.child(estado_vazio(
+                IconName::Gamepad2,
+                tj::NENHUM_JOGO,
+                None,
+                &tema,
+            ))
         })
-        .children(linhas.into_iter().map(|(nome, status)| {
-            h_flex()
-                .justify_between()
-                .text_size(px(tema::TAM_CORPO))
-                .child(nome)
-                .child(div().text_color(tema.muted_foreground).child(status))
-        }))
+        .when(!vazio, |c| c.child(lista))
         .when(resto > 0, |c| {
-            c.child(
-                div()
-                    .text_size(px(tema::TAM_LEGENDA))
-                    .text_color(tema.muted_foreground)
-                    .child(t::mais_jogos(resto)),
-            )
+            c.child(legenda_dinamica(t::mais_jogos(resto), &tema))
         });
 
     v_flex()
         .gap(px(tema::ESP_6))
-        .max_w(px(880.))
+        .max_w(px(tema::LARGURA_CONTEUDO))
         .child(veredito_el)
         .when(!matches!(v, Veredito::Verificando), |c| c.child(jogos_el))
-        .when(mostra_saude(saude), |c| {
-            c.child(cartao(&tema).child(titulo_secao(t::SECAO_SAUDE)))
+        .when_some(saude.filter(|s| mostra_saude(Some(s))), |c, s| {
+            let sinais = s.em_atencao.iter().map(|&sinal| {
+                let m = t::motivo(sinal);
+                let mut letras = m.chars();
+                let texto: String = letras
+                    .next()
+                    .map(|p| p.to_uppercase().chain(letras).collect())
+                    .unwrap_or_default();
+                h_flex()
+                    .gap(px(tema::ESP_3))
+                    .items_center()
+                    .child(
+                        component::Icon::new(IconName::TriangleAlert)
+                            .size(px(tema::ESP_4))
+                            .text_color(tema.warning),
+                    )
+                    .child(texto)
+            });
+            c.child(
+                superficie(&tema)
+                    .p(px(tema::ESP_4))
+                    .gap(px(tema::ESP_3))
+                    .child(
+                        div()
+                            .text_size(px(tema::TAM_CORPO))
+                            .font_semibold()
+                            .child(t::SECAO_SAUDE),
+                    )
+                    .children(sinais),
+            )
         })
         .into_any_element()
+}
+
+fn legenda_dinamica(s: String, tema: &component::Theme) -> Div {
+    div()
+        .text_size(px(tema::TAM_LEGENDA))
+        .text_color(tema.muted_foreground)
+        .child(s)
 }
 
 #[cfg(test)]

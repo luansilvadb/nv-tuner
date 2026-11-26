@@ -227,15 +227,10 @@ fn r_ui_14_visualizacao_sem_services_msc() {
         v.frase,
         "Reinstale o nv-tuner para que ele volte a cuidar do PC."
     );
-    for t in [
-        super::AVISO_VISUALIZACAO,
-        super::AVISO_VISUALIZACAO_TITULO,
-        estado::SERVICO_AUSENTE,
-    ] {
-        assert!(!t.contains("services.msc"), "{t:?}");
-        assert!(!t.contains('\n'), "aviso de várias linhas: {t:?}");
-        assert!(t.chars().count() <= MAX_FRASE, "aviso longo: {t:?}");
-    }
+    let t = estado::SERVICO_AUSENTE;
+    assert!(!t.contains("services.msc"), "{t:?}");
+    assert!(!t.contains('\n'), "aviso de várias linhas: {t:?}");
+    assert!(t.chars().count() <= MAX_FRASE, "aviso longo: {t:?}");
     for (nome, fonte) in FONTES {
         // A própria lista de jargão deste arquivo não entra na varredura.
         assert!(!fonte.contains("services.msc"), "services.msc em {nome}");

@@ -18,7 +18,8 @@ target\release\nvt-ui.exe [opções]
 | Opção | Efeito |
 |---|---|
 | `--pipe <nome>` | usa outro named pipe (testes); padrão `\\.\pipe\nv-tuner` |
-| `--tela <chave>` | tela inicial: `visao-geral`, `jogos`, `mudancas`, `windows`, `preferencias`, `historico`, `restaurar` |
+| `--tela <chave>` | seção inicial: `inicio`, `jogos`, `avancado` (as chaves legadas `visao-geral`, `mudancas`, `windows`, `preferencias`, `historico`, `restaurar` abrem o Avançado) |
+| `--demonstracao <cenario>` | dados fictícios fixos, sem serviço e sem ler a máquina (ver Modo de demonstração) |
 | `--sair-apos <s>` | fecha sozinha depois de `s` segundos (capturas automatizadas) |
 | `--expandir <jogo>` | abre já expandida, na tela Jogos, a linha do jogo com esse nome ou perfil (repetível; capturas) |
 
@@ -28,6 +29,38 @@ modo de visualização** (o driver real continua sendo lido, nada é gravado).
 Serve para testes e capturas de outra arquitetura; não existe no binário de
 release.
 
+
+## Modo de demonstração
+
+```text
+cargo run -p nvt-ui -- --demonstracao <cenario> [--tela inicio|jogos|avancado] [--expandir <jogo>]
+```
+
+Renderiza a UI com dados **fictícios fixos** (`demonstracao.rs`), sem serviço
+e sem ler a máquina: `main` usa o canal simulado no lugar de
+`servico::iniciar` (nunca os dois), as ações do Início e da tela Jogos
+recebem um resultado simulado, nada é gravado (nem a marca das boas-vindas)
+e a barra de título diz “nv-tuner (demonstração)”. Jogos: Counter-Strike 2
+(com detalhe preenchido: o que o app fez, Faça no jogo e Arquivo do jogo),
+VALORANT, Rocket League, Rainbow Six Siege e Dota 2; placa e caminhos
+genéricos, sem dado pessoal.
+
+| Cenário | Estado mostrado |
+|---|---|
+| `otimizado` | PC otimizado; Desfazer tudo |
+| `melhorias` | 3 melhorias recomendadas; Aplicar melhorias recomendadas |
+| `piorou` | Algo piorou (pouco espaço livre) e Saúde do PC |
+| `jogo-aberto` | VALORANT aberto; mudanças esperando o jogo fechar |
+| `desligado` | depois de Desfazer tudo; Voltar a ajustar |
+| `atualizado` | atualização concluída (linha de estado) |
+| `sem-servico` | nv-tuner não está ativo; botões de escrita desabilitados |
+| `primeira-vez` | boas-vindas |
+
+Testes (`demonstracao::testes`): veredito de cada cenário; todo comando e
+toda ação do Início respondem sem serviço; o módulo não contém caminho até
+o pipe, o cálculo local, `std::fs` ou `std::env`; `main` escolhe o canal
+simulado antes do serviço e só chama `servico::iniciar` uma vez; dados sem
+caminho real nem conta.
 ## Modos de operação
 
 ```
@@ -103,11 +136,47 @@ as bibliotecas localmente.
 
 ## Telas
 
-Capturas em `docs/ui-capturas/` (L2, R-UI-13; modo de visualização nesta
-máquina, `--pipe` para um pipe inexistente, só a área da janela):
-`boas-vindas.png` (primeiro uso, janela inteira), `inicio.png`, `jogos.png` e
-`avancado.png` (`--tela inicio|jogos|avancado`). As telas técnicas abaixo
-(v0.2.0) hoje são grupos da seção Avançado.
+Capturas em `docs/ui-capturas/` (R-UI-13), todas do modo de demonstração e
+só do retângulo da janela (`PrintWindow`, sem a moldura invisível):
+
+| Arquivo | Comando |
+|---|---|
+| `inicio-otimizado.png` | `--demonstracao otimizado` |
+| `inicio-melhorias.png` | `--demonstracao melhorias` |
+| `inicio-piorou.png` | `--demonstracao piorou` |
+| `inicio-jogo-aberto.png` | `--demonstracao jogo-aberto` |
+| `inicio-desligado.png` | `--demonstracao desligado` |
+| `inicio-atualizado.png` | `--demonstracao atualizado` |
+| `inicio-sem-servico.png` | `--demonstracao sem-servico` |
+| `boas-vindas.png` | `--demonstracao primeira-vez` |
+| `jogos.png` | `--demonstracao otimizado --tela jogos` |
+| `jogos-detalhe.png` | `--demonstracao otimizado --tela jogos --expandir "Counter-Strike 2"` |
+| `avancado.png` | `--demonstracao otimizado --tela avancado` |
+
+Regras visuais (tema em `tema.rs`, testadas em `ui::estrutura::tokens`):
+
+- **Uma mensagem por estado.** A linha de estado no topo só aparece quando
+  acrescenta algo (`linha_estado_visivel`): no Início, “não está ativo” e
+  “jogo aberto” ficam só no veredito; nas outras telas, na linha. Não há
+  faixa amarela nem selo de conexão na lateral; o rodapé da lateral mostra
+  só a versão.
+- **Veredito protagonista.** Cartão do Início com ícone num círculo na cor
+  do estado (verde = otimizado, ciano = ação sugerida ou desligado, âmbar =
+  atenção), título (20), frase e os botões dentro dele.
+- **Botões.** No máximo um primário ciano por tela (Aplicar melhorias
+  recomendadas ou Voltar a ajustar no Início, Começar nas boas-vindas,
+  Salvar preferências no Avançado); secundários com contorno; “Desfazer
+  tudo” em contorno vermelho e sempre com confirmação. Ações principais com
+  36 px de altura (Começar, 44 px).
+- **Tipografia** só em 28 / 20 / 14 / 12 px; espaçamentos só pelos tokens
+  `ESP_*`; todo cartão e lista com o mesmo canto (`RAIO_CARTAO`) e borda.
+- **Logo** `assets/png/nv-tuner-256.png` na lateral e nas boas-vindas.
+- **Avançado** sem navegação própria: seções empilhadas com título e frase;
+  detalhes técnicos recolhidos em acordeões.
+- **Estados vazios** com ícone, frase e ação centralizados (ex.: Jogos sem
+  jogos, com “Procurar jogos de novo”).
+
+As telas técnicas abaixo (v0.2.0) hoje são seções do Avançado.
 
 ### Visão geral (hoje no Avançado, “Sistema e recursos”)
 
@@ -156,8 +225,11 @@ visualização eles são calculados localmente a partir de `plano.avisos`
 ### Faixa de jogo aberto (adiamento, IPC v4)
 
 Com `estado.adiamento` presente (jogo ou anticheat vigiado em execução), uma
-faixa azul **Jogo aberto** aparece no topo de todas as telas, com os
-processos e a ação pendente (`textos::adiamento`):
+linha de estado “<jogo> está aberto. As mudanças esperam o jogo fechar.”
+aparece no topo das telas Jogos e Avançado (no Início quem diz é o veredito).
+O texto detalhado abaixo (processos e ação pendente, `textos::adiamento`)
+fica nas mensagens de resultado das ações adiadas:
+
 
 | Ação | Texto |
 |---|---|
@@ -381,9 +453,11 @@ Iniciar.
 | Módulo | Papel |
 |---|---|
 | `main.rs` | opções da linha de comando, tema escuro, janela 1200×800 |
-| `ui.rs` | renderização (GPUI + gpui-component): barra lateral e telas |
+| `ui/` | renderização (GPUI + gpui-component): `estrutura` (lateral, linha de estado, peças comuns), `inicio`, `boas_vindas`, `jogos`, `avancado` |
+| `tema.rs` | cores, fonte e tokens de tipografia, espaçamento, cantos e tamanhos |
 | `modelo.rs` | estado da UI sem janela (`EstadoUi`, `Evento`, `Comando`), conformidade, conversão do plano, datas |
 | `servico.rs` | thread de comunicação, reconexão, despacho de comandos |
+| `demonstracao.rs` | modo de demonstração: cenários, dados fictícios e canal simulado (sem pipe) |
 | `local.rs` | modo de visualização: `SomenteLeitura`, detecção e conversão para os DTOs do protocolo |
 | `fuso.rs` | conversão de UTC para o fuso local do Windows |
 | `textos.rs` | textos da interface |

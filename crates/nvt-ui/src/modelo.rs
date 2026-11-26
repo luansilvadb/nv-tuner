@@ -18,7 +18,7 @@ pub mod painel;
 #[allow(unused_imports)]
 pub use painel::{
     Fatos, LinhaEstado, MotivoIndisponivel, Saude, StatusJogo, TipoSinal, Veredito, linha_estado,
-    status_jogo, veredito,
+    linha_estado_visivel, status_jogo, veredito,
 };
 
 /// Telas da navegação lateral.

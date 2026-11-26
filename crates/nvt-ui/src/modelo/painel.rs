@@ -181,6 +181,23 @@ pub enum LinhaEstado {
     AgenteAusente,
 }
 
+/// A linha de estado que a tela mostra: a de [`linha_estado`], menos o que
+/// o veredito (`Some` só no Início) já diz. Uma mensagem por estado.
+pub fn linha_estado_visivel(f: &Fatos, v: Option<&Veredito>) -> Option<LinhaEstado> {
+    let l = linha_estado(f)?;
+    let repetida = matches!(
+        (&l, v),
+        (
+            LinhaEstado::ServicoAusente | LinhaEstado::ProtocoloIncompativel,
+            Some(Veredito::Indisponivel(_)),
+        ) | (
+            LinhaEstado::JogoAberto { .. },
+            Some(Veredito::EsperandoJogo)
+        )
+    );
+    (!repetida).then_some(l)
+}
+
 /// No máximo uma linha, a de maior prioridade.
 pub fn linha_estado(f: &Fatos) -> Option<LinhaEstado> {
     if f.protocolo_incompativel {
@@ -238,6 +255,38 @@ mod testes {
             plano_com_mudancas: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn linha_nao_repete_o_veredito() {
+        let ausente = Fatos {
+            servico_ausente: true,
+            ..pronto()
+        };
+        let v = veredito(&ausente, None);
+        assert_eq!(linha_estado_visivel(&ausente, Some(&v)), None, "Início");
+        assert_eq!(
+            linha_estado_visivel(&ausente, None),
+            Some(LinhaEstado::ServicoAusente),
+            "outras telas"
+        );
+        let jogo = Fatos {
+            esperando_jogo: true,
+            jogo_aberto: Some("VALORANT".into()),
+            ..pronto()
+        };
+        let v = veredito(&jogo, None);
+        assert_eq!(linha_estado_visivel(&jogo, Some(&v)), None);
+        let atualizado = Fatos {
+            atualizacao_concluida: true,
+            ..pronto()
+        };
+        let v = veredito(&atualizado, None);
+        assert_eq!(
+            linha_estado_visivel(&atualizado, Some(&v)),
+            Some(LinhaEstado::AtualizacaoConcluida),
+            "acrescenta ao veredito"
+        );
     }
 
     #[test]

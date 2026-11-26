@@ -14,12 +14,13 @@ use gpui_kit::component::alert::Alert;
 use gpui_kit::component::sidebar::{
     Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
-use gpui_kit::component::tag::Tag;
-use gpui_kit::component::{ActiveTheme, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::modelo::{Comando, Conexao, EstadoUi, Evento, Tela, TipoMensagem};
+use crate::modelo::{
+    Comando, EstadoUi, Evento, Fatos, Tela, TipoMensagem, linha_estado_visivel, veredito,
+};
 use crate::servico::Canal;
 use crate::tema;
 use crate::textos as t;
@@ -157,11 +158,7 @@ impl Janela {
         cx.notify();
     }
 
-    pub(super) fn barra_lateral(
-        &self,
-        rodape: impl IntoElement,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    pub(super) fn barra_lateral(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let itens = Secao::visiveis().iter().map(|&secao| {
             SidebarMenuItem::new(secao.titulo())
                 .icon(secao.icone())
@@ -170,17 +167,13 @@ impl Janela {
         });
         let tema = cx.theme();
         let marca = h_flex()
-            .gap(px(tema::ESP_2))
+            .gap(px(tema::ESP_3))
             .items_center()
+            .py(px(tema::ESP_2))
+            .child(logo(tema::LOGO_LATERAL))
             .child(
                 div()
-                    .size(px(tema::ESP_3))
-                    .rounded(px(tema::ESP_1))
-                    .bg(tema::cor(tema::DESTAQUE)),
-            )
-            .child(
-                div()
-                    .text_size(px(tema::TAM_TITULO_CARTAO + 3.))
+                    .text_size(px(tema::TAM_SUBTITULO))
                     .font_semibold()
                     .child(crate::textos::TITULO_JANELA),
             );
@@ -194,59 +187,70 @@ impl Janela {
             .w(px(tema::LARGURA_LATERAL))
             .header(SidebarHeader::new().child(marca))
             .child(SidebarGroup::new("").child(SidebarMenu::new().children(itens)))
-            .footer(
-                SidebarFooter::new()
-                    .child(v_flex().gap(px(tema::ESP_1)).child(rodape).child(versao)),
-            )
+            .footer(SidebarFooter::new().child(versao))
     }
 
-    /// Linha de estado única no topo do conteúdo (R-UI-05). O texto vem do
-    /// modelo; sem texto, não ocupa espaço.
-    pub(super) fn linha_estado(
-        &self,
-        texto: Option<SharedString>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// Fatos do estado atual (veredito e linha de estado).
+    pub(super) fn fatos(&self) -> Fatos {
+        Fatos::de_ui(&self.ui, self.ui.aviso_atualizado().is_some())
+    }
+
+    /// Linha de estado única no topo do conteúdo (R-UI-05), só quando
+    /// acrescenta algo ao que a tela já diz (no Início, ao veredito).
+    pub(super) fn linha_estado(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let f = self.fatos();
+        let v = (self.secao == Secao::Inicio).then(|| veredito(&f, None));
+        let texto = linha_estado_visivel(&f, v.as_ref()).map(|l| t::estado::texto(&l));
         let tema = cx.theme();
         div().when_some(texto, |d, texto| {
             d.child(
                 h_flex()
                     .id("linha-estado")
-                    .gap(px(tema::ESP_2))
+                    .gap(px(tema::ESP_3))
                     .items_center()
                     .px(px(tema::ESP_8))
-                    .py(px(tema::ESP_2))
+                    .py(px(tema::ESP_3))
                     .border_b_1()
                     .border_color(tema.border)
                     .bg(tema.group_box)
                     .text_size(px(tema::TAM_CORPO))
                     .child(
-                        div()
-                            .w(px(3.))
-                            .h(px(tema::TAM_CORPO + tema::ESP_1))
-                            .rounded(px(2.))
-                            .bg(tema::cor(tema::DESTAQUE)),
+                        Icon::new(IconName::Info)
+                            .size(px(tema::ESP_4))
+                            .text_color(tema::cor(tema::DESTAQUE)),
                     )
                     .child(texto),
             )
         })
     }
 
-    /// Título da página (28 px).
-    pub(super) fn titulo_pagina(&self) -> impl IntoElement {
+    /// Título da página (28 px) e, no Avançado, a frase que o apresenta.
+    pub(super) fn titulo_pagina(&self, tema: &Theme) -> impl IntoElement {
         let titulo = self.secao.titulo();
-        div()
-            .text_size(px(tema::TAM_TITULO_PAGINA))
-            .font_semibold()
-            .child(titulo)
+        v_flex()
+            .gap(px(tema::ESP_1))
+            .child(
+                div()
+                    .text_size(px(tema::TAM_TITULO_PAGINA))
+                    .font_semibold()
+                    .child(titulo),
+            )
+            .when(self.secao == Secao::Avancado, |v| {
+                v.child(
+                    div()
+                        .text_size(px(tema::TAM_CORPO))
+                        .text_color(tema.muted_foreground)
+                        .child(t::avancado::INTRODUCAO),
+                )
+            })
     }
 
     /// Conteúdo da seção ativa.
-    pub(super) fn conteudo_secao(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn conteudo_secao(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.secao {
             Secao::Inicio => super::inicio::render(self, cx),
             Secao::Jogos => super::jogos::render(self, cx),
-            Secao::Avancado => super::avancado::render(self, cx),
+            Secao::Avancado => super::avancado::render(self, window, cx),
             #[cfg(feature = "medicao-partidas")]
             Secao::Partidas => div()
                 .text_color(cx.theme().muted_foreground)
@@ -280,6 +284,7 @@ impl Janela {
     ) -> Self {
         let eventos = canal.eventos;
         super::jogos::instalar_envio(cx, canal.comandos.clone());
+        super::jogos::abrir_inicial(cx, expandidos.first().cloned());
         // Consome os eventos da thread de comunicação sem bloquear a janela.
         cx.spawn(async move |this, cx| {
             loop {
@@ -319,39 +324,33 @@ impl Janela {
         cx.notify();
     }
 
-    pub(super) fn selo_conexao(&self) -> impl IntoElement {
-        match self.ui.conexao {
-            Conexao::Conectando => Tag::secondary().child(t::CONEXAO_CONECTANDO),
-            Conexao::Servico => Tag::success().child(t::CONEXAO_SERVICO),
-            Conexao::Visualizacao => Tag::warning().child(t::CONEXAO_VISUALIZACAO),
-        }
-    }
-
-    fn avisos(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut v = v_flex().gap_2();
+    /// Avisos que a linha de estado e o veredito não cobrem. "Não está
+    /// ativo" e "jogo aberto" ficam só na linha de estado (ou no veredito);
+    /// a versão incompatível, com as duas versões, só no Avançado.
+    fn avisos(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let mut v = v_flex().gap(px(tema::ESP_2));
+        let mut algum = false;
         if self.ui.atualizado {
+            algum = true;
             v = v.child(
                 Alert::info("atualizado-reabra", t::ATUALIZADO_REABRA)
                     .title(t::ATUALIZADO_REABRA_TITULO),
             );
         }
-        if let Some(m) = &self.ui.incompativel {
+        if let Some(m) = self
+            .ui
+            .incompativel
+            .as_ref()
+            .filter(|_| self.secao == Secao::Avancado)
+        {
+            algum = true;
             v = v.child(
                 Alert::error("versao-incompativel", m.clone()).title(t::INCOMPATIVEL_TITULO),
             );
         }
-        if self.ui.conexao == Conexao::Visualizacao && !self.ui.atualizado {
-            v = v.child(
-                Alert::warning("aviso-visualizacao", t::AVISO_VISUALIZACAO)
-                    .title(t::AVISO_VISUALIZACAO_TITULO),
-            );
-        }
         if let Some(e) = &self.ui.erro_local {
+            algum = true;
             v = v.child(Alert::error("erro-local", e.clone()));
-        }
-        if let Some(faixa) = self.ui.faixa_adiamento() {
-            let titulo = t::titulo_adiamento(&faixa);
-            v = v.child(Alert::info("faixa-adiamento", faixa).title(titulo));
         }
         if let Some((tipo, texto)) = self.ui.mensagem_visivel() {
             let a = match tipo {
@@ -361,45 +360,28 @@ impl Janela {
                 }
                 TipoMensagem::Erro => Alert::error("mensagem", texto.clone()),
             };
+            algum = true;
             v = v.child(a.on_close(cx.listener(|this, _, _, cx| {
                 this.ui.mensagem = None;
                 cx.notify();
             })));
         }
         if self.ui.ocupado.is_some() {
+            algum = true;
             v = v.child(
                 div()
-                    .text_sm()
+                    .text_size(px(tema::TAM_CORPO))
                     .text_color(cx.theme().muted_foreground)
                     .child(t::EM_ANDAMENTO),
             );
         }
-        v
+        algum.then_some(v)
     }
 }
 
 impl Render for Janela {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tema = cx.theme().clone();
-        let agente = self
-            .ui
-            .dados
-            .estado
-            .as_ref()
-            .filter(|_| self.ui.conexao == Conexao::Servico)
-            .map_or(t::AGENTE_INDISPONIVEL, |e| {
-                if e.agente.presente {
-                    t::AGENTE_ATIVO
-                } else {
-                    t::AGENTE_AUSENTE
-                }
-            });
-        let rodape = v_flex().gap_1().child(self.selo_conexao()).child(
-            div()
-                .text_xs()
-                .text_color(tema.muted_foreground)
-                .child(agente),
-        );
         let base = || {
             div()
                 .size_full()
@@ -420,14 +402,12 @@ impl Render for Janela {
         base()
             .flex()
             .flex_row()
-            .child(self.barra_lateral(rodape, cx))
+            .child(self.barra_lateral(cx))
             .child(
                 v_flex()
                     .flex_1()
                     .h_full()
-                    .min_w_0()
-                    // O texto da linha de estado virá do modelo (`linha_estado`).
-                    .child(self.linha_estado(None, cx))
+                    .child(self.linha_estado(cx))
                     .child(
                         div()
                             .id("conteudo")
@@ -438,13 +418,13 @@ impl Render for Janela {
                                 v_flex()
                                     .px(px(tema::ESP_8))
                                     .py(px(tema::ESP_6))
-                                    .gap(px(tema::ESP_4))
-                                    .child(self.titulo_pagina())
+                                    .gap(px(tema::ESP_6))
+                                    .child(self.titulo_pagina(&tema))
                                     .when(self.ui.restauracao_usuario_pendente(), |v| {
                                         v.child(explicacao(t::RESTAURACAO_USUARIO_PENDENTE, &tema))
                                     })
-                                    .child(self.avisos(cx))
-                                    .child(self.conteudo_secao(cx)),
+                                    .children(self.avisos(cx))
+                                    .child(self.conteudo_secao(window, cx)),
                             ),
                     ),
             )
@@ -456,30 +436,93 @@ impl Render for Janela {
 // Peças
 // ---------------------------------------------------------------------------
 
-pub(super) fn cartao(titulo: &'static str, corpo: impl IntoElement, tema: &Theme) -> Div {
+/// Superfície comum a todo cartão e lista: mesmo canto, borda e fundo.
+pub(super) fn superficie(tema: &Theme) -> Div {
     v_flex()
-        .gap_3()
-        .p_4()
-        .rounded_lg()
+        .w_full()
+        .rounded(px(tema::RAIO_CARTAO))
         .border_1()
         .border_color(tema.border)
         .bg(tema.group_box)
-        .child(div().text_sm().font_semibold().child(titulo))
+}
+
+pub(super) fn cartao(titulo: &'static str, corpo: impl IntoElement, tema: &Theme) -> Div {
+    superficie(tema)
+        .gap(px(tema::ESP_3))
+        .p(px(tema::ESP_4))
+        .child(
+            div()
+                .text_size(px(tema::TAM_CORPO))
+                .font_semibold()
+                .child(titulo),
+        )
         .child(corpo)
+}
+
+/// Ícone dentro de um círculo tingido com a cor do estado.
+pub(super) fn icone_destaque(icone: IconName, cor: Hsla) -> Div {
+    div()
+        .flex_shrink_0()
+        .size(px(tema::ICONE_DESTAQUE))
+        .rounded_full()
+        .bg(cor.opacity(0.14))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            Icon::new(icone)
+                .size(px(tema::ICONE_DESTAQUE_INTERNO))
+                .text_color(cor),
+        )
+}
+
+/// Estado vazio: ícone, frase e (opcional) ação, centralizados.
+pub(super) fn estado_vazio(
+    icone: IconName,
+    frase: &'static str,
+    acao: Option<AnyElement>,
+    tema: &Theme,
+) -> Div {
+    v_flex()
+        .w_full()
+        .items_center()
+        .gap(px(tema::ESP_4))
+        .py(px(tema::ESP_8))
+        .child(icone_destaque(icone, tema.muted_foreground))
+        .child(
+            div()
+                .text_size(px(tema::TAM_CORPO))
+                .text_color(tema.muted_foreground)
+                .text_center()
+                .child(frase),
+        )
+        .children(acao)
+}
+
+/// Logo do projeto (`assets/png/nv-tuner-256.png`, gerado de `logo.svg`).
+pub(super) fn logo(tamanho: f32) -> Img {
+    static LOGO: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
+    let imagem = LOGO.get_or_init(|| {
+        std::sync::Arc::new(Image::from_bytes(
+            ImageFormat::Png,
+            include_bytes!("../../../../assets/png/nv-tuner-256.png").to_vec(),
+        ))
+    });
+    img(imagem.clone()).size(px(tamanho)).flex_shrink_0()
 }
 
 pub(super) fn linha(rotulo: &'static str, valor: String, tema: &Theme) -> Div {
     h_flex()
-        .gap_4()
+        .gap(px(tema::ESP_4))
         .justify_between()
-        .text_sm()
+        .text_size(px(tema::TAM_CORPO))
         .child(div().text_color(tema.muted_foreground).child(rotulo))
         .child(div().text_right().child(valor))
 }
 
 pub(super) fn explicacao(texto: &'static str, tema: &Theme) -> Div {
     div()
-        .text_sm()
+        .text_size(px(tema::TAM_CORPO))
         .text_color(tema.muted_foreground)
         .child(texto)
 }
@@ -552,5 +595,64 @@ mod testes {
         );
         assert_eq!(Destino::de_chave("nada"), None);
         assert_eq!(Destino::default().secao, Secao::Inicio);
+    }
+}
+
+/// R-UI-11: espaçamento, tipografia e cantos só pelos tokens do tema.
+#[cfg(test)]
+mod tokens {
+    const TELAS: [(&str, &str); 5] = [
+        ("estrutura", include_str!("estrutura.rs")),
+        ("inicio", include_str!("inicio.rs")),
+        ("boas_vindas", include_str!("boas_vindas.rs")),
+        ("jogos", include_str!("jogos.rs")),
+        ("avancado", include_str!("avancado.rs")),
+    ];
+
+    #[test]
+    fn telas_usam_so_tokens() {
+        let proibidos = [
+            ".gap_",
+            ".p_",
+            ".px_",
+            ".py_",
+            ".pt_",
+            ".pb_",
+            ".pl_",
+            ".pr_",
+            ".mt_",
+            ".mb_",
+            ".ml_",
+            ".mr_",
+            ".text_xs(",
+            ".text_sm(",
+            ".text_base(",
+            ".text_lg(",
+            ".text_xl(",
+            ".text_2xl(",
+            ".rounded_sm(",
+            ".rounded_md(",
+            ".rounded_lg(",
+            ".rounded_xl(",
+        ];
+        for (nome, fonte) in TELAS {
+            let producao = fonte.split("#[cfg(test)]").next().unwrap();
+            for p in proibidos {
+                assert!(!producao.contains(p), "{nome}: {p}");
+            }
+            // Números soltos em px(): só tokens (`px(tema::...)`).
+            for (i, l) in producao.lines().enumerate() {
+                let mut resto = l;
+                while let Some(k) = resto.find("px(") {
+                    let depois = &resto[k + 3..];
+                    assert!(
+                        !depois.starts_with(|c: char| c.is_ascii_digit()),
+                        "{nome}:{}: {l}",
+                        i + 1
+                    );
+                    resto = depois;
+                }
+            }
+        }
     }
 }

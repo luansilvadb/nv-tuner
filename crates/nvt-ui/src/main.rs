@@ -13,10 +13,13 @@
 //! - `--sair-apos <segundos>`: fecha sozinha (capturas automatizadas).
 //! - `--expandir <jogo>`: abre já expandida a linha do jogo com esse nome ou perfil
 //!   na tela Jogos (repetível; para capturas).
+//! - `--demonstracao <cenario>`: dados fictícios fixos, sem serviço e sem ler a
+//!   máquina (ver `demonstracao`).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod arquivo_jogo;
+mod demonstracao;
 mod fuso;
 mod local;
 mod modelo;
@@ -38,6 +41,7 @@ struct Opcoes {
     tela: Destino,
     sair_apos: Option<u64>,
     expandir: Vec<String>,
+    demonstracao: Option<demonstracao::Cenario>,
 }
 
 fn ler_opcoes(args: impl IntoIterator<Item = String>) -> Result<Opcoes, String> {
@@ -46,6 +50,7 @@ fn ler_opcoes(args: impl IntoIterator<Item = String>) -> Result<Opcoes, String> 
         tela: Destino::default(),
         sair_apos: None,
         expandir: Vec::new(),
+        demonstracao: None,
     };
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -64,6 +69,13 @@ fn ler_opcoes(args: impl IntoIterator<Item = String>) -> Result<Opcoes, String> 
                 let v = valor("--expandir")?;
                 o.expandir.push(v);
             }
+            "--demonstracao" => {
+                let v = valor("--demonstracao")?;
+                o.demonstracao = Some(demonstracao::Cenario::de_chave(&v).ok_or(format!(
+                    "cenário desconhecido: {v} (use {})",
+                    demonstracao::Cenario::chaves()
+                ))?);
+            }
             outro => return Err(format!("opção desconhecida: {outro}")),
         }
     }
@@ -78,7 +90,14 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let canal = servico::iniciar(opcoes.pipe.clone());
+    // Demonstração: canal simulado no lugar do serviço (nunca os dois).
+    let canal = match opcoes.demonstracao {
+        Some(c) => {
+            demonstracao::ativar(c);
+            demonstracao::iniciar(c)
+        }
+        None => servico::iniciar(opcoes.pipe.clone()),
+    };
 
     // Pacote Lucide completo: a navegação usa ícones fora do conjunto padrão.
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
@@ -94,7 +113,11 @@ fn main() {
                 cx,
             ))),
             titlebar: Some(TitlebarOptions {
-                title: Some(textos::TITULO_JANELA.into()),
+                title: Some(if opcoes.demonstracao.is_some() {
+                    textos::TITULO_JANELA_DEMONSTRACAO.into()
+                } else {
+                    textos::TITULO_JANELA.into()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -131,6 +154,18 @@ mod testes {
         assert_eq!(o.tela, Destino::default());
         assert_eq!(o.sair_apos, None);
         assert!(o.expandir.is_empty());
+        assert_eq!(o.demonstracao, None);
+    }
+
+    #[test]
+    fn opcao_demonstracao() {
+        let o = ler_opcoes(args(&["--demonstracao", "jogo-aberto"])).unwrap();
+        assert_eq!(
+            o.demonstracao,
+            Some(crate::demonstracao::Cenario::JogoAberto)
+        );
+        assert!(ler_opcoes(args(&["--demonstracao", "x"])).is_err());
+        assert!(ler_opcoes(args(&["--demonstracao"])).is_err());
     }
 
     #[test]

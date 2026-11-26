@@ -12,7 +12,6 @@ use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::link::Link;
 use gpui_kit::component::radio::{Radio, RadioGroup};
-use gpui_kit::component::setting::{SettingGroup, SettingItem, SettingPage, Settings};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
@@ -46,125 +45,84 @@ const QUALIDADES: [Qualidade; 3] = [
 ];
 const FPS_ATALHOS: [u32; 6] = [60, 120, 141, 144, 165, 240];
 const FPS_PADRAO: u32 = 141;
-/// Altura reservada à linha de estado, ao título e aos avisos acima da página.
-const ALTURA_RESERVADA: f32 = 190.;
-const ALTURA_MINIMA: f32 = 420.;
 
-/// Conteúdo da seção Avançado. Assinatura estável para o L2: recebe a
-/// janela e o contexto dela e devolve o elemento já apagado de tipo.
-pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
+/// Desenha o conteúdo de uma seção do Avançado.
+type Desenho = fn(&Janela, &mut Window, &mut Context<Janela>) -> AnyElement;
+
+/// Conteúdo da seção Avançado: seções empilhadas, cada uma com título e
+/// frase (sem navegação própria; o título da página já diz "Avançado").
+pub(super) fn render(janela: &Janela, window: &mut Window, cx: &mut Context<Janela>) -> AnyElement {
     if janela.ui.conexao == Conexao::Conectando && janela.ui.dados.estado.is_none() {
         return div()
             .text_color(cx.theme().muted_foreground)
             .child(t::CARREGANDO)
             .into_any_element();
     }
-    let j = cx.entity().downgrade();
-    let grupo = |titulo: &'static str, desc: &'static str| {
-        SettingGroup::new().title(titulo).description(desc)
-    };
-    let pagina = SettingPage::new(ta::TITULO)
-        .description(ta::INTRODUCAO)
-        .default_open(true)
-        .resettable(false)
-        .group(grupo(ta::GRUPO_SISTEMA, ta::GRUPO_SISTEMA_DESC).item(bloco(
-            &j,
-            &["gpu", "vram", "driver", "dlss", "reflex", "rebar", "vrr"],
+    let secoes: [(&'static str, &'static str, Desenho); 9] = [
+        (
+            ta::GRUPO_SISTEMA,
+            ta::GRUPO_SISTEMA_DESC,
             Janela::grupo_sistema,
-        )))
-        .group(
-            grupo(ta::GRUPO_MUDANCAS, ta::GRUPO_MUDANCAS_DESC).item(bloco(
-                &j,
-                &["perfil", "regra", "destravar", "travada"],
-                Janela::mudancas,
-            )),
-        )
-        .group(
-            grupo(ta::GRUPO_SUGESTOES, ta::GRUPO_SUGESTOES_DESC).item(bloco(
-                &j,
-                &["experimental", "aceitar", "retirar"],
-                Janela::grupo_sugestoes,
-            )),
-        )
-        .group(grupo(ta::GRUPO_WINDOWS, ta::GRUPO_WINDOWS_DESC).item(bloco(
-            &j,
-            &["windows", "reverter", "diagnóstico", "agente"],
-            Janela::windows,
-        )))
-        .group(grupo(ta::GRUPO_JOGOS, ta::GRUPO_JOGOS_DESC).item(bloco(
-            &j,
-            &["jogo", "api", "anticheat", "arquivo"],
-            Janela::grupo_jogos,
-        )))
-        .group(
-            grupo(ta::GRUPO_PREFERENCIAS, ta::GRUPO_PREFERENCIAS_DESC).item(bloco(
-                &j,
-                &["sincronismo", "fps", "qualidade"],
-                |j, w, cx| j.preferencias(w, cx).into_any_element(),
-            )),
-        )
-        .group(
-            grupo(ta::GRUPO_ATUALIZACAO, ta::GRUPO_ATUALIZACAO_DESC).item(bloco(
-                &j,
-                &["serviço", "versão", "atualização"],
-                Janela::grupo_atualizacao,
-            )),
-        )
-        .group(
-            grupo(ta::GRUPO_HISTORICO, ta::GRUPO_HISTORICO_DESC).item(bloco(
-                &j,
-                &["histórico"],
-                |j, w, cx| j.historico(w, cx).into_any_element(),
-            )),
-        )
-        .group(
-            grupo(ta::GRUPO_DESFAZER, ta::GRUPO_DESFAZER_DESC).item(bloco(
-                &j,
-                &["restaurar", "original", "desfazer"],
-                |j, w, cx| j.restaurar(w, cx).into_any_element(),
-            )),
+        ),
+        (
+            ta::GRUPO_MUDANCAS,
+            ta::GRUPO_MUDANCAS_DESC,
+            Janela::mudancas,
+        ),
+        (
+            ta::GRUPO_SUGESTOES,
+            ta::GRUPO_SUGESTOES_DESC,
+            Janela::grupo_sugestoes,
+        ),
+        (ta::GRUPO_WINDOWS, ta::GRUPO_WINDOWS_DESC, Janela::windows),
+        (ta::GRUPO_JOGOS, ta::GRUPO_JOGOS_DESC, Janela::grupo_jogos),
+        (
+            ta::GRUPO_PREFERENCIAS,
+            ta::GRUPO_PREFERENCIAS_DESC,
+            |j, w, cx| j.preferencias(w, cx).into_any_element(),
+        ),
+        (
+            ta::GRUPO_ATUALIZACAO,
+            ta::GRUPO_ATUALIZACAO_DESC,
+            Janela::grupo_atualizacao,
+        ),
+        (ta::GRUPO_HISTORICO, ta::GRUPO_HISTORICO_DESC, |j, w, cx| {
+            j.historico(w, cx).into_any_element()
+        }),
+        (ta::GRUPO_DESFAZER, ta::GRUPO_DESFAZER_DESC, |j, w, cx| {
+            j.restaurar(w, cx).into_any_element()
+        }),
+    ];
+    let tema = cx.theme().clone();
+    let mut v = v_flex()
+        .gap(px(tema::ESP_8))
+        .max_w(px(tema::LARGURA_CONTEUDO));
+    for (titulo, frase, desenhar) in secoes {
+        let corpo = desenhar(janela, window, cx);
+        v = v.child(
+            v_flex()
+                .gap(px(tema::ESP_3))
+                .child(
+                    v_flex()
+                        .gap(px(tema::ESP_1))
+                        .child(
+                            div()
+                                .text_size(px(tema::TAM_SUBTITULO))
+                                .font_semibold()
+                                .child(titulo),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(tema::TAM_CORPO))
+                                .text_color(tema.muted_foreground)
+                                .child(frase),
+                        ),
+                )
+                .child(corpo),
         );
-    Moldura(
-        Settings::new("avancado")
-            .sidebar_width(px(tema::LARGURA_LATERAL))
-            .page(pagina),
-    )
-    .into_any_element()
-}
-
-/// Item de grupo que desenha um bloco da janela a cada quadro.
-fn bloco(
-    janela: &WeakEntity<Janela>,
-    palavras: &[&'static str],
-    desenhar: fn(&Janela, &mut Window, &mut Context<Janela>) -> AnyElement,
-) -> SettingItem {
-    let janela = janela.clone();
-    SettingItem::render(move |_, window, cx| {
-        janela
-            .update(cx, |j, cx| desenhar(j, window, cx))
-            .unwrap_or_else(|_| div().into_any_element())
-    })
-    .keywords(palavras.iter().copied())
-}
-
-/// Dá à página de ajustes uma altura definida (a lista dela é virtual).
-#[derive(IntoElement)]
-struct Moldura(Settings);
-
-impl RenderOnce for Moldura {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let altura = (window.viewport_size().height - px(ALTURA_RESERVADA)).max(px(ALTURA_MINIMA));
-        div()
-            .w_full()
-            .h(altura)
-            .rounded_lg()
-            .border_1()
-            .border_color(cx.theme().border)
-            .overflow_hidden()
-            .child(self.0)
     }
+    v.into_any_element()
 }
-
 /// Cartões técnicos do sistema, também usados pela Visão geral legada.
 pub(super) struct CartoesTecnicos {
     pub sistema: Div,
@@ -186,7 +144,7 @@ impl Janela {
         let sistema = cartao(
             t::SECAO_SISTEMA,
             v_flex()
-                .gap_1()
+                .gap(px(tema::ESP_1))
                 .child(linha(
                     t::ROTULO_GPU,
                     gpu.map_or(t::DESCONHECIDO.into(), |g| g.nome.clone()),
@@ -222,7 +180,7 @@ impl Janela {
         let cap = |nome: &'static str, v: Option<bool>| {
             h_flex()
                 .justify_between()
-                .text_sm()
+                .text_size(px(tema::TAM_CORPO))
                 .child(div().text_color(tema.muted_foreground).child(nome))
                 .child(
                     match v {
@@ -236,7 +194,7 @@ impl Janela {
         let capacidades = cartao(
             t::SECAO_CAPACIDADES,
             v_flex()
-                .gap_1()
+                .gap(px(tema::ESP_1))
                 .child(cap(t::CAP_DLSS, caps.map(|c| c.dlss)))
                 .child(cap(t::CAP_FG, caps.map(|c| c.geracao_quadros)))
                 .child(cap(t::CAP_REFLEX, caps.map(|c| c.reflex)))
@@ -268,7 +226,7 @@ impl Janela {
         let servico = cartao(
             t::SECAO_SERVICO,
             v_flex()
-                .gap_1()
+                .gap(px(tema::ESP_1))
                 .child(linha(t::ROTULO_STATUS, status.into(), &tema))
                 .child(linha(t::ROTULO_VERSAO, versao, &tema))
                 .child(linha(t::ROTULO_ULTIMA_APLICACAO, ultima, &tema)),
@@ -279,17 +237,17 @@ impl Janela {
         let atualizacao = (!linhas_atualizacao.is_empty()).then(|| {
             cartao(
                 t::SECAO_ATUALIZACAO,
-                v_flex().gap_1().children(
+                v_flex().gap(px(tema::ESP_1)).children(
                     linhas_atualizacao
                         .into_iter()
-                        .map(|l| div().text_sm().child(l)),
+                        .map(|l| div().text_size(px(tema::TAM_CORPO)).child(l)),
                 ),
                 &tema,
             )
         });
         let aviso_atualizado = self.ui.aviso_atualizado().map(|versao| {
             h_flex()
-                .gap_2()
+                .gap(px(tema::ESP_2))
                 .items_center()
                 .child(div().flex_1().child(Alert::success(
                     "atualizado-para",
@@ -297,7 +255,7 @@ impl Janela {
                 )))
                 .child(
                     Button::new("atualizado-ok")
-                        .primary()
+                        .outline()
                         .label(t::BOTAO_OK)
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(c) = this.ui.dispensar_aviso_atualizado() {
@@ -312,17 +270,17 @@ impl Janela {
         let numero = |n: usize, rotulo: &'static str, cor: Hsla| {
             v_flex()
                 .items_center()
-                .min_w(px(80.))
+                .min_w(px(tema::COLUNA_CURTA))
                 .child(
                     div()
-                        .text_2xl()
+                        .text_size(px(tema::TAM_SUBTITULO))
                         .font_semibold()
                         .text_color(cor)
                         .child(n.to_string()),
                 )
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(px(tema::TAM_LEGENDA))
                         .text_color(tema.muted_foreground)
                         .child(rotulo),
                 )
@@ -330,10 +288,10 @@ impl Janela {
         let conformidade = cartao(
             t::SECAO_CONFORMIDADE,
             v_flex()
-                .gap_3()
+                .gap(px(tema::ESP_3))
                 .child(
                     h_flex()
-                        .gap_4()
+                        .gap(px(tema::ESP_4))
                         .child(numero(c.pendentes, t::CONF_PENDENTES, tema.warning))
                         .child(numero(c.conformes, t::CONF_CONFORMES, tema.success))
                         .child(numero(c.travadas, t::CONF_TRAVADAS, tema.info))
@@ -342,7 +300,7 @@ impl Janela {
                 .when(c.conforme(), |d| {
                     d.child(
                         div()
-                            .text_sm()
+                            .text_size(px(tema::TAM_CORPO))
                             .text_color(tema.success)
                             .child(t::CONF_TUDO_OK),
                     )
@@ -356,19 +314,24 @@ impl Janela {
             if alertas.is_empty() {
                 v_flex().child(
                     div()
-                        .text_sm()
+                        .text_size(px(tema::TAM_CORPO))
                         .text_color(tema.muted_foreground)
                         .child(t::SEM_DERIVA),
                 )
             } else {
-                v_flex().gap_1().children(alertas.iter().map(|a| {
-                    div().text_sm().text_color(tema.warning).child(t::deriva(
-                        &a.nome_legivel,
-                        &a.perfil,
-                        &a.esperado,
-                        a.encontrado.as_deref(),
-                    ))
-                }))
+                v_flex()
+                    .gap(px(tema::ESP_1))
+                    .children(alertas.iter().map(|a| {
+                        div()
+                            .text_size(px(tema::TAM_CORPO))
+                            .text_color(tema.warning)
+                            .child(t::deriva(
+                                &a.nome_legivel,
+                                &a.perfil,
+                                &a.esperado,
+                                a.encontrado.as_deref(),
+                            ))
+                    }))
             },
             &tema,
         );
@@ -392,10 +355,10 @@ impl Janela {
         let pode_escrever = self.ui.pode_escrever();
         let ocioso = self.ui.ocupado.is_none();
         h_flex()
-            .gap_2()
+            .gap(px(tema::ESP_2))
             .child(
                 Button::new("avancado-aplicar")
-                    .primary()
+                    .outline()
                     .label(t::BOTAO_APLICAR)
                     .disabled(!pode_escrever)
                     .when(!pode_escrever, |b| b.tooltip(t::SO_COM_SERVICO))
@@ -432,12 +395,12 @@ impl Janela {
             cx,
         );
         v_flex()
-            .gap_4()
+            .gap(px(tema::ESP_4))
             .child(self.botoes_sistema(cx))
             .child(self.cartao_avisos(&tema))
             .child(
                 h_flex()
-                    .gap_4()
+                    .gap(px(tema::ESP_4))
                     .items_start()
                     .child(div().flex_1().min_w_0().child(c.sistema))
                     .child(div().flex_1().min_w_0().child(c.capacidades)),
@@ -453,7 +416,7 @@ impl Janela {
         let c = self.cartoes_tecnicos(cx);
         let ocioso = self.ui.ocupado.is_none();
         v_flex()
-            .gap_4()
+            .gap(px(tema::ESP_4))
             .children(c.aviso_atualizado)
             .child(c.servico)
             .child(linha(ta::ROTULO_AGENTE, self.estado_agente().into(), &tema))
@@ -496,7 +459,7 @@ impl Janela {
         let tema = cx.theme().clone();
         let sugestoes = &self.ui.dados.sugestoes_driver;
         v_flex()
-            .gap_3()
+            .gap(px(tema::ESP_3))
             .child(explicacao(ta::EXPLICA_EXPERIMENTAL, &tema))
             .when(!sugestoes.is_empty(), |v| {
                 v.child(explicacao(t::EXPERIMENTAIS_DRIVER, &tema))
@@ -518,7 +481,7 @@ impl Janela {
     pub(super) fn mudancas(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let tema = cx.theme().clone();
         let mut v = v_flex()
-            .gap_4()
+            .gap(px(tema::ESP_4))
             .child(explicacao(ta::EXPLICA_PERFIL, &tema));
         if self.ui.dados.grupos.is_empty() {
             v = v.child(explicacao(t::SEM_MUDANCAS, &tema));
@@ -532,13 +495,13 @@ impl Janela {
             v_flex().child(explicacao(t::SEM_RESPEITADAS, &tema))
         } else {
             v_flex()
-                .gap_2()
+                .gap(px(tema::ESP_2))
                 .child(explicacao(ta::EXPLICA_TRAVADA, &tema))
                 .child(explicacao(ta::EXPLICA_DESTRAVAR, &tema))
                 .children(respeitadas.iter().enumerate().map(|(i, r)| {
                     let (perfil, setting) = (r.perfil.clone(), r.setting.clone());
                     h_flex()
-                        .gap_3()
+                        .gap(px(tema::ESP_3))
                         .justify_between()
                         .child(
                             v_flex()
@@ -546,13 +509,13 @@ impl Janela {
                                 .min_w_0()
                                 .child(
                                     div()
-                                        .text_sm()
+                                        .text_size(px(tema::TAM_CORPO))
                                         .font_semibold()
                                         .child(format!("{} · {}", r.nome_perfil, r.nome_legivel)),
                                 )
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(px(tema::TAM_LEGENDA))
                                         .text_color(tema.muted_foreground)
                                         .child(r.motivo.clone()),
                                 ),
@@ -581,7 +544,7 @@ impl Janela {
             v_flex().child(explicacao(t::SEM_REVERSOES, &tema))
         } else {
             v_flex()
-                .gap_2()
+                .gap(px(tema::ESP_2))
                 .children(reversoes.iter().map(|r| reversao(r, &tema)))
         };
         v.child(cartao(t::SECAO_RESPEITADAS, corpo, &tema))
@@ -596,14 +559,14 @@ impl Janela {
     pub(super) fn windows(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let tema = cx.theme().clone();
         let mudancas = &self.ui.dados.sistema.mudancas;
-        let mut ajustes = v_flex().gap_2();
+        let mut ajustes = v_flex().gap(px(tema::ESP_2));
         for (i, mudanca) in mudancas.iter().enumerate() {
             let destino = destino_usuario(&mudanca.setting, mudanca.alvo_tela.as_deref());
             let pode = self.ui.pode_escrever() && destino.is_some();
             let m = ItemMudanca::from(mudanca);
             ajustes = ajustes.child(
                 h_flex()
-                    .gap_3()
+                    .gap(px(tema::ESP_3))
                     .justify_between()
                     .child(linha_mudanca(&m, &tema).flex_1().min_w_0())
                     .child(
@@ -648,7 +611,7 @@ impl Janela {
             .as_ref()
             .map_or(&[][..], |e| e.diagnosticos.as_slice());
         let diagnostico = v_flex()
-            .gap_3()
+            .gap(px(tema::ESP_3))
             .child(explicacao(ta::EXPLICA_DIAGNOSTICO, &tema))
             .when(diagnosticos.is_empty(), |v| {
                 v.child(explicacao(t::SEM_DIAGNOSTICOS, &tema))
@@ -656,14 +619,18 @@ impl Janela {
             .children(diagnosticos.iter().enumerate().map(|(i, d)| {
                 let info = t::diagnostico(&d.codigo);
                 v_flex()
-                    .gap_1()
+                    .gap(px(tema::ESP_1))
                     .child(
-                        div().text_sm().font_semibold().child(
+                        div().text_size(px(tema::TAM_CORPO)).font_semibold().child(
                             info.map_or(d.codigo.as_str(), |(titulo, _, _)| titulo)
                                 .to_owned(),
                         ),
                     )
-                    .child(div().text_sm().child(t::estado_diagnostico(d)))
+                    .child(
+                        div()
+                            .text_size(px(tema::TAM_CORPO))
+                            .child(t::estado_diagnostico(d)),
+                    )
                     .when_some(info, |v, (_, orientacao, url)| {
                         v.when(t::mostrar_orientacao_diagnostico(d), |v| {
                             v.child(explicacao(orientacao, &tema))
@@ -684,13 +651,13 @@ impl Janela {
         );
 
         v_flex()
-            .gap_4()
+            .gap(px(tema::ESP_4))
             .child(linha(ta::ROTULO_AGENTE, self.estado_agente().into(), &tema))
             .child(cartao(t::SECAO_WINDOWS_FEITO, ajustes, &tema))
             .child(cartao(
                 t::SECAO_EXPERIMENTAIS,
                 v_flex()
-                    .gap_2()
+                    .gap(px(tema::ESP_2))
                     .child(explicacao(ta::EXPLICA_EXPERIMENTAL, &tema))
                     .child(experimentais),
                 &tema,
@@ -716,12 +683,14 @@ impl Janela {
             detalhe(
                 SharedString::from(format!("regras-{chave}")),
                 ta::DETALHES_TECNICOS,
-                v_flex().gap_1().children(regras.into_iter().map(|(d, r)| {
-                    div()
-                        .text_xs()
-                        .text_color(tema.muted_foreground)
-                        .child(format!("{d}: {} {r}", t::ROTULO_REGRA))
-                })),
+                v_flex()
+                    .gap(px(tema::ESP_1))
+                    .children(regras.into_iter().map(|(d, r)| {
+                        div()
+                            .text_size(px(tema::TAM_LEGENDA))
+                            .text_color(tema.muted_foreground)
+                            .child(format!("{d}: {} {r}", t::ROTULO_REGRA))
+                    })),
                 window,
                 cx,
             )
@@ -740,7 +709,7 @@ impl Janela {
     ) -> Div {
         let pode = self.ui.pode_escrever();
         v_flex()
-            .gap_2()
+            .gap(px(tema::ESP_2))
             .when(sugestoes.is_empty(), |v| {
                 v.child(explicacao(t::SEM_EXPERIMENTAIS, tema))
             })
@@ -753,21 +722,29 @@ impl Janela {
                 };
                 Some(
                     h_flex()
-                        .gap_3()
+                        .gap(px(tema::ESP_3))
                         .justify_between()
                         .child(
                             v_flex()
                                 .flex_1()
                                 .min_w_0()
-                                .gap_1()
-                                .child(div().text_sm().font_semibold().child(s.descricao.clone()))
-                                .child(div().text_xs().text_color(tema.muted_foreground).child(
-                                    format!(
-                                        "{} · {}",
-                                        t::camada(s.camada),
-                                        t::experimental(s.estado)
-                                    ),
-                                )),
+                                .gap(px(tema::ESP_1))
+                                .child(
+                                    div()
+                                        .text_size(px(tema::TAM_CORPO))
+                                        .font_semibold()
+                                        .child(s.descricao.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(tema::TAM_LEGENDA))
+                                        .text_color(tema.muted_foreground)
+                                        .child(format!(
+                                            "{} · {}",
+                                            t::camada(s.camada),
+                                            t::experimental(s.estado)
+                                        )),
+                                ),
                         )
                         .child(
                             Button::new(SharedString::from(format!("aceite-{chave}-{i}")))
@@ -803,7 +780,7 @@ impl Janela {
         let sincronismo = cartao(
             t::SECAO_SINCRONISMO,
             v_flex()
-                .gap_3()
+                .gap(px(tema::ESP_3))
                 .child(
                     RadioGroup::horizontal("sincronismo")
                         .selected_index(i_sync)
@@ -825,7 +802,7 @@ impl Janela {
             cartao(
                 t::SECAO_QUALIDADE,
                 v_flex()
-                    .gap_3()
+                    .gap(px(tema::ESP_3))
                     .child(
                         RadioGroup::horizontal("qualidade")
                             .selected_index(i_qual)
@@ -839,11 +816,11 @@ impl Janela {
                     )
                     .children(QUALIDADES.map(|q| {
                         h_flex()
-                            .gap_2()
-                            .text_sm()
+                            .gap(px(tema::ESP_2))
+                            .text_size(px(tema::TAM_CORPO))
                             .child(
                                 div()
-                                    .w(px(96.))
+                                    .w(px(tema::COLUNA_CURTA))
                                     .font_semibold()
                                     .when(q == r.qualidade, |d| d.text_color(tema.primary))
                                     .child(t::nome_qualidade(q)),
@@ -877,7 +854,7 @@ impl Janela {
         let limite_fps = cartao(
             t::SECAO_LIMITE_FPS,
             v_flex()
-                .gap_3()
+                .gap(px(tema::ESP_3))
                 .child(
                     Switch::new("limitar-fps")
                         .checked(limite.is_some())
@@ -889,19 +866,19 @@ impl Janela {
                 )
                 .child(
                     h_flex()
-                        .gap_2()
+                        .gap(px(tema::ESP_2))
                         .child(passo("fps-10", "−10", -10))
                         .child(passo("fps-1", "−1", -1))
                         .child(
                             div()
-                                .w(px(88.))
+                                .w(px(tema::COLUNA_CURTA))
                                 .text_center()
                                 .font_semibold()
                                 .child(limite.map_or("—".into(), |v| format!("{v} FPS"))),
                         )
                         .child(passo("fps+1", "+1", 1))
                         .child(passo("fps+10", "+10", 10))
-                        .child(div().w(px(16.)))
+                        .child(div().w(px(tema::ESP_4)))
                         .children(FPS_ATALHOS.map(|v| {
                             Button::new(("fps-atalho", v as usize))
                                 .small()
@@ -923,13 +900,13 @@ impl Janela {
         let pode = self.ui.pode_escrever();
         let rascunho = self.ui.rascunho.clone();
         v_flex()
-            .gap_4()
+            .gap(px(tema::ESP_4))
             .child(sincronismo)
             .child(qualidade)
             .child(limite_fps)
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap(px(tema::ESP_2))
                     .items_center()
                     .child(
                         Button::new("salvar-prefs")
@@ -954,7 +931,7 @@ impl Janela {
                     .when(alterado, |d| {
                         d.child(
                             div()
-                                .text_sm()
+                                .text_size(px(tema::TAM_CORPO))
                                 .text_color(tema.warning)
                                 .child(t::PREFS_NAO_SALVAS),
                         )
@@ -962,7 +939,7 @@ impl Janela {
                     .when(!pode, |d| {
                         d.child(
                             div()
-                                .text_sm()
+                                .text_size(px(tema::TAM_CORPO))
                                 .text_color(tema.muted_foreground)
                                 .child(t::SO_COM_SERVICO),
                         )
@@ -985,7 +962,7 @@ impl Janela {
             );
         }
         v_flex()
-            .rounded_lg()
+            .rounded(px(tema::RAIO_CARTAO))
             .border_1()
             .border_color(tema.border)
             .children(h.iter().enumerate().map(|(i, e)| {
@@ -1004,16 +981,16 @@ impl Janela {
                     ),
                 };
                 h_flex()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
+                    .gap(px(tema::ESP_3))
+                    .px(px(tema::ESP_3))
+                    .py(px(tema::ESP_2))
                     .items_start()
                     .when(i % 2 == 1, |d| d.bg(tema.table_even))
                     .child(
                         div()
-                            .w(px(120.))
+                            .w(px(tema::COLUNA_VALOR))
                             .flex_shrink_0()
-                            .text_sm()
+                            .text_size(px(tema::TAM_CORPO))
                             .text_color(tema.muted_foreground)
                             .child(if e.quando_unix == 0 {
                                 "—".to_string()
@@ -1022,9 +999,9 @@ impl Janela {
                             }),
                     )
                     .child(
-                        div().w(px(124.)).flex_shrink_0().child(
+                        div().w(px(tema::COLUNA_VALOR)).flex_shrink_0().child(
                             v_flex()
-                                .gap_1()
+                                .gap(px(tema::ESP_1))
                                 .items_start()
                                 .child(Tag::secondary().small().child(t::camada(e.camada)))
                                 .child(Tag::secondary().small().child(t::acao_historico(e.acao))),
@@ -1033,13 +1010,18 @@ impl Janela {
                     .child(
                         v_flex()
                             .flex_1()
-                            .child(div().text_sm().font_semibold().child(alvo))
+                            .child(
+                                div()
+                                    .text_size(px(tema::TAM_CORPO))
+                                    .font_semibold()
+                                    .child(alvo),
+                            )
                             .when(!valores.is_empty(), |d| {
-                                d.child(div().text_sm().child(valores))
+                                d.child(div().text_size(px(tema::TAM_CORPO)).child(valores))
                             })
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(px(tema::TAM_LEGENDA))
                                     .text_color(tema.muted_foreground)
                                     .child(e.descricao.clone()),
                             ),
@@ -1058,24 +1040,34 @@ impl Janela {
         cartao(
             t::TELA_RESTAURAR,
             v_flex()
-                .gap_4()
-                .child(div().text_sm().child(t::RESTAURAR_EXPLICACAO))
+                .gap(px(tema::ESP_4))
+                .child(
+                    div()
+                        .text_size(px(tema::TAM_CORPO))
+                        .child(t::RESTAURAR_EXPLICACAO),
+                )
                 .when_some(bloqueio.clone(), |v, a| {
                     v.child(
                         Alert::error("restauracao-bloqueada", a.mensagem.clone())
                             .title(t::RESTAURAR_BLOQUEADO),
                     )
                     .when_some(a.detalhe, |v, d| {
-                        v.child(div().text_xs().text_color(tema.muted_foreground).child(d))
+                        v.child(
+                            div()
+                                .text_size(px(tema::TAM_LEGENDA))
+                                .text_color(tema.muted_foreground)
+                                .child(d),
+                        )
                     })
                 })
                 .child(
                     h_flex()
-                        .gap_3()
+                        .gap(px(tema::ESP_3))
                         .items_center()
                         .child(
                             Button::new("restaurar")
                                 .danger()
+                                .outline()
                                 .label(t::BOTAO_RESTAURAR)
                                 .disabled(!pode)
                                 .on_click(cx.listener(|_, _, window, cx| {
@@ -1106,7 +1098,7 @@ impl Janela {
                             };
                             d.child(
                                 div()
-                                    .text_sm()
+                                    .text_size(px(tema::TAM_CORPO))
                                     .text_color(tema.muted_foreground)
                                     .child(texto),
                             )
@@ -1145,29 +1137,34 @@ fn reversao(r: &Reversao, tema: &Theme) -> Div {
         _ => Tag::warning(),
     };
     v_flex()
-        .gap_1()
-        .py_2()
+        .gap(px(tema::ESP_1))
+        .py(px(tema::ESP_2))
         .border_t_1()
         .border_color(tema.border)
         .child(
             h_flex()
-                .gap_2()
-                .child(div().text_sm().font_semibold().child(format!(
-                    "{} · {} · {}",
-                    t::CAMADA_DRIVER,
-                    r.nome_perfil,
-                    r.nome_legivel
-                )))
+                .gap(px(tema::ESP_2))
+                .child(
+                    div()
+                        .text_size(px(tema::TAM_CORPO))
+                        .font_semibold()
+                        .child(format!(
+                            "{} · {} · {}",
+                            t::CAMADA_DRIVER,
+                            r.nome_perfil,
+                            r.nome_legivel
+                        )),
+                )
                 .child(tag.small().child(t::status_reversao(r.status))),
         )
-        .child(div().text_sm().child(format!(
+        .child(div().text_size(px(tema::TAM_CORPO)).child(format!(
             "{} → {}",
             r.atual.as_deref().unwrap_or(t::NAO_DEFINIDO),
             t::acao_reversao(r.acao, r.original.as_deref())
         )))
         .child(
             div()
-                .text_sm()
+                .text_size(px(tema::TAM_CORPO))
                 .text_color(tema.muted_foreground)
                 .child(r.motivo.clone()),
         )
@@ -1188,7 +1185,7 @@ fn detalhe(
     Accordion::new(ElementId::Name(id))
         .small()
         .item(|i| {
-            i.title(div().text_sm().child(titulo))
+            i.title(div().text_size(px(tema::TAM_CORPO)).child(titulo))
                 .open(esta_aberto)
                 .child(conteudo)
         })
@@ -1201,7 +1198,7 @@ fn detalhe(
 
 fn lista_termos(termos: &[&'static str], tema: &Theme) -> Div {
     v_flex()
-        .gap_1()
+        .gap(px(tema::ESP_1))
         .children(termos.iter().map(|&texto| explicacao(texto, tema)))
 }
 
@@ -1209,21 +1206,21 @@ fn lista_termos(termos: &[&'static str], tema: &Theme) -> Div {
 /// (ficam no detalhe recolhido).
 fn linha_mudanca(m: &ItemMudanca, tema: &Theme) -> Div {
     h_flex()
-        .gap_2()
-        .py_1()
+        .gap(px(tema::ESP_2))
+        .py(px(tema::ESP_1))
         .items_center()
         .child(
             div()
-                .text_sm()
+                .text_size(px(tema::TAM_CORPO))
                 .font_semibold()
-                .min_w(px(160.))
+                .min_w(px(tema::COLUNA_ROTULO))
                 .child(m.nome_legivel.clone()),
         )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_sm()
+                .text_size(px(tema::TAM_CORPO))
                 .text_color(tema.muted_foreground)
                 .child(format!(
                     "{} → {}",
@@ -1244,13 +1241,13 @@ fn linha_mudanca(m: &ItemMudanca, tema: &Theme) -> Div {
 /// Detalhe técnico das mudanças: regra, impacto visual e motivo. O motivo
 /// aparece uma vez para cada sequência de itens com o mesmo texto.
 fn detalhes_itens(itens: &[ItemMudanca], tema: &Theme) -> Div {
-    let mut v = v_flex().gap_1();
+    let mut v = v_flex().gap(px(tema::ESP_1));
     let mut ultimo_motivo: Option<&str> = None;
     for m in itens {
         v = v.child(
             h_flex()
-                .gap_1()
-                .text_xs()
+                .gap(px(tema::ESP_1))
+                .text_size(px(tema::TAM_LEGENDA))
                 .text_color(tema.muted_foreground)
                 .child(format!(
                     "{} · {} {} · {}:",
@@ -1268,8 +1265,8 @@ fn detalhes_itens(itens: &[ItemMudanca], tema: &Theme) -> Div {
         if ultimo_motivo != Some(m.motivo.as_str()) {
             v = v.child(
                 div()
-                    .pl_3()
-                    .text_xs()
+                    .pl(px(tema::ESP_3))
+                    .text_size(px(tema::TAM_LEGENDA))
                     .text_color(tema.muted_foreground)
                     .child(m.motivo.clone()),
             );
@@ -1289,28 +1286,28 @@ fn grupo(i: usize, g: &GrupoMudancas, tema: &Theme, window: &mut Window, cx: &mu
         .collect();
     let itens: Vec<ItemMudanca> = g.itens.clone();
     v_flex()
-        .p_4()
-        .gap_1()
-        .rounded_lg()
+        .p(px(tema::ESP_4))
+        .gap(px(tema::ESP_1))
+        .rounded(px(tema::RAIO_CARTAO))
         .border_1()
         .border_color(tema.border)
         .bg(tema.group_box)
         .child(
             h_flex()
-                .gap_2()
-                .pb_2()
+                .gap(px(tema::ESP_2))
+                .pb(px(tema::ESP_2))
                 .child(div().font_semibold().child(g.nome_legivel.clone()))
                 .when(g.nome_legivel != g.perfil && g.perfil != "global", |d| {
                     d.child(
                         div()
-                            .text_xs()
+                            .text_size(px(tema::TAM_LEGENDA))
                             .text_color(tema.muted_foreground)
                             .child(format!("“{}”", g.perfil)),
                     )
                 })
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(px(tema::TAM_LEGENDA))
                         .text_color(tema.muted_foreground)
                         .child(t::resumo_grupo(pendentes, no_valor, outras, sugestoes)),
                 ),
@@ -1319,7 +1316,7 @@ fn grupo(i: usize, g: &GrupoMudancas, tema: &Theme, window: &mut Window, cx: &mu
         .when(no_valor > 0, |v| {
             v.child(explicacao_dinamica(ta::ja_no_valor(no_valor), tema))
         })
-        .child(div().pt_2().child(detalhe(
+        .child(div().pt(px(tema::ESP_2)).child(detalhe(
             SharedString::from(format!("detalhe-perfil-{i}")),
             ta::DETALHES_TECNICOS,
             detalhes_itens(&itens, tema),
@@ -1330,7 +1327,7 @@ fn grupo(i: usize, g: &GrupoMudancas, tema: &Theme, window: &mut Window, cx: &mu
 
 fn explicacao_dinamica(texto: String, tema: &Theme) -> Div {
     div()
-        .text_sm()
+        .text_size(px(tema::TAM_CORPO))
         .text_color(tema.muted_foreground)
         .child(texto)
 }
@@ -1367,13 +1364,13 @@ impl Janela {
             if lista_avisos.is_empty() {
                 v_flex().child(
                     div()
-                        .text_sm()
+                        .text_size(px(tema::TAM_CORPO))
                         .text_color(tema.muted_foreground)
                         .child(t::SEM_AVISOS),
                 )
             } else {
                 v_flex()
-                    .gap_2()
+                    .gap(px(tema::ESP_2))
                     .children(lista_avisos.iter().map(|a| aviso(a, tema)))
             },
             tema,
@@ -1384,7 +1381,7 @@ impl Janela {
         let tema = cx.theme().clone();
         let ignorados = &self.ui.dados.ignorados;
         v_flex()
-            .gap_4()
+            .gap(px(tema::ESP_4))
             .child(self.tabela_jogos(cx))
             .when(!ignorados.is_empty(), |v| {
                 v.child(cartao_ignorados(ignorados, &tema))
@@ -1401,23 +1398,23 @@ impl Janela {
             div()
                 .w(px(w))
                 .flex_shrink_0()
-                .text_xs()
+                .text_size(px(tema::TAM_LEGENDA))
                 .font_semibold()
                 .text_color(tema.muted_foreground)
                 .child(s)
         };
         let cabecalho = h_flex()
-            .gap_3()
-            .px_3()
-            .py_2()
+            .gap(px(tema::ESP_3))
+            .px(px(tema::ESP_3))
+            .py(px(tema::ESP_2))
             .border_b_1()
             .border_color(tema.border)
-            .child(div().w(px(14.)).flex_shrink_0())
+            .child(div().w(px(tema::ESP_4)).flex_shrink_0())
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(160.))
-                    .text_xs()
+                    .min_w(px(tema::COLUNA_ROTULO))
+                    .text_size(px(tema::TAM_LEGENDA))
                     .font_semibold()
                     .text_color(tema.muted_foreground)
                     .child(t::COL_JOGO),
@@ -1429,113 +1426,126 @@ impl Janela {
             .child(cab(t::COL_ANTICHEAT, 64.))
             .child(cab(t::COL_APLICADO, 300.));
         let linhas = jogos.into_iter().enumerate().map(|(i, j)| {
-            let cel = |w: f32| div().w(px(w)).flex_shrink_0().text_sm();
+            let cel = |w: f32| {
+                div()
+                    .w(px(w))
+                    .flex_shrink_0()
+                    .text_size(px(tema::TAM_CORPO))
+            };
             let aberto = self.expandidos.contains(&j.perfil) || self.expandidos.contains(&j.nome);
             let (perfil, nome) = (j.perfil.clone(), j.nome.clone());
             let herda = t::herda_globais(j.resumo.herda_do_global.len());
             let faca = t::faca_no_jogo_resumo(j.orientacoes.len());
-            let linha =
-                h_flex()
-                    .id(("jogo", i))
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .items_start()
-                    .cursor_pointer()
-                    .hover(|d| d.bg(tema.list_hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if aberto {
-                            this.expandidos.remove(&perfil);
-                            this.expandidos.remove(&nome);
-                        } else {
-                            this.expandidos.insert(perfil.clone());
-                        }
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .w(px(14.))
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(tema.muted_foreground)
-                            .child(if aberto { "▾" } else { "▸" }),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w(px(160.))
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .flex_wrap()
-                                    .child(div().text_sm().font_semibold().child(j.nome.clone()))
-                                    .when(j.competitivo.is_some(), |d| {
-                                        d.child(Tag::info().small().child(t::SELO_COMPETITIVO))
-                                    })
-                                    .when(j.em_execucao, |d| {
-                                        d.child(
-                                            Tag::secondary()
-                                                .small()
-                                                .outline()
-                                                .child(t::SELO_ABERTO),
-                                        )
-                                    }),
-                            )
-                            .child(div().text_xs().text_color(tema.muted_foreground).child(
-                                format!("“{}” · {}", j.perfil, t::origem_perfil(j.origem_perfil)),
-                            )),
-                    )
-                    .child(cel(80.).child(if j.launcher.is_empty() {
-                        "?".to_string()
+            let linha = h_flex()
+                .id(("jogo", i))
+                .gap(px(tema::ESP_3))
+                .px(px(tema::ESP_3))
+                .py(px(tema::ESP_2))
+                .items_start()
+                .cursor_pointer()
+                .hover(|d| d.bg(tema.list_hover))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if aberto {
+                        this.expandidos.remove(&perfil);
+                        this.expandidos.remove(&nome);
                     } else {
-                        j.launcher.clone()
-                    }))
-                    .child(cel(84.).child(t::api_grafica(&j.api)))
-                    .child(cel(56.).child(match &j.dlss {
-                        None => t::NAO.to_string(),
-                        Some(v) if v.is_empty() => t::SIM.to_string(),
-                        Some(v) => v.clone(),
-                    }))
-                    .child(cel(48.).child(t::talvez(j.reflex)))
-                    .child(cel(64.).child(match j.anticheat_kernel {
-                        Some(true) => t::ANTICHEAT_KERNEL,
-                        _ => "?",
-                    }))
-                    .child(
-                        v_flex()
-                            .w(px(300.))
-                            .flex_shrink_0()
-                            .text_xs()
-                            .child(
-                                div()
-                                    .when(j.resumo.aplicadas.is_empty(), |d| {
-                                        d.text_color(tema.muted_foreground)
-                                    })
-                                    .child(t::resumo_curto(&j.resumo)),
-                            )
-                            .when(!herda.is_empty(), |d| {
-                                d.child(div().text_color(tema.muted_foreground).child(herda))
-                            })
-                            .when(!faca.is_empty(), |d| {
-                                d.child(div().text_color(tema.info).child(faca))
-                            }),
-                    );
+                        this.expandidos.insert(perfil.clone());
+                    }
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .w(px(tema::ESP_4))
+                        .flex_shrink_0()
+                        .text_size(px(tema::TAM_LEGENDA))
+                        .text_color(tema.muted_foreground)
+                        .child(if aberto { "▾" } else { "▸" }),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(tema::COLUNA_ROTULO))
+                        .child(
+                            h_flex()
+                                .gap(px(tema::ESP_2))
+                                .flex_wrap()
+                                .child(
+                                    div()
+                                        .text_size(px(tema::TAM_CORPO))
+                                        .font_semibold()
+                                        .child(j.nome.clone()),
+                                )
+                                .when(j.competitivo.is_some(), |d| {
+                                    d.child(Tag::info().small().child(t::SELO_COMPETITIVO))
+                                })
+                                .when(j.em_execucao, |d| {
+                                    d.child(
+                                        Tag::secondary().small().outline().child(t::SELO_ABERTO),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(tema::TAM_LEGENDA))
+                                .text_color(tema.muted_foreground)
+                                .child(format!(
+                                    "“{}” · {}",
+                                    j.perfil,
+                                    t::origem_perfil(j.origem_perfil)
+                                )),
+                        ),
+                )
+                .child(cel(80.).child(if j.launcher.is_empty() {
+                    "?".to_string()
+                } else {
+                    j.launcher.clone()
+                }))
+                .child(cel(84.).child(t::api_grafica(&j.api)))
+                .child(cel(56.).child(match &j.dlss {
+                    None => t::NAO.to_string(),
+                    Some(v) if v.is_empty() => t::SIM.to_string(),
+                    Some(v) => v.clone(),
+                }))
+                .child(cel(48.).child(t::talvez(j.reflex)))
+                .child(cel(64.).child(match j.anticheat_kernel {
+                    Some(true) => t::ANTICHEAT_KERNEL,
+                    _ => "?",
+                }))
+                .child(
+                    v_flex()
+                        .w(px(tema::COLUNA_LARGA))
+                        .flex_shrink_0()
+                        .text_size(px(tema::TAM_LEGENDA))
+                        .child(
+                            div()
+                                .when(j.resumo.aplicadas.is_empty(), |d| {
+                                    d.text_color(tema.muted_foreground)
+                                })
+                                .child(t::resumo_curto(&j.resumo)),
+                        )
+                        .when(!herda.is_empty(), |d| {
+                            d.child(div().text_color(tema.muted_foreground).child(herda))
+                        })
+                        .when(!faca.is_empty(), |d| {
+                            d.child(div().text_color(tema.info).child(faca))
+                        }),
+                );
             v_flex()
                 .when(i % 2 == 1, |d| d.bg(tema.table_even))
                 .child(linha)
                 .when(aberto, |d| d.child(self.detalhe_jogo(i, &j, &tema, cx)))
         });
         v_flex()
-            .gap_2()
+            .gap(px(tema::ESP_2))
             .child(
                 div()
-                    .text_xs()
+                    .text_size(px(tema::TAM_LEGENDA))
                     .text_color(tema.muted_foreground)
                     .child(t::DETALHE_EXPANDIR),
             )
             .child(
                 v_flex()
-                    .rounded_lg()
+                    .rounded(px(tema::RAIO_CARTAO))
                     .border_1()
                     .border_color(tema.border)
                     .child(cabecalho)
@@ -1548,83 +1558,88 @@ impl Janela {
     fn detalhe_jogo(&self, i: usize, j: &Jogo, tema: &Theme, cx: &mut Context<Self>) -> Div {
         let titulo = |s: &'static str| {
             div()
-                .text_xs()
+                .text_size(px(tema::TAM_LEGENDA))
                 .font_semibold()
                 .text_color(tema.muted_foreground)
                 .child(s)
         };
         let nenhuma = || {
             div()
-                .text_sm()
+                .text_size(px(tema::TAM_CORPO))
                 .text_color(tema.muted_foreground)
                 .child(t::DETALHE_NENHUMA)
         };
         let r = &j.resumo;
         let aplicadas = v_flex()
-            .gap_1()
+            .gap(px(tema::ESP_1))
             .child(titulo(t::DETALHE_APLICADAS))
             .when(r.aplicadas.is_empty(), |d| d.child(nenhuma()))
             .children(r.aplicadas.iter().map(|a| {
                 v_flex()
                     .child(
                         h_flex()
-                            .gap_2()
+                            .gap(px(tema::ESP_2))
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_size(px(tema::TAM_CORPO))
                                     .font_semibold()
                                     .text_color(tema.success)
                                     .child(t::nome_regra(&a.regra, &a.descricao)),
                             )
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(px(tema::TAM_LEGENDA))
                                     .text_color(tema.muted_foreground)
                                     .child(a.regra.clone()),
                             ),
                     )
                     .children(a.settings.iter().map(|s| {
-                        div().text_xs().pl_3().child(format!(
-                            "• {}",
-                            linha_setting(&self.ui.dados.grupos, &j.perfil, s)
-                        ))
+                        div()
+                            .text_size(px(tema::TAM_LEGENDA))
+                            .pl(px(tema::ESP_3))
+                            .child(format!(
+                                "• {}",
+                                linha_setting(&self.ui.dados.grupos, &j.perfil, s)
+                            ))
                     }))
             }));
         let nao_aplicadas = v_flex()
-            .gap_1()
+            .gap(px(tema::ESP_1))
             .child(titulo(t::DETALHE_NAO_APLICADAS))
             .when(r.nao_aplicadas.is_empty(), |d| d.child(nenhuma()))
             .children(r.nao_aplicadas.iter().map(|n| {
                 v_flex()
                     .child(
                         h_flex()
-                            .gap_2()
+                            .gap(px(tema::ESP_2))
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_size(px(tema::TAM_CORPO))
                                     .font_semibold()
                                     .child(t::nome_regra(&n.regra, &n.descricao)),
                             )
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(px(tema::TAM_LEGENDA))
                                     .text_color(tema.muted_foreground)
                                     .child(n.regra.clone()),
                             ),
                     )
                     .child(
                         div()
-                            .text_xs()
-                            .pl_3()
+                            .text_size(px(tema::TAM_LEGENDA))
+                            .pl(px(tema::ESP_3))
                             .text_color(tema.muted_foreground)
                             .child(t::motivo_longo(&n.motivo)),
                     )
             }));
-        let herda = v_flex().gap_1().child(titulo(t::DETALHE_HERDA)).child(
-            if r.herda_do_global.is_empty() {
+        let herda = v_flex()
+            .gap(px(tema::ESP_1))
+            .child(titulo(t::DETALHE_HERDA))
+            .child(if r.herda_do_global.is_empty() {
                 nenhuma()
             } else {
-                div().text_xs().child(format!(
+                div().text_size(px(tema::TAM_LEGENDA)).child(format!(
                     "{}: {}",
                     t::herda_globais_lista(r.herda_do_global.len()),
                     r.herda_do_global
@@ -1633,32 +1648,31 @@ impl Janela {
                         .collect::<Vec<_>>()
                         .join(", ")
                 ))
-            },
-        );
+            });
         let faca_no_jogo = (!j.orientacoes.is_empty()).then(|| {
             v_flex()
-                .gap_1()
+                .gap(px(tema::ESP_1))
                 .child(titulo(t::DETALHE_FACA_NO_JOGO))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(px(tema::TAM_LEGENDA))
                         .text_color(tema.muted_foreground)
                         .child(t::FACA_NO_JOGO_EXPLICACAO),
                 )
                 .children(j.orientacoes.iter().map(|o| {
                     div()
-                        .text_sm()
-                        .pl_3()
+                        .text_size(px(tema::TAM_CORPO))
+                        .pl(px(tema::ESP_3))
                         .child(format!("• {}", t::orientacao_ou_codigo(o)))
                 }))
         });
         v_flex()
-            .gap_3()
-            .ml(px(26.))
-            .mr_3()
-            .mb_3()
-            .p_3()
-            .rounded_md()
+            .gap(px(tema::ESP_3))
+            .ml(px(tema::ESP_6))
+            .mr(px(tema::ESP_3))
+            .mb(px(tema::ESP_3))
+            .p(px(tema::ESP_3))
+            .rounded(px(tema::RAIO_CARTAO))
             .border_1()
             .border_color(tema.border)
             .bg(tema.background)
@@ -1683,10 +1697,15 @@ impl Janela {
             return None;
         }
         let pode = self.ui.pode_escrever();
-        let sub = |s: String| div().text_xs().text_color(tema.muted_foreground).child(s);
-        let mut v = v_flex().gap_2().child(
+        let sub = |s: String| {
             div()
-                .text_xs()
+                .text_size(px(tema::TAM_LEGENDA))
+                .text_color(tema.muted_foreground)
+                .child(s)
+        };
+        let mut v = v_flex().gap(px(tema::ESP_2)).child(
+            div()
+                .text_size(px(tema::TAM_LEGENDA))
                 .font_semibold()
                 .text_color(tema.muted_foreground)
                 .child(aj::SECAO_ARQUIVO_JOGO),
@@ -1694,10 +1713,10 @@ impl Janela {
         if let Some(c) = &j.config_jogo {
             for (k, a) in c.arquivos.iter().enumerate() {
                 let mut bloco = v_flex()
-                    .gap_1()
+                    .gap(px(tema::ESP_1))
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(px(tema::TAM_CORPO))
                             .font_semibold()
                             .child(aj::nome_arquivo(&a.rotulo.0).to_owned()),
                     )
@@ -1719,10 +1738,10 @@ impl Janela {
                     let destino = (m.status == nvt_ipc::StatusMudanca::Aplicada)
                         .then(|| aj::destino_reverter(a, &m.setting))
                         .flatten();
-                    let mut linha = h_flex().gap_3().justify_between().child(
+                    let mut linha = h_flex().gap(px(tema::ESP_3)).justify_between().child(
                         div()
-                            .text_sm()
-                            .pl_3()
+                            .text_size(px(tema::TAM_CORPO))
+                            .pl(px(tema::ESP_3))
                             .flex_1()
                             .min_w_0()
                             .child(format!("• {}", aj::linha_mudanca(m))),
@@ -1750,11 +1769,12 @@ impl Janela {
                 }
                 v = v.child(bloco);
             }
-            v = v.children(
-                aj::orientacoes(j)
-                    .into_iter()
-                    .map(|o| div().text_sm().font_semibold().child(o)),
-            );
+            v = v.children(aj::orientacoes(j).into_iter().map(|o| {
+                div()
+                    .text_size(px(tema::TAM_CORPO))
+                    .font_semibold()
+                    .child(o)
+            }));
         }
         if !sugestoes.is_empty() {
             v = v
@@ -1781,31 +1801,31 @@ fn aviso(a: &Aviso, tema: &Theme) -> Div {
         NivelAviso::Erro => Tag::danger(),
     };
     v_flex()
-        .gap_1()
-        .pl_3()
+        .gap(px(tema::ESP_1))
+        .pl(px(tema::ESP_3))
         .border_l_2()
         .border_color(cor)
         .child(
             h_flex()
-                .gap_2()
+                .gap(px(tema::ESP_2))
                 .child(tag.small().child(t::nivel_aviso(a.nivel)))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(px(tema::TAM_LEGENDA))
                         .text_color(tema.muted_foreground)
                         .child(formatar_data(a.quando_unix)),
                 ),
         )
         .child(
             div()
-                .text_sm()
+                .text_size(px(tema::TAM_CORPO))
                 .text_color(cor)
                 .child(t::mensagem_aviso(a).to_owned()),
         )
         .when_some(a.detalhe.clone(), |d, detalhe| {
             d.child(
                 div()
-                    .text_xs()
+                    .text_size(px(tema::TAM_LEGENDA))
                     .text_color(tema.muted_foreground)
                     .child(detalhe),
             )
@@ -1816,24 +1836,27 @@ fn cartao_ignorados(ignorados: &[JogoIgnorado], tema: &Theme) -> Div {
     cartao(
         t::SECAO_IGNORADOS,
         v_flex()
-            .gap_2()
+            .gap(px(tema::ESP_2))
             .child(explicacao(t::IGNORADOS_EXPLICACAO, tema))
             .children(ignorados.iter().map(|j| {
                 v_flex()
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(px(tema::TAM_CORPO))
                             .font_semibold()
                             .text_color(tema.warning)
                             .child(j.nome.clone()),
                     )
-                    .child(div().text_xs().text_color(tema.muted_foreground).child(
-                        if j.exe.is_empty() {
-                            j.motivo.clone()
-                        } else {
-                            format!("{} · {}", j.exe, j.motivo)
-                        },
-                    ))
+                    .child(
+                        div()
+                            .text_size(px(tema::TAM_LEGENDA))
+                            .text_color(tema.muted_foreground)
+                            .child(if j.exe.is_empty() {
+                                j.motivo.clone()
+                            } else {
+                                format!("{} · {}", j.exe, j.motivo)
+                            }),
+                    )
             })),
         tema,
     )

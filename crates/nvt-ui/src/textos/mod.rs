@@ -25,6 +25,7 @@ use nvt_ipc::{
 };
 
 pub const TITULO_JANELA: &str = "nv-tuner";
+pub const TITULO_JANELA_DEMONSTRACAO: &str = "nv-tuner (demonstração)";
 pub const SUBTITULO_APP: &str = "Ajuste automático do driver NVIDIA";
 
 // Navegação --------------------------------------------------------------
@@ -40,8 +41,6 @@ pub const TELA_RESTAURAR: &str = "Restaurar original";
 pub const CONEXAO_CONECTANDO: &str = "Conectando ao serviço…";
 pub const CONEXAO_SERVICO: &str = "Serviço conectado";
 pub const CONEXAO_VISUALIZACAO: &str = "Modo de visualização";
-pub const AVISO_VISUALIZACAO_TITULO: &str = "O nv-tuner não está ativo neste PC";
-pub const AVISO_VISUALIZACAO: &str = "Mostrando só informações. Nada é mudado no PC.";
 pub const CARREGANDO: &str = "Carregando…";
 pub const SO_COM_SERVICO: &str = "Disponível só com o nv-tuner ativo.";
 

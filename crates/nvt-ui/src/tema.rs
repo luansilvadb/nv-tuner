@@ -61,7 +61,9 @@ pub fn escolher_fonte<S: AsRef<str>>(instaladas: &[S]) -> &'static str {
 // ---------------------------------------------------------------------------
 
 pub const TAM_TITULO_PAGINA: f32 = 28.;
-pub const TAM_TITULO_CARTAO: f32 = 15.;
+/// Subtítulo (veredito, seções do Avançado, marca). Escala do Windows 11:
+/// 28 / 20 / 14 / 12, nada fora dela.
+pub const TAM_SUBTITULO: f32 = 20.;
 pub const TAM_CORPO: f32 = 14.;
 pub const TAM_LEGENDA: f32 = 12.;
 
@@ -77,8 +79,31 @@ pub const ESP_4: f32 = 16.;
 pub const ESP_6: f32 = 24.;
 /// Margem lateral do conteúdo.
 pub const ESP_8: f32 = 32.;
+/// Respiro grande (boas-vindas, estados vazios).
+pub const ESP_12: f32 = 48.;
 
 pub const RAIO: f32 = 6.;
+/// Canto de todo cartão e lista (um só valor em todas as telas).
+pub const RAIO_CARTAO: f32 = 8.;
+/// Logo na lateral e nas boas-vindas.
+pub const LOGO_LATERAL: f32 = 28.;
+pub const LOGO_BOAS_VINDAS: f32 = 96.;
+/// Círculo do ícone do veredito e dos estados vazios.
+pub const ICONE_DESTAQUE: f32 = 56.;
+pub const ICONE_DESTAQUE_INTERNO: f32 = 28.;
+/// Largura máxima do conteúdo e dos parágrafos centrados.
+pub const LARGURA_CONTEUDO: f32 = 880.;
+pub const LARGURA_TEXTO: f32 = 520.;
+/// Largura mínima do botão principal das boas-vindas.
+pub const LARGURA_BOTAO_DESTAQUE: f32 = 220.;
+/// Altura dos botões de ação principal (alvo confortável) e do "Começar".
+pub const ALTURA_BOTAO: f32 = 36.;
+pub const ALTURA_BOTAO_DESTAQUE: f32 = 44.;
+/// Colunas das tabelas técnicas (rótulo, valor curto, valor, texto longo).
+pub const COLUNA_ROTULO: f32 = 160.;
+pub const COLUNA_CURTA: f32 = 96.;
+pub const COLUNA_VALOR: f32 = 124.;
+pub const COLUNA_LARGA: f32 = 300.;
 pub const LARGURA_LATERAL: f32 = 240.;
 pub const LARGURA_JANELA: f32 = 1200.;
 pub const ALTURA_JANELA: f32 = 800.;
@@ -107,6 +132,11 @@ pub fn aplicar(cx: &mut App) {
         t.primary_hover = cor(DESTAQUE_HOVER);
         t.primary_active = cor(DESTAQUE_ATIVO);
         t.primary_foreground = cor(TEXTO_SOBRE_DESTAQUE);
+        // O botão primário do gpui-component lê os campos próprios.
+        t.button_primary = cor(DESTAQUE);
+        t.button_primary_hover = cor(DESTAQUE_HOVER);
+        t.button_primary_active = cor(DESTAQUE_ATIVO);
+        t.button_primary_foreground = cor(TEXTO_SOBRE_DESTAQUE);
         t.ring = cor(DESTAQUE);
         t.link = cor(DESTAQUE);
         t.sidebar = cor(LATERAL);
@@ -151,10 +181,10 @@ pub fn contraste(a: u32, b: u32) -> f64 {
 #[cfg(test)]
 mod testes {
     use super::{
-        DESTAQUE, DESTAQUE_ATIVO, DESTAQUE_HOVER, ESP_1, ESP_2, ESP_3, ESP_4, ESP_6, ESP_8, FONTE,
-        FONTE_QUEDA, FUNDO, LATERAL, SUPERFICIE, SUPERFICIE_HOVER, TAM_CORPO, TAM_LEGENDA,
-        TAM_TITULO_CARTAO, TAM_TITULO_PAGINA, TEXTO, TEXTO_SECUNDARIO, TEXTO_SOBRE_DESTAQUE,
-        contraste, escolher_fonte, luminancia,
+        DESTAQUE, DESTAQUE_ATIVO, DESTAQUE_HOVER, ESP_1, ESP_2, ESP_3, ESP_4, ESP_6, ESP_8, ESP_12,
+        FONTE, FONTE_QUEDA, FUNDO, LATERAL, SUPERFICIE, SUPERFICIE_HOVER, TAM_CORPO, TAM_LEGENDA,
+        TAM_SUBTITULO, TAM_TITULO_PAGINA, TEXTO, TEXTO_SECUNDARIO, TEXTO_SOBRE_DESTAQUE, contraste,
+        escolher_fonte, luminancia,
     };
 
     const MINIMO: f64 = 4.5;
@@ -212,10 +242,10 @@ mod testes {
 
     #[test]
     fn escala_tipografica() {
-        let escala = [TAM_TITULO_PAGINA, TAM_TITULO_CARTAO, TAM_CORPO, TAM_LEGENDA];
-        assert_eq!(escala, [28., 15., 14., 12.]);
+        let escala = [TAM_TITULO_PAGINA, TAM_SUBTITULO, TAM_CORPO, TAM_LEGENDA];
+        assert_eq!(escala, [28., 20., 14., 12.]);
         assert!(escala.windows(2).all(|p| p[0] > p[1]));
-        let esp = [ESP_1, ESP_2, ESP_3, ESP_4, ESP_6, ESP_8];
+        let esp = [ESP_1, ESP_2, ESP_3, ESP_4, ESP_6, ESP_8, ESP_12];
         assert!(esp.iter().all(|e| e % 4. == 0.));
         assert!(esp.windows(2).all(|p| p[0] < p[1]));
     }

@@ -11,11 +11,13 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use nvt_ipc::{Jogo, StatusMudanca};
 
-use super::estrutura::Janela;
+use super::estrutura::{Janela, estado_vazio, superficie};
 use crate::arquivo_jogo as aj;
 use crate::modelo::{Comando, EstadoUi, Evento, Fatos, StatusJogo, status_jogo};
+use crate::tema;
 use crate::textos as t;
 use crate::textos::jogos as tj;
+use gpui_kit::assets::IconName;
 
 /// Seleção da tela (jogo aberto e detalhes técnicos visíveis). Fica num
 /// global porque os campos da [`Janela`] pertencem à estrutura.
@@ -35,6 +37,11 @@ impl Global for Envio {}
 /// Liga os botões da tela Jogos ao canal de comandos da janela.
 pub(crate) fn instalar_envio(cx: &mut App, comandos: Sender<Comando>) {
     cx.set_global(Envio(comandos));
+}
+
+/// Abre já expandido o jogo com esse nome ou perfil (`--expandir`).
+pub(crate) fn abrir_inicial(cx: &mut App, jogo: Option<String>) {
+    cx.default_global::<Selecao>().jogo = jogo;
 }
 
 /// Linha da lista: só o que o leigo precisa (R-UI-12).
@@ -134,40 +141,51 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
         .unwrap_or_default();
     let pode = cx.has_global::<Envio>() && janela.ui.pode_executar(&Comando::Reescanear);
 
+    let procurar = Button::new("procurar-jogos")
+        .h(px(tema::ALTURA_BOTAO))
+        .outline()
+        .label(tj::BOTAO_PROCURAR)
+        .disabled(!pode)
+        .when(!pode, |b| b.tooltip(t::SO_COM_SERVICO))
+        .on_click(cx.listener(|this, _, _, cx| {
+            enviar(this, Comando::Reescanear, cx);
+        }));
+
+    let v = v_flex()
+        .gap(px(tema::ESP_4))
+        .max_w(px(tema::LARGURA_CONTEUDO));
+    if jogos.is_empty() {
+        return v
+            .child(superficie(&tema).child(estado_vazio(
+                IconName::Gamepad2,
+                tj::NENHUM_JOGO,
+                Some(procurar.into_any_element()),
+                &tema,
+            )))
+            .into_any_element();
+    }
     let cabecalho = h_flex()
         .justify_between()
-        .gap_3()
+        .items_center()
+        .gap(px(tema::ESP_3))
         .child(
-            div()
-                .text_color(tema.muted_foreground)
-                .child(tj::encontrados(jogos.len())),
+            v_flex()
+                .gap(px(tema::ESP_1))
+                .child(div().child(tj::encontrados(jogos.len())))
+                .child(
+                    div()
+                        .text_size(px(tema::TAM_LEGENDA))
+                        .text_color(tema.muted_foreground)
+                        .child(tj::DICA_CLIQUE),
+                ),
         )
-        .child(
-            Button::new("procurar-jogos")
-                .small()
-                .outline()
-                .label(tj::BOTAO_PROCURAR)
-                .disabled(!pode)
-                .when(!pode, |b| b.tooltip(t::SO_COM_SERVICO))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    enviar(this, Comando::Reescanear, cx);
-                })),
-        );
-
-    let mut v = v_flex().gap_4().child(cabecalho);
-    if jogos.is_empty() {
-        return v.into_any_element();
-    }
-    v = v.child(
-        div()
-            .text_xs()
-            .text_color(tema.muted_foreground)
-            .child(tj::DICA_CLIQUE),
-    );
-    let mut lista = v_flex().rounded_lg().border_1().border_color(tema.border);
+        .child(procurar);
+    let v = v.child(cabecalho);
+    let mut lista = superficie(&tema).overflow_hidden();
     for (i, j) in jogos.iter().enumerate() {
         let l = linha(j, esp);
-        let sel = aberto.as_deref() == Some(l.chave.as_str());
+        let sel = aberto.as_deref() == Some(l.chave.as_str())
+            || aberto.as_deref() == Some(l.nome.as_str());
         let chave = l.chave.clone();
         let cor_status = match l.status {
             StatusJogo::Otimizado => tema.success,
@@ -177,9 +195,9 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
         };
         let item = h_flex()
             .id(("jogo", i))
-            .gap_3()
-            .px_3()
-            .py_2()
+            .gap(px(tema::ESP_3))
+            .px(px(tema::ESP_4))
+            .py(px(tema::ESP_3))
             .cursor_pointer()
             .when(i > 0, |d| d.border_t_1().border_color(tema.border))
             .hover(|d| d.bg(tema.list_hover))
@@ -195,16 +213,21 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
             }))
             .child(
                 div()
-                    .w(px(14.))
-                    .text_xs()
+                    .w(px(tema::ESP_4))
+                    .text_size(px(tema::TAM_LEGENDA))
                     .text_color(tema.muted_foreground)
                     .child(if sel { "▾" } else { "▸" }),
             )
             .child(
                 h_flex()
                     .flex_1()
-                    .gap_2()
-                    .child(div().text_sm().font_semibold().child(l.nome.clone()))
+                    .gap(px(tema::ESP_2))
+                    .child(
+                        div()
+                            .text_size(px(tema::TAM_CORPO))
+                            .font_semibold()
+                            .child(l.nome.clone()),
+                    )
                     .when(l.competitivo, |d| {
                         d.child(
                             Tag::secondary()
@@ -214,7 +237,12 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                         )
                     }),
             )
-            .child(div().text_sm().text_color(cor_status).child(l.texto_status));
+            .child(
+                div()
+                    .text_size(px(tema::TAM_CORPO))
+                    .text_color(cor_status)
+                    .child(l.texto_status),
+            );
         lista = lista.child(item);
         if sel {
             lista = lista.child(detalhe(janela, i, j, tec, cx));
@@ -240,9 +268,9 @@ fn detalhe(janela: &Janela, i: usize, j: &Jogo, tec: bool, cx: &mut Context<Jane
     let tema = cx.theme().clone();
     let titulo = |s: &'static str| {
         div()
-            .w(px(180.))
+            .w(px(tema::COLUNA_ROTULO))
             .flex_shrink_0()
-            .text_sm()
+            .text_size(px(tema::TAM_CORPO))
             .font_semibold()
             .text_color(tema.muted_foreground)
             .child(s)
@@ -251,24 +279,26 @@ fn detalhe(janela: &Janela, i: usize, j: &Jogo, tec: bool, cx: &mut Context<Jane
         let corpo = if linhas.is_empty() {
             v_flex().child(
                 div()
-                    .text_sm()
+                    .text_size(px(tema::TAM_CORPO))
                     .text_color(tema.muted_foreground)
                     .child(vazio),
             )
         } else {
-            v_flex()
-                .gap_1()
-                .children(linhas.into_iter().map(|s| div().text_sm().child(s)))
+            v_flex().gap(px(tema::ESP_1)).children(
+                linhas
+                    .into_iter()
+                    .map(|s| div().text_size(px(tema::TAM_CORPO)).child(s)),
+            )
         };
         h_flex()
             .items_start()
-            .gap_3()
+            .gap(px(tema::ESP_3))
             .child(titulo(rotulo))
             .child(corpo.flex_1())
     };
     let mut d = v_flex()
-        .gap_3()
-        .p_4()
+        .gap(px(tema::ESP_3))
+        .p(px(tema::ESP_4))
         .border_t_1()
         .border_color(tema.border)
         .bg(tema.background)
@@ -279,7 +309,7 @@ fn detalhe(janela: &Janela, i: usize, j: &Jogo, tec: bool, cx: &mut Context<Jane
         d = d.child(
             h_flex()
                 .items_start()
-                .gap_3()
+                .gap(px(tema::ESP_3))
                 .child(titulo(aj::SECAO_ARQUIVO_JOGO))
                 .child(a.flex_1()),
         );
@@ -304,12 +334,17 @@ fn detalhe(janela: &Janela, i: usize, j: &Jogo, tec: bool, cx: &mut Context<Jane
     if tec {
         d = d.child(
             v_flex()
-                .gap_1()
+                .gap(px(tema::ESP_1))
                 .children(tecnicos(j).into_iter().map(|(r, v)| {
                     h_flex()
-                        .gap_3()
-                        .text_xs()
-                        .child(div().w(px(140.)).text_color(tema.muted_foreground).child(r))
+                        .gap(px(tema::ESP_3))
+                        .text_size(px(tema::TAM_LEGENDA))
+                        .child(
+                            div()
+                                .w(px(tema::COLUNA_ROTULO))
+                                .text_color(tema.muted_foreground)
+                                .child(r),
+                        )
                         .child(div().child(v))
                 })),
         );
@@ -322,14 +357,19 @@ fn arquivo(janela: &Janela, i: usize, j: &Jogo, cx: &mut Context<Janela>) -> Opt
     let c = j.config_jogo.as_ref()?;
     let tema = cx.theme().clone();
     let pode = janela.ui.pode_escrever() && cx.has_global::<Envio>();
-    let sub = |s: String| div().text_xs().text_color(tema.muted_foreground).child(s);
-    let mut v = v_flex().gap_2();
+    let sub = |s: String| {
+        div()
+            .text_size(px(tema::TAM_LEGENDA))
+            .text_color(tema.muted_foreground)
+            .child(s)
+    };
+    let mut v = v_flex().gap(px(tema::ESP_2));
     for (k, a) in c.arquivos.iter().enumerate() {
         let mut b = v_flex()
-            .gap_1()
+            .gap(px(tema::ESP_1))
             .child(
                 div()
-                    .text_sm()
+                    .text_size(px(tema::TAM_CORPO))
                     .font_semibold()
                     .child(aj::nome_arquivo(&a.rotulo.0).to_owned()),
             )
@@ -350,9 +390,9 @@ fn arquivo(janela: &Janela, i: usize, j: &Jogo, cx: &mut Context<Janela>) -> Opt
             let destino = (m.status == StatusMudanca::Aplicada)
                 .then(|| aj::destino_reverter(a, &m.setting))
                 .flatten();
-            let mut l = h_flex().gap_3().justify_between().child(
+            let mut l = h_flex().gap(px(tema::ESP_3)).justify_between().child(
                 div()
-                    .text_sm()
+                    .text_size(px(tema::TAM_CORPO))
                     .flex_1()
                     .min_w_0()
                     .child(aj::linha_mudanca(m)),

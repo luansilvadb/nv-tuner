@@ -163,7 +163,7 @@ pub fn piorou_titulo(motivo: &str) -> String {
 }
 
 /// Motivo curto de um sinal em atenção; vazio cai no título genérico.
-fn motivo(sinal: TipoSinal) -> &'static str {
+pub(crate) fn motivo(sinal: TipoSinal) -> &'static str {
     match sinal {
         TipoSinal::EspacoLivre => MOTIVO_POUCO_ESPACO,
         TipoSinal::MemoriaRepouso
