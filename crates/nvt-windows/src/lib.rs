@@ -3,6 +3,7 @@
 pub mod diagnosticos;
 pub mod mouse;
 pub mod registro;
+pub mod saude;
 pub mod tela;
 mod token;
 

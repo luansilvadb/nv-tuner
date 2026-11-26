@@ -4600,6 +4600,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvt-manutencao"
+version = "0.2.0"
+dependencies = [
+ "nvt-ipc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "nvt-service"
 version = "0.2.0"
 dependencies = [

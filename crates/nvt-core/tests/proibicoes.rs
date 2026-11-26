@@ -89,18 +89,19 @@ const PERMITIDOS: &[(&str, &str, usize)] = &[
     ("crates/nvt-medicao/src/etw.rs", "OpenTraceW", 0),  // L5
     ("crates/nvt-medicao/src/etw.rs", "ProcessTrace", 0), // L5
     ("crates/nvt-medicao/src/etw.rs", "ControlTraceW", 0), // L5
-    // §8.3: exclusão da limpeza de temporários; contagens fixadas no L3.
-    ("crates/nvt-manutencao/src/windows.rs", "DeleteFileW", 0), // L3
+    // §8.3: exclusão da limpeza de temporários (L3): só `FileDispositionInfoEx` em
+    // `ExcluidorReal`; `DeleteFileW` e `RemoveDirectoryW` seguem proibidos.
+    ("crates/nvt-manutencao/src/windows.rs", "DeleteFileW", 0),
     (
         "crates/nvt-manutencao/src/windows.rs",
         "RemoveDirectoryW",
         0,
-    ), // L3
+    ),
     (
         "crates/nvt-manutencao/src/windows.rs",
         "FileDispositionInfoEx",
-        0,
-    ), // L3
+        1,
+    ),
 ];
 
 const DIRETORIOS_EXCLUIDOS: &[&str] = &["tests", "examples", "benches"];

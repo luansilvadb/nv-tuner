@@ -34,6 +34,7 @@ pub const MOTIVO_POUCO_ESPACO: &str = "pouco espaço livre";
 // Botões e respostas -------------------------------------------------------
 pub const BOTAO_APLICAR_RECOMENDADAS: &str = "Aplicar melhorias recomendadas";
 pub const BOTAO_DESFAZER_TUDO: &str = "Desfazer tudo";
+pub const LINK_DESFAZER_TUDO: &str = "Desfazer tudo que o nv-tuner mudou";
 pub const BOTAO_VOLTAR_A_AJUSTAR: &str = "Voltar a ajustar";
 pub const BOTAO_CANCELAR: &str = "Cancelar";
 pub const APLICAR_INDISPONIVEL: &str = "Disponível quando o nv-tuner estiver ativo.";
@@ -99,6 +100,7 @@ pub const TODOS: &[&str] = &[
     MOTIVO_POUCO_ESPACO,
     BOTAO_APLICAR_RECOMENDADAS,
     BOTAO_DESFAZER_TUDO,
+    LINK_DESFAZER_TUDO,
     BOTAO_VOLTAR_A_AJUSTAR,
     BOTAO_CANCELAR,
     APLICAR_INDISPONIVEL,

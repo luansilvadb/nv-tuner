@@ -145,14 +145,14 @@ pub(super) fn botoes(v: &Veredito, f: &Fatos) -> Botoes {
     });
     Botoes {
         aplicar,
-        desfazer: matches!(
-            v,
-            Veredito::Otimizado
-                | Veredito::NadaAFazer
-                | Veredito::Melhorias { .. }
-                | Veredito::EsperandoJogo
-                | Veredito::Piorou(_)
-        ),
+        desfazer: f.plano_com_mudancas
+            && matches!(
+                v,
+                Veredito::Otimizado
+                    | Veredito::Melhorias { .. }
+                    | Veredito::EsperandoJogo
+                    | Veredito::Piorou(_)
+            ),
         voltar: v.oferece_voltar_a_ajustar(),
     }
 }
@@ -371,20 +371,21 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                 .on_click(cx.listener(|_, _, _, cx| executar(AcaoInicio::VoltarAAjustar, cx))),
         );
     }
-    if b.desfazer {
-        acoes = acoes.child(
+    // "Desfazer tudo" fica fora do cartão: link neutro no rodapé; o estilo
+    // de atenção aparece só na confirmação.
+    let desfazer_el = b.desfazer.then(|| {
+        h_flex().child(
             Button::new("desfazer-tudo")
-                .danger()
-                .outline()
-                .large()
-                .h(px(tema::ALTURA_BOTAO))
-                .label(t::BOTAO_DESFAZER_TUDO)
+                .ghost()
+                .small()
+                .text_color(tema.muted_foreground)
+                .label(t::LINK_DESFAZER_TUDO)
                 .disabled(ocupado.is_some())
                 .loading(ocupado == Some(AcaoInicio::DesfazerTudo))
                 .on_click(cx.listener(|_, _, window, cx| abrir_confirmacao(window, cx))),
-        );
-    }
-    let tem_acoes = b.aplicar.is_some() || b.voltar || b.desfazer;
+        )
+    });
+    let tem_acoes = b.aplicar.is_some() || b.voltar;
 
     let cor_resultado = |tom: Tom| match tom {
         Tom::Sucesso => tema.success,
@@ -525,6 +526,7 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                     .children(sinais),
             )
         })
+        .children(desfazer_el)
         .into_any_element()
 }
 
@@ -591,7 +593,7 @@ mod testes {
                 None,
                 t::NADA_A_FAZER_TITULO.into(),
                 None,
-                true,
+                false,
                 false,
             ),
             (
@@ -733,6 +735,23 @@ mod testes {
         assert!(!texto.frase.contains("services.msc"));
         let b = botoes(&veredito(&f, None), &f);
         assert!(!b.desfazer && !b.voltar);
+    }
+
+    #[test]
+    fn desfazer_so_aparece_com_algo_a_desfazer() {
+        let com = pronto();
+        assert!(botoes(&veredito(&com, None), &com).desfazer);
+        let sem = Fatos {
+            plano_com_mudancas: false,
+            ..pronto()
+        };
+        assert!(!botoes(&veredito(&sem, None), &sem).desfazer);
+        let desligado = Fatos {
+            ajustes_desligados: true,
+            ..pronto()
+        };
+        let b = botoes(&veredito(&desligado, None), &desligado);
+        assert!(!b.desfazer && b.voltar);
     }
 
     #[test]
