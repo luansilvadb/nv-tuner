@@ -1,4 +1,5 @@
-//! Tipos, IDs de interface e assinaturas da NVAPI (subconjunto DRS + consultas de GPU).
+//! Tipos, IDs de interface e assinaturas da NVAPI (subconjunto DRS, consultas de GPU e
+//! exibição).
 //!
 //! Transcrito do SDK oficial <https://github.com/NVIDIA/nvapi> (`nvapi.h`,
 //! `nvapi_lite_common.h`, `nvapi_interface.h`):
@@ -76,6 +77,8 @@ pub mod id {
     pub const DRS_RESTORE_PROFILE_DEFAULT_SETTING: u32 = 0x53F0_381E;
     pub const DRS_ENUM_SETTINGS: u32 = 0xAE30_39DA;
     pub const DRS_GET_SETTING_NAME_FROM_ID: u32 = 0xD61C_BE6E;
+    pub const DISP_GET_DISPLAY_CONFIG: u32 = 0x11AB_CCF8;
+    pub const DISP_GET_VRR_INFO: u32 = 0xDF8F_DA57;
 
     /// Entradas internas (não documentadas) usadas pelo NPI 3.0.2.1. Não filtram as
     /// settings “ocultas” que as públicas recusam com -160.
@@ -317,6 +320,176 @@ const _: () = assert!(NvGpuArchInfoV2::VER == 0x0002_0010);
 const _: () = assert!(std::mem::size_of::<NvDisplayDriverMemoryInfoV2>() == 24);
 const _: () = assert!(NvDisplayDriverMemoryInfoV2::VER == 0x0002_0018);
 
+// ---------------------------------------------------------------- exibição (nvapi.h, pack 8)
+//
+// `NvAPI_DISP_GetDisplayConfig` e `NvAPI_Disp_GetVRRInfo`. Campos de bits C (`NvU32 x : 1`)
+// viram um `u32` com máscaras; no MSVC o primeiro campo de bits ocupa o bit 0.
+
+/// `NV_TIMINGEXT` — 64 bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NvTimingExt {
+    pub flag: u32,
+    pub rr: u16,
+    pub rrx1k: u32,
+    pub aspect: u32,
+    pub rep: u16,
+    pub status: u32,
+    pub name: [u8; 40],
+}
+
+/// `NV_TIMING` — 96 bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NvTiming {
+    pub h_visible: u16,
+    pub h_border: u16,
+    pub h_front_porch: u16,
+    pub h_sync_width: u16,
+    pub h_total: u16,
+    pub h_sync_pol: u8,
+    pub v_visible: u16,
+    pub v_border: u16,
+    pub v_front_porch: u16,
+    pub v_sync_width: u16,
+    pub v_total: u16,
+    pub v_sync_pol: u8,
+    pub interlaced: u16,
+    pub pclk: u32,
+    pub etc: NvTimingExt,
+}
+
+/// `NV_DISPLAYCONFIG_PATH_ADVANCED_TARGET_INFO_V1` — 128 bytes, versão `0x0001_0080`.
+/// Os enums C (`NV_ROTATE`, `NV_SCALING`, `NV_GPU_CONNECTOR_TYPE`, `NV_DISPLAY_TV_FORMAT`,
+/// `NV_TIMING_OVERRIDE`) têm 4 bytes e ficam como `u32`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NvDisplayConfigPathAdvancedTargetInfoV1 {
+    pub version: u32,
+    pub rotation: u32,
+    pub scaling: u32,
+    /// Refresh do modo (não entrelaçado) × 1000, como o driver informa ao SO; 0 = ignorado.
+    pub refresh_rate_1k: u32,
+    /// Bits: 0 `interlaced`, 1 `primary` (primário do clone, **não** o primário GDI), …
+    pub flags: u32,
+    pub connector: u32,
+    pub tv_format: u32,
+    pub timing_override: u32,
+    pub timing: NvTiming,
+}
+
+impl NvDisplayConfigPathAdvancedTargetInfoV1 {
+    pub const VER: u32 = make_version::<Self>(1);
+    pub const FLAG_PRIMARY: u32 = 1 << 1;
+
+    /// Estrutura zerada com `version` preenchido.
+    pub fn zeroed() -> Self {
+        // SAFETY: só inteiros e vetores de bytes; o padrão todo-zero é válido.
+        let mut s: Self = unsafe { std::mem::zeroed() };
+        s.version = Self::VER;
+        s
+    }
+}
+
+/// `NV_DISPLAYCONFIG_PATH_TARGET_INFO_V2` — 24 bytes (x64). Sem versão própria.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NvDisplayConfigPathTargetInfoV2 {
+    pub display_id: u32,
+    /// Pode ser nulo; nulo também para monitor fora da NVIDIA.
+    pub details: *mut NvDisplayConfigPathAdvancedTargetInfoV1,
+    pub target_id: u32,
+}
+
+/// `NV_DISPLAYCONFIG_SOURCE_MODE_INFO_V1` — 32 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct NvDisplayConfigSourceModeInfoV1 {
+    /// `NV_RESOLUTION`: largura, altura, profundidade de cor.
+    pub resolution: [u32; 3],
+    pub color_format: u32,
+    /// `NV_POSITION`: x, y.
+    pub position: [i32; 2],
+    pub spanning_orientation: u32,
+    /// Bits: 0 `bGDIPrimary`, 1 `bSLIFocus`.
+    pub flags: u32,
+}
+
+impl NvDisplayConfigSourceModeInfoV1 {
+    pub const FLAG_GDI_PRIMARY: u32 = 1 << 0;
+}
+
+/// `NV_DISPLAYCONFIG_PATH_INFO_V2` — 48 bytes (x64), versão `0x0002_0030`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NvDisplayConfigPathInfoV2 {
+    pub version: u32,
+    /// União `sourceId` / `reserved_sourceId`.
+    pub source_id: u32,
+    pub target_info_count: u32,
+    pub target_info: *mut NvDisplayConfigPathTargetInfoV2,
+    pub source_mode_info: *mut NvDisplayConfigSourceModeInfoV1,
+    /// Bits: 0 `IsNonNVIDIAAdapter`.
+    pub flags: u32,
+    pub os_adapter_id: *mut c_void,
+}
+
+impl NvDisplayConfigPathInfoV2 {
+    pub const VER: u32 = make_version::<Self>(2);
+    pub const FLAG_NON_NVIDIA_ADAPTER: u32 = 1 << 0;
+
+    /// Estrutura com ponteiros nulos e `version` preenchido.
+    pub fn zeroed() -> Self {
+        Self {
+            version: Self::VER,
+            source_id: 0,
+            target_info_count: 0,
+            target_info: std::ptr::null_mut(),
+            source_mode_info: std::ptr::null_mut(),
+            flags: 0,
+            os_adapter_id: std::ptr::null_mut(),
+        }
+    }
+}
+
+/// `NV_GET_VRR_INFO_V1` — 24 bytes, versão `0x0001_0018`.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct NvGetVrrInfoV1 {
+    pub version: u32,
+    /// Bits: 0 `bIsVRREnabled`, 1 `bIsVRRPossible`, 2 `bIsVRRRequested`,
+    /// 3 `bIsVRRIndicatorEnabled`, 4 `bIsDisplayInVRRMode`.
+    pub flags: u32,
+    pub reserved_ex: [u32; 4],
+}
+
+impl NvGetVrrInfoV1 {
+    pub const VER: u32 = make_version::<Self>(1);
+    pub const FLAG_ENABLED: u32 = 1 << 0;
+    pub const FLAG_POSSIBLE: u32 = 1 << 1;
+}
+
+// Conferência dos layouts de exibição contra o SDK (x64).
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(size_of::<NvTimingExt>() == 64);
+    assert!(size_of::<NvTiming>() == 96);
+    assert!(offset_of!(NvTiming, pclk) == 28);
+    assert!(size_of::<NvDisplayConfigPathAdvancedTargetInfoV1>() == 128);
+    assert!(offset_of!(NvDisplayConfigPathAdvancedTargetInfoV1, refresh_rate_1k) == 12);
+    assert!(NvDisplayConfigPathAdvancedTargetInfoV1::VER == 0x0001_0080);
+    assert!(size_of::<NvDisplayConfigPathTargetInfoV2>() == 24);
+    assert!(size_of::<NvDisplayConfigSourceModeInfoV1>() == 32);
+    assert!(offset_of!(NvDisplayConfigSourceModeInfoV1, flags) == 28);
+    assert!(size_of::<NvDisplayConfigPathInfoV2>() == 48);
+    assert!(offset_of!(NvDisplayConfigPathInfoV2, target_info) == 16);
+    assert!(offset_of!(NvDisplayConfigPathInfoV2, flags) == 32);
+    assert!(NvDisplayConfigPathInfoV2::VER == 0x0002_0030);
+    assert!(size_of::<NvGetVrrInfoV1>() == 24);
+    assert!(NvGetVrrInfoV1::VER == 0x0001_0018);
+};
+
 // ---------------------------------------------------------------- assinaturas (cdecl = "C" no x64)
 
 pub type FnVoid = unsafe extern "C" fn() -> NvStatus;
@@ -360,3 +533,6 @@ pub type FnProfileSettingId = unsafe extern "C" fn(Handle, Handle, u32) -> NvSta
 pub type FnEnumSettings =
     unsafe extern "C" fn(Handle, Handle, u32, *mut u32, *mut NvdrsSettingV1) -> NvStatus;
 pub type FnGetSettingNameFromId = unsafe extern "C" fn(u32, *mut NvUnicodeString) -> NvStatus;
+pub type FnDispGetDisplayConfig =
+    unsafe extern "C" fn(*mut u32, *mut NvDisplayConfigPathInfoV2) -> NvStatus;
+pub type FnDispGetVrrInfo = unsafe extern "C" fn(u32, *mut NvGetVrrInfoV1) -> NvStatus;

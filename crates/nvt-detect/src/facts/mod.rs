@@ -14,6 +14,7 @@ use arquivos::{Arquivo, Listagem};
 
 pub use anticheat::FatoAnticheat;
 pub use exe::{CandidatoExe, MotivoExe};
+pub use pe::ErroPe;
 
 /// Grau de confiança de um fato detectado.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -274,6 +275,81 @@ pub fn analisar(jogo: &DetectedGame, servicos: &ServicosSistema) -> GameTraits {
     analisar_listagem(jogo, &listagem, servicos)
 }
 
+/// Resultado de [`analisar_se_fechado`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnaliseJogo {
+    /// O jogo não estava em execução: a pasta foi lida normalmente.
+    Analisado(Box<GameTraits>),
+    /// Algum exe do jogo está em execução: nenhum arquivo da pasta foi aberto
+    /// nem listado. O chamador deve reaproveitar os fatos anteriores (F1-09).
+    EmExecucao {
+        /// Exes do jogo encontrados entre os processos (grafia de `em_execucao`).
+        exes: Vec<String>,
+    },
+}
+
+/// Nomes de exe conhecidos de um jogo sem tocar na pasta dele: o nome de
+/// `exe_indicado` (vindo do launcher) mais `exes_conhecidos` (ex.: o exe
+/// principal da varredura anterior). Caminhos são reduzidos ao nome do arquivo.
+pub fn exes_conhecidos_do_jogo<S: AsRef<str>>(
+    jogo: &DetectedGame,
+    exes_conhecidos: &[S],
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let indicado = jogo
+        .exe_indicado
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    let nomes = indicado.into_iter().chain(exes_conhecidos.iter().map(|s| {
+        let s = s.as_ref();
+        s.rsplit(['\\', '/']).next().unwrap_or(s).to_string()
+    }));
+    for n in nomes {
+        if !n.is_empty() && !out.iter().any(|x| x.eq_ignore_ascii_case(&n)) {
+            out.push(n);
+        }
+    }
+    out
+}
+
+/// Exes do jogo que estão em `em_execucao` (comparação sem diferenciar
+/// maiúsculas). Não acessa disco.
+pub fn jogo_em_execucao<S: AsRef<str>, T: AsRef<str>>(
+    jogo: &DetectedGame,
+    exes_conhecidos: &[S],
+    em_execucao: &[T],
+) -> Vec<String> {
+    let conhecidos = exes_conhecidos_do_jogo(jogo, exes_conhecidos);
+    let mut out: Vec<String> = Vec::new();
+    for r in em_execucao {
+        let r = r.as_ref();
+        if conhecidos.iter().any(|c| c.eq_ignore_ascii_case(r))
+            && !out.iter().any(|x| x.eq_ignore_ascii_case(r))
+        {
+            out.push(r.to_string());
+        }
+    }
+    out
+}
+
+/// Igual a [`analisar`], mas, se algum exe conhecido do jogo está em
+/// `em_execucao`, não abre nem lista nenhum arquivo da pasta (inclusive DLLs de
+/// anticheat) e devolve [`AnaliseJogo::EmExecucao`].
+pub fn analisar_se_fechado<S: AsRef<str>, T: AsRef<str>>(
+    jogo: &DetectedGame,
+    servicos: &ServicosSistema,
+    exes_conhecidos: &[S],
+    em_execucao: &[T],
+) -> AnaliseJogo {
+    let exes = jogo_em_execucao(jogo, exes_conhecidos, em_execucao);
+    if exes.is_empty() {
+        AnaliseJogo::Analisado(Box::new(analisar(jogo, servicos)))
+    } else {
+        AnaliseJogo::EmExecucao { exes }
+    }
+}
+
 /// Igual a [`analisar`], a partir de uma listagem já feita.
 pub fn analisar_listagem(
     jogo: &DetectedGame,
@@ -305,6 +381,8 @@ pub fn analisar_listagem(
                 api = api_de_imports(&imp.dlls);
                 imports = imp.dlls;
             }
+            // Acima do limite de leitura: imports desconhecidos, não ofuscados.
+            Err(pe::ErroPe::GrandeDemais(_)) => {}
             Err(_) => ofuscados = true,
         }
     }
@@ -371,6 +449,47 @@ mod testes {
             ..Default::default()
         };
         assert!(api_por_vizinhos(&l2, r"jogo\binaries\win64").is_none());
+    }
+
+    #[test]
+    fn jogo_aberto_nao_toca_a_pasta() {
+        use crate::model::Launcher;
+        // Pasta inexistente com nome que denunciaria qualquer acesso: o teste só
+        // verifica que a função devolve EmExecucao sem analisar.
+        let mut j = DetectedGame::new(Launcher::Steam, "CS2", r"X:\nao-existe\cs2");
+        j.exe_indicado = Some(PathBuf::from(r"X:\nao-existe\cs2\game\bin\win64\cs2.exe"));
+        let sv = ServicosSistema::default();
+        let r = analisar_se_fechado(&j, &sv, &[] as &[&str], &["explorer.exe", "CS2.EXE"]);
+        assert_eq!(
+            r,
+            AnaliseJogo::EmExecucao {
+                exes: vec!["CS2.EXE".into()]
+            }
+        );
+        // Exe conhecido da varredura anterior (sem exe_indicado).
+        let j2 = DetectedGame::new(Launcher::Riot, "LoL", r"X:\nao-existe\lol");
+        let r = analisar_se_fechado(
+            &j2,
+            &sv,
+            &[r"X:\nao-existe\lol\Game\League of Legends.exe"],
+            &["league of legends.exe"],
+        );
+        assert!(matches!(r, AnaliseJogo::EmExecucao { .. }));
+        // Fechado: analisa normalmente (pasta inexistente = fatos vazios).
+        let r = analisar_se_fechado(&j2, &sv, &["League of Legends.exe"], &["explorer.exe"]);
+        match r {
+            AnaliseJogo::Analisado(t) => assert!(t.exe_principal.is_none()),
+            outro => panic!("esperava Analisado, veio {outro:?}"),
+        }
+    }
+
+    #[test]
+    fn exes_conhecidos_sem_repeticao() {
+        use crate::model::Launcher;
+        let mut j = DetectedGame::new(Launcher::Epic, "F", r"X:\f");
+        j.exe_indicado = Some(PathBuf::from(r"X:\f\FortniteClient-Win64-Shipping.exe"));
+        let e = exes_conhecidos_do_jogo(&j, &["fortniteclient-win64-shipping.exe", "x/b.exe"]);
+        assert_eq!(e, vec!["FortniteClient-Win64-Shipping.exe", "b.exe"]);
     }
 
     #[test]

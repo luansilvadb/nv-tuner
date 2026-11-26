@@ -15,16 +15,21 @@ pub mod arch;
 pub mod facts;
 pub mod launchers;
 pub mod model;
+pub mod processos;
 pub mod registro;
 pub mod vdf;
 
 pub use arch::{CustoTransformer, FamiliaGpu, GpuArchFacts, arch_facts};
 pub use facts::{
-    ApiGrafica, CandidatoExe, Confianca, DllNvidia, Fato, FatoAnticheat, FatosDlss, GameTraits,
-    MotivoExe,
+    AnaliseJogo, ApiGrafica, CandidatoExe, Confianca, DllNvidia, Fato, FatoAnticheat, FatosDlss,
+    GameTraits, MotivoExe,
 };
 pub use launchers::{FalhaScanner, RelatorioVarredura};
 pub use model::{DetectedGame, Launcher, deduplicar, pasta_canonica};
+pub use processos::{
+    ANTICHEAT_SO_DURANTE_JOGO, FonteProcessos, Processo, ProcessosDoSistema, ProcessosFalsos,
+    em_execucao, listar_processos,
+};
 pub use registro::ServicosSistema;
 
 /// Varre todas as bibliotecas de jogos instaladas.
@@ -35,4 +40,18 @@ pub fn varrer_bibliotecas() -> RelatorioVarredura {
 /// Levanta os fatos de um jogo (lê a pasta e, para anticheat, os serviços).
 pub fn analisar_jogo(jogo: &DetectedGame, servicos: &ServicosSistema) -> GameTraits {
     facts::analisar(jogo, servicos)
+}
+
+/// Como [`analisar_jogo`], mas não abre nem lista nenhum arquivo da pasta do
+/// jogo se algum exe dele estiver em `em_execucao` (F1-09). `exes_conhecidos`
+/// são os exes já sabidos do jogo (ex.: o exe principal da varredura anterior),
+/// além do `exe_indicado` pelo launcher. Com [`AnaliseJogo::EmExecucao`], o
+/// chamador reaproveita os fatos anteriores.
+pub fn analisar_jogo_se_fechado<S: AsRef<str>, T: AsRef<str>>(
+    jogo: &DetectedGame,
+    servicos: &ServicosSistema,
+    exes_conhecidos: &[S],
+    em_execucao: &[T],
+) -> AnaliseJogo {
+    facts::analisar_se_fechado(jogo, servicos, exes_conhecidos, em_execucao)
 }

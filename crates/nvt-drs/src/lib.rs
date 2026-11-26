@@ -10,6 +10,8 @@
 //! - [`Session::open`] cria e carrega a sessão DRS; `Drop` a destrói sem gravar.
 //! - Leituras e gravações de settings usam as entradas **internas** (sem o filtro de
 //!   settings ocultas, que dariam -160) com fallback para as públicas.
+//! - [`exibicao`] lê refresh e VRR do monitor principal (`NvAPI_DISP_GetDisplayConfig`,
+//!   `NvAPI_Disp_GetVRRInfo`), sem APIs Win32 de modo de vídeo (funciona na sessão 0).
 //! - Só [`Session::save`] grava no disco. No 621.40 ele grava mesmo sem administrador;
 //!   `-137` (quando o driver recusa) vira [`Error::PrivilegeRequired`].
 //!
@@ -20,6 +22,7 @@
 mod api;
 mod drs;
 mod error;
+pub mod exibicao;
 pub mod ffi;
 mod snapshot;
 mod strings;
@@ -29,6 +32,10 @@ pub use drs::{
     Application, EntryPoints, Profile, ProfileInfo, Session, Setting, SettingLocation, SettingValue,
 };
 pub use error::{Error, Result, Status};
+pub use exibicao::{
+    AlvoExibicao, CaminhoExibicao, FonteExibicao, FonteFalsa, InfoExibicao, VrrBruto,
+    ler_exibicao_principal,
+};
 pub use snapshot::{
     ProfileRef, ProfileSnapshot, RestoreOp, RestorePlan, SNAPSHOT_FORMAT, SettingSnapshot,
     Snapshot, apply_restore, capture, restore_plan,

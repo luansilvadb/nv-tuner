@@ -1,0 +1,219 @@
+# Base curada de jogos competitivos do nv-tuner.
+# Formato e semântica: docs/spec/competitivo.md §7.3.
+#
+# Campos:
+#   id                   kebab-case, único
+#   executaveis          nomes de exe (comparação sem diferenciar maiúsculas)
+#   steam_appid          opcional; se informado pelo chamador e diferente, não casa
+#   anticheat            vac | vanguard | eac | battleye | eac_battleye | ricochet
+#                        | blizzard | netease | proprio
+#   processos_protegidos processos vigiados além dos executáveis
+#   config               edicao | opcoes_inicializacao | orientar | proibido (fase 3)
+#   orientacoes          códigos de §7.3 (o texto fica na UI)
+#
+# Itens marcados com "# a confirmar" estão por verificar em máquina real (§11).
+
+versao_schema = 1
+
+[[jogo]]
+id = "cs2"
+nome = "Counter-Strike 2"
+executaveis = ["cs2.exe"]
+steam_appid = 730
+reflex = true
+limitador_nativo = true                      # fps_max
+anticheat = "vac"
+anticheat_kernel = false
+processos_protegidos = []
+config = "edicao"
+orientacoes = ["reflex_on_boost", "limitador_do_jogo", "tela_cheia", "vsync_jogo_off"]
+evidencia = "NVIDIA Reflex supported products; competitivo-jogos.md §2"
+
+[[jogo]]
+id = "valorant"
+nome = "VALORANT"
+executaveis = ["VALORANT-Win64-Shipping.exe"]
+reflex = true
+limitador_nativo = true
+anticheat = "vanguard"
+anticheat_kernel = true
+processos_protegidos = []                    # vgc.exe roda desde o boot: não entra (F1-06)
+config = "proibido"
+orientacoes = ["reflex_on_boost", "sem_limite_com_reflex", "tela_cheia"]
+evidencia = "NVIDIA Reflex supported products; competitivo-jogos.md §3"
+
+[[jogo]]
+id = "lol"
+nome = "League of Legends"
+executaveis = ["League of Legends.exe"]
+reflex = false
+limitador_nativo = true
+anticheat = "vanguard"
+anticheat_kernel = true
+processos_protegidos = []
+config = "proibido"
+orientacoes = ["limitador_do_jogo", "tela_cheia", "vsync_jogo_off"]
+evidencia = "competitivo-jogos.md §4; laboratório do projeto (DX11, sem Reflex)"
+
+[[jogo]]
+id = "fortnite"
+nome = "Fortnite"
+executaveis = ["FortniteClient-Win64-Shipping.exe"]
+reflex = true
+limitador_nativo = true
+anticheat = "eac_battleye"
+anticheat_kernel = true
+processos_protegidos = []
+config = "edicao"
+orientacoes = ["reflex_on_boost", "limitador_do_jogo", "tela_cheia", "modo_performance_opcional"]
+evidencia = "NVIDIA Reflex supported products; Epic; competitivo-jogos.md §5"
+
+[[jogo]]
+id = "apex"
+nome = "Apex Legends"
+executaveis = [
+    "r5apex.exe",
+    "r5apex_dx12.exe",                       # a confirmar
+]
+steam_appid = 1172470
+reflex = true
+limitador_nativo = true                      # +fps_max
+anticheat = "eac"
+anticheat_kernel = true
+processos_protegidos = []
+config = "orientar"
+orientacoes = ["reflex_on_boost", "fps_max_launch_ea", "resolucao_adaptativa_off"]
+evidencia = "NVIDIA Reflex supported products; EA; competitivo-jogos.md §6"
+
+[[jogo]]
+id = "overwatch2"
+nome = "Overwatch 2"
+executaveis = ["Overwatch.exe"]
+reflex = true
+limitador_nativo = true
+anticheat = "blizzard"
+anticheat_kernel = false                     # a confirmar
+processos_protegidos = []
+config = "orientar"
+orientacoes = ["reflex_on", "reflex_on_boost", "reduce_buffering"]
+evidencia = "NVIDIA Reflex supported products; competitivo-jogos.md §7"
+
+[[jogo]]
+id = "r6-siege"
+nome = "Rainbow Six Siege"
+executaveis = [
+    "RainbowSix.exe",
+    "RainbowSix_BE.exe",                     # a confirmar
+]
+steam_appid = 359550
+reflex = true
+limitador_nativo = true                      # FPSLimit
+anticheat = "battleye"
+anticheat_kernel = true
+processos_protegidos = []
+config = "edicao"
+orientacoes = ["reflex_on_boost", "fps_limit_cpu_100"]
+evidencia = "NVIDIA Reflex supported products; Ubisoft; competitivo-jogos.md §8"
+
+[[jogo]]
+id = "cod"
+nome = "Call of Duty"
+executaveis = [
+    "cod.exe",                               # a confirmar
+]
+reflex = true
+limitador_nativo = true
+anticheat = "ricochet"
+anticheat_kernel = true
+processos_protegidos = []
+config = "proibido"
+orientacoes = ["reflex_on_boost", "limitador_do_jogo"]
+evidencia = "NVIDIA Reflex supported products; Activision (Ricochet); competitivo-jogos.md §9"
+
+[[jogo]]
+id = "rocket-league"
+nome = "Rocket League"
+executaveis = ["RocketLeague.exe"]
+steam_appid = 252950
+reflex = false
+limitador_nativo = true
+anticheat = "eac"
+anticheat_kernel = true
+processos_protegidos = []
+config = "edicao"
+orientacoes = ["limitador_do_jogo", "vsync_jogo_off", "one_frame_thread_lag_off"]
+evidencia = "Epic (Easy Anti-Cheat no Rocket League); competitivo-jogos.md §10"
+
+[[jogo]]
+id = "pubg"
+nome = "PUBG: Battlegrounds"
+executaveis = ["TslGame.exe"]
+steam_appid = 578080
+reflex = true
+limitador_nativo = true
+anticheat = "battleye"
+anticheat_kernel = true
+processos_protegidos = []
+config = "orientar"
+orientacoes = ["reflex_on_boost", "limitador_do_jogo"]
+evidencia = "NVIDIA Reflex supported products; Krafton; competitivo-jogos.md §11"
+
+[[jogo]]
+id = "dota2"
+nome = "Dota 2"
+executaveis = ["dota2.exe"]
+steam_appid = 570
+reflex = false
+limitador_nativo = true                      # fps_max (padrão 120)
+anticheat = "vac"
+anticheat_kernel = false
+processos_protegidos = []
+config = "opcoes_inicializacao"
+orientacoes = ["fps_max_padrao_baixo"]
+evidencia = "Valve (VAC); competitivo-jogos.md §12"
+
+[[jogo]]
+id = "marvel-rivals"
+nome = "Marvel Rivals"
+executaveis = [
+    "Marvel-Win64-Shipping.exe",             # a confirmar
+]
+steam_appid = 2767030
+reflex = true
+limitador_nativo = true
+anticheat = "netease"
+anticheat_kernel = true                      # a confirmar (relatos inconsistentes; conservador)
+processos_protegidos = []
+config = "proibido"
+orientacoes = ["reflex_on_boost", "limitador_do_jogo"]
+evidencia = "NetEase, lista de software proibido (2025-02-26); competitivo-jogos.md §13"
+
+[[jogo]]
+id = "deadlock"
+nome = "Deadlock"
+executaveis = [
+    "deadlock.exe",                          # a confirmar
+]
+steam_appid = 1422450
+reflex = true
+limitador_nativo = true                      # fps_max
+anticheat = "vac"
+anticheat_kernel = false
+processos_protegidos = []
+config = "opcoes_inicializacao"
+orientacoes = ["reflex_on", "limitador_do_jogo"]
+evidencia = "NVIDIA Reflex supported products; Valve; competitivo-jogos.md §14"
+
+[[jogo]]
+id = "the-finals"
+nome = "THE FINALS"
+executaveis = ["Discovery.exe"]
+steam_appid = 2073850
+reflex = true
+limitador_nativo = true                      # FrameRateLimit
+anticheat = "eac"                            # EAC + sistema próprio da Embark
+anticheat_kernel = true
+processos_protegidos = []
+config = "orientar"
+orientacoes = ["reflex_on", "limitador_do_jogo"]
+evidencia = "NVIDIA Reflex supported products; Embark; competitivo-jogos.md §15"

@@ -10,6 +10,7 @@ pub mod catalogo;
 pub mod evaluator;
 pub mod explicacao;
 pub mod facts;
+pub mod jogos;
 pub mod plan;
 pub mod preferences;
 pub mod rules;
@@ -23,6 +24,10 @@ pub use explicacao::{
     TipoMotivo,
 };
 pub use facts::{Api, GameFacts};
+pub use jogos::{
+    Anticheat, BaseJogos, ErroJogo, ErrosJogos, IdJogo, JOGOS_TOML, JogoCurado, Orientacao,
+    PoliticaConfig,
+};
 pub use plan::{Descarte, Origem, Plan, Respeitada, SettingChange, Sugestao};
 pub use preferences::{Alvo, EscolhaUsuario, Preferences, Qualidade, Sincronismo};
 pub use rules::{

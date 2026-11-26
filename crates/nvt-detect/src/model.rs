@@ -73,6 +73,24 @@ impl DetectedGame {
         self
     }
 
+    /// Pasta de instalação.
+    pub fn pasta_instalacao(&self) -> &Path {
+        &self.pasta
+    }
+
+    /// AppID da Steam, quando o jogo veio da Steam e o identificador é numérico.
+    pub fn steam_appid(&self) -> Option<u32> {
+        if self.launcher != Launcher::Steam {
+            return None;
+        }
+        self.app_id.as_deref()?.parse().ok()
+    }
+
+    /// Identificador do jogo no launcher (appid, AppName, produto Riot...).
+    pub fn id_launcher(&self) -> Option<&str> {
+        self.app_id.as_deref()
+    }
+
     /// Chave de deduplicação (pasta canônica).
     pub fn chave(&self) -> String {
         pasta_canonica(&self.pasta)

@@ -1,8 +1,85 @@
 //! Leitura de PE: imports (normais e delay-load) e VERSIONINFO.
 
+use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
-use pelite::{FileMap, PeFile, Wrap};
+use pelite::{PeFile, Wrap};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+};
+
+/// Tamanho máximo de arquivo lido para análise de PE (256 MiB).
+pub const LIMITE_LEITURA: u64 = 256 * 1024 * 1024;
+
+/// Falha ao ler um PE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErroPe {
+    /// Arquivo acima de [`LIMITE_LEITURA`]: o fato fica desconhecido.
+    GrandeDemais(u64),
+    /// Falha de E/S ao abrir ou ler.
+    Io(String),
+    /// Conteúdo não é um PE válido (ou falta a estrutura pedida).
+    Formato(String),
+}
+
+impl fmt::Display for ErroPe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErroPe::GrandeDemais(n) => write!(f, "arquivo grande demais ({n} bytes)"),
+            ErroPe::Io(e) => write!(f, "E/S: {e}"),
+            ErroPe::Formato(e) => write!(f, "PE inválido: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ErroPe {}
+
+fn formato(e: impl fmt::Display) -> ErroPe {
+    ErroPe::Formato(e.to_string())
+}
+
+/// Lê o arquivo inteiro para um buffer com compartilhamento total
+/// (`FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`), sem mapeamento.
+/// O handle é fechado antes de retornar (regra S3 / F1-08).
+pub fn ler_compartilhado(caminho: &Path) -> Result<Vec<u8>, ErroPe> {
+    ler_com_limite(caminho, LIMITE_LEITURA, |_| {})
+}
+
+/// Núcleo de [`ler_compartilhado`]; `durante` roda com o handle ainda aberto
+/// (usado nos testes de compartilhamento).
+fn ler_com_limite(
+    caminho: &Path,
+    limite: u64,
+    durante: impl FnOnce(&Path),
+) -> Result<Vec<u8>, ErroPe> {
+    let arquivo = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(caminho)
+        .map_err(|e| ErroPe::Io(e.to_string()))?;
+    let tamanho = arquivo
+        .metadata()
+        .map_err(|e| ErroPe::Io(e.to_string()))?
+        .len();
+    if tamanho > limite {
+        return Err(ErroPe::GrandeDemais(tamanho));
+    }
+    let mut buf = Vec::with_capacity(tamanho as usize);
+    // O arquivo pode crescer entre o metadata e a leitura: nunca passa do limite.
+    let mut leitor = arquivo.take(limite + 1);
+    let lido = leitor.read_to_end(&mut buf);
+    durante(caminho);
+    // Fecha o handle antes de qualquer parse.
+    drop(leitor);
+    lido.map_err(|e| ErroPe::Io(e.to_string()))?;
+    if buf.len() as u64 > limite {
+        return Err(ErroPe::GrandeDemais(buf.len() as u64));
+    }
+    Ok(buf)
+}
 
 /// DLLs importadas pelo exe.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -89,9 +166,9 @@ fn tabela(pe: &PeFile<'_>, dir_idx: usize, out: &mut Imports) {
 }
 
 /// Lê imports e delay-imports de um exe.
-pub fn imports(caminho: &Path) -> Result<Imports, String> {
-    let map = FileMap::open(caminho).map_err(|e| e.to_string())?;
-    let pe = PeFile::from_bytes(&map).map_err(|e| e.to_string())?;
+pub fn imports(caminho: &Path) -> Result<Imports, ErroPe> {
+    let bytes = ler_compartilhado(caminho)?;
+    let pe = PeFile::from_bytes(&bytes).map_err(formato)?;
     let mut out = Imports::default();
     tabela(&pe, DIR_IMPORT, &mut out);
     tabela(&pe, DIR_DELAY_IMPORT, &mut out);
@@ -107,11 +184,11 @@ pub struct Versao {
     pub produto: Option<String>,
 }
 
-pub fn versao(caminho: &Path) -> Result<Versao, String> {
-    let map = FileMap::open(caminho).map_err(|e| e.to_string())?;
-    let pe = PeFile::from_bytes(&map).map_err(|e| e.to_string())?;
-    let res = pe.resources().map_err(|e| e.to_string())?;
-    let vi = res.version_info().map_err(|e| e.to_string())?;
+pub fn versao(caminho: &Path) -> Result<Versao, ErroPe> {
+    let bytes = ler_compartilhado(caminho)?;
+    let pe = PeFile::from_bytes(&bytes).map_err(formato)?;
+    let res = pe.resources().map_err(formato)?;
+    let vi = res.version_info().map_err(formato)?;
     let mut v = Versao {
         versao: vi.fixed().map(|f| f.dwFileVersion.to_string()),
         ..Default::default()
@@ -157,4 +234,74 @@ impl<'a> pelite::resources::version_info::Visit<'a> for ColetorStrings<'_> {
 pub fn comparar_versoes(a: &str, b: &str) -> std::cmp::Ordering {
     let p = |s: &str| -> Vec<u32> { s.split('.').map(|x| x.parse().unwrap_or(0)).collect() };
     p(a).cmp(&p(b))
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temporario(nome: &str, conteudo: &[u8]) -> PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("nvt-detect-pe-{}-{nome}.bin", std::process::id()));
+        std::fs::write(&p, conteudo).unwrap();
+        p
+    }
+
+    #[test]
+    fn leitura_compartilhada_e_handle_fechado() {
+        let p = temporario("share", b"MZ conteudo qualquer");
+        let mut escrita_ok = false;
+        let bytes = ler_com_limite(&p, LIMITE_LEITURA, |c| {
+            // Com o handle de leitura aberto, outro handle abre para escrita.
+            escrita_ok = OpenOptions::new()
+                .write(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(c)
+                .is_ok();
+        })
+        .unwrap();
+        assert!(escrita_ok, "o handle de leitura não compartilha escrita");
+        assert_eq!(bytes, b"MZ conteudo qualquer");
+        // Depois de retornar, não resta handle: abertura exclusiva funciona.
+        let exclusivo = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&p);
+        assert!(exclusivo.is_ok(), "handle ficou aberto: {exclusivo:?}");
+        drop(exclusivo);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn acima_do_limite_e_desconhecido() {
+        let p = temporario("grande", &[0u8; 64]);
+        assert_eq!(
+            ler_com_limite(&p, 16, |_| {}),
+            Err(ErroPe::GrandeDemais(64))
+        );
+        let exclusivo = OpenOptions::new().read(true).share_mode(0).open(&p);
+        assert!(exclusivo.is_ok());
+        drop(exclusivo);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn nao_pe_e_erro_de_formato() {
+        let p = temporario("naope", b"isto nao e um PE");
+        assert!(matches!(imports(&p), Err(ErroPe::Formato(_))));
+        assert!(matches!(versao(&p), Err(ErroPe::Formato(_))));
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn le_pe_real_do_sistema() {
+        let k = Path::new(r"C:\Windows\System32\kernel32.dll");
+        if k.exists() {
+            let imp = imports(k).unwrap();
+            assert!(!imp.dlls.is_empty());
+            assert!(versao(k).unwrap().versao.is_some());
+        }
+    }
 }
