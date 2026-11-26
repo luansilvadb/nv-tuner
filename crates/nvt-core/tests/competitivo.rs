@@ -165,7 +165,9 @@ fn energia_por_jogo_e_estavel_e_nao_fala_de_latencia() {
         .expect("regra de energia por jogo");
     assert_eq!(e.escopo, Escopo::PorJogo);
     assert_eq!(e.status, Status::Estavel);
-    assert!(e.quando.quantidade() == 0);
+    // §11 item 19: só jogos competitivos (`jogo_competitivo = true`).
+    assert_eq!(e.quando.quantidade(), 1);
+    assert_eq!(e.quando.jogo_competitivo, Some(true));
     assert!(e.motivo.contains("clock"));
     assert!(!e.motivo.to_lowercase().contains("latência"));
     assert!(
@@ -183,11 +185,23 @@ fn energia_por_jogo_e_estavel_e_nao_fala_de_latencia() {
     assert_eq!(ultra.status, Status::Estavel);
     let p = plano(
         &Capabilities::tipicas(Arquitetura::Turing),
-        &[GameFacts::new("j")],
+        &[GameFacts::new("j"), competitivo("cs2", true)],
         &Preferences::default(),
     );
     assert!(p.mudanca(&Alvo::Global, "energia").is_none());
-    assert_eq!(p.mudanca(&jogo("j"), "energia").map(|m| m.valor), Some(1));
+    // Jogo competitivo recebe a energia no próprio perfil.
+    assert_eq!(p.mudanca(&jogo("cs2"), "energia").map(|m| m.valor), Some(1));
+    // Jogo fora da base: nem energia nem perfil só por isso.
+    assert!(!p.por_jogo.contains_key("j"));
+    assert!(p.resumos["j"].aplicadas.is_empty());
+    assert!(p.resumos["j"].nao_aplicadas.iter().any(|n| {
+        n.regra == "energia-desempenho-maximo-por-jogo"
+            && matches!(
+                &n.motivo,
+                MotivoNaoAplicada::CondicaoNaoAtendida { condicao, .. }
+                    if condicao == "jogo_competitivo"
+            )
+    }));
     assert_eq!(
         p.mudanca(&Alvo::Global, "low_latency_cpl").map(|m| m.valor),
         Some(2)

@@ -22,18 +22,22 @@ evidencia = "Laboratório, LoL (DX11, sem Reflex): estado sem sincronismo com Ul
 low_latency_cpl = "ultra"
 low_latency_enabled = "on"
 
-# Energia: só no perfil de cada jogo (spec competitivo F1-11). Substitui a
-# antiga `baseline-energia-desempenho-maximo` (global); o global volta ao valor
-# de antes da gestão pelo mecanismo de settings que saíram do plano.
+# Energia: só no perfil de jogos competitivos (spec competitivo F1-11 e §11
+# item 19). Substitui a antiga `baseline-energia-desempenho-maximo` (global); o
+# global volta ao valor de antes da gestão pelo mecanismo de settings que saíram
+# do plano. Jogo fora da base competitiva não recebe energia nem perfil por isso.
 [[regra]]
 id = "energia-desempenho-maximo-por-jogo"
-descricao = "Gerenciamento de energia em desempenho máximo no perfil do jogo"
+descricao = "Gerenciamento de energia em desempenho máximo no perfil do jogo competitivo"
 status = "estavel"
 escopo = "por_jogo"
 impacto_visual = "nenhum"
 prioridade = 50
-motivo = "Mantém o clock da GPU estável durante o jogo, sem quedas em cenas leves ou com carga variável (consistência de clock). Fica só no perfil do jogo: fora dos jogos, a GPU segue o gerenciamento de energia original."
+motivo = "Mantém o clock da GPU estável durante o jogo competitivo, sem quedas em cenas leves ou com carga variável (consistência de clock). Fica só no perfil de jogos competitivos: fora deles, a GPU segue o gerenciamento de energia original."
 evidencia = "Laboratório: valor original era Normal/Otimizado (0x5); Prefer maximum performance mantido nas medições de LoL e WARDOGS sem regressão (sem medição de ganho). competitivo-driver.md §2.6: recomendado por perfil de jogo, pela consistência de clock."
+
+[regra.quando]
+jogo_competitivo = true
 
 [regra.aplicar]
 energia = "desempenho_maximo"

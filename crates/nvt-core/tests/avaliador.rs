@@ -57,15 +57,13 @@ fn tem_preset_e(plan: &Plan, id: &str) -> bool {
         && valor(plan, &a, "dlss_preset") == Some(5)
 }
 
-/// O perfil do jogo só recebe a energia por jogo (F1-11), que vale para todo
-/// jogo: o que antes era "nenhuma mudança por jogo".
-fn so_energia(plan: &Plan, id: &str) -> bool {
-    let m = plan.mudancas(&jogo(id));
-    m.len() == 1 && m[0].setting == "energia"
-}
-
-fn por_jogo_so_energia(plan: &Plan) -> bool {
-    plan.por_jogo.keys().all(|id| so_energia(plan, id))
+/// Jogo da base curada (spec competitivo F1-07): recebe a energia por jogo.
+fn competitivo(id: &str) -> GameFacts {
+    GameFacts {
+        competitivo: true,
+        limitador_nativo: Some(true),
+        ..jogo_sem_dlss(id)
+    }
 }
 
 #[test]
@@ -103,7 +101,7 @@ fn turing_com_dlss_recebe_preset_e() {
 fn ampere_so_gera_sugestao_experimental() {
     let caps = Capabilities::tipicas(Arquitetura::Ampere);
     let plan = plano(&caps, &[jogo_dlss("jogo-a")], &Preferences::default());
-    assert!(so_energia(&plan, "jogo-a"));
+    assert!(!plan.por_jogo.contains_key("jogo-a"));
     assert_eq!(plan.experimentais.len(), 1);
     let s = &plan.experimentais[0];
     assert_eq!(s.regra, "dlss-preset-e-ampere");
@@ -116,18 +114,17 @@ fn ada_e_blackwell_nao_recebem_override() {
     for arq in [Arquitetura::Ada, Arquitetura::Blackwell] {
         let caps = Capabilities::tipicas(arq);
         let plan = plano(&caps, &[jogo_dlss("jogo-a")], &Preferences::default());
-        assert!(por_jogo_so_energia(&plan), "{arq}: {:?}", plan.por_jogo);
+        assert!(plan.por_jogo.is_empty(), "{arq}: {:?}", plan.por_jogo);
         assert!(plan.experimentais.is_empty());
-        // F1-11: energia saiu do global e vale no perfil do jogo.
+        // F1-11: energia saiu do global; jogo não competitivo não a recebe.
         assert_eq!(valor(&plan, &Alvo::Global, "energia"), None);
-        assert_eq!(valor(&plan, &jogo("jogo-a"), "energia"), Some(1));
     }
 }
 
 #[test]
 fn gtx16_sem_tensor_cores_nao_recebe_override() {
     let plan = plano(&gtx16(), &[jogo_dlss("jogo-a")], &Preferences::default());
-    assert!(por_jogo_so_energia(&plan));
+    assert!(plan.por_jogo.is_empty());
     assert!(plan.experimentais.is_empty());
 }
 
@@ -138,7 +135,7 @@ fn arquitetura_desconhecida_nao_recebe_override() {
         ..Capabilities::tipicas(Arquitetura::Unknown(0x1C0))
     };
     let plan = plano(&caps, &[jogo_dlss("jogo-a")], &Preferences::default());
-    assert!(por_jogo_so_energia(&plan));
+    assert!(plan.por_jogo.is_empty());
 }
 
 #[test]
@@ -149,7 +146,7 @@ fn jogo_sem_dlss_nao_recebe_override() {
         &[jogo_sem_dlss("jogo-b"), jogo_dlss("jogo-a")],
         &Preferences::default(),
     );
-    assert!(so_energia(&plan, "jogo-b"));
+    assert!(!plan.por_jogo.contains_key("jogo-b"));
     assert!(tem_preset_e(&plan, "jogo-a"));
 }
 
@@ -157,7 +154,7 @@ fn jogo_sem_dlss_nao_recebe_override() {
 fn dlss_desconhecido_conta_como_sem_dlss() {
     let caps = Capabilities::tipicas(Arquitetura::Turing);
     let plan = plano(&caps, &[GameFacts::new("jogo-c")], &Preferences::default());
-    assert!(por_jogo_so_energia(&plan));
+    assert!(plan.por_jogo.is_empty());
 }
 
 #[test]
@@ -168,7 +165,7 @@ fn fidelidade_bloqueia_preset_e() {
         ..Preferences::default()
     };
     let plan = plano(&caps, &[jogo_dlss("jogo-a")], &prefs);
-    assert!(por_jogo_so_energia(&plan));
+    assert!(plan.por_jogo.is_empty());
     assert!(plan.descartes.iter().any(|d| {
         d.regra.as_deref() == Some("dlss-preset-e-turing")
             && d.alvo == jogo("jogo-a")
@@ -358,8 +355,8 @@ fn escolha_travada_pelo_usuario_e_respeitada() {
                 alvo: jogo("jogo-a"),
                 setting: "dlss_preset".into(),
             },
-            // F1-11: energia passou a ser por jogo; a trava acompanha o alvo
-            // (antes, a trava era no global).
+            // F1-11: energia passou a ser por jogo competitivo; a trava
+            // acompanha o alvo (antes, a trava era no global).
             EscolhaUsuario {
                 alvo: jogo("jogo-a"),
                 setting: "energia".into(),
@@ -367,7 +364,11 @@ fn escolha_travada_pelo_usuario_e_respeitada() {
         ],
         ..Preferences::default()
     };
-    let plan = plano(&caps, &[jogo_dlss("jogo-a")], &prefs);
+    let competitivo_com_dlss = GameFacts {
+        competitivo: true,
+        ..jogo_dlss("jogo-a")
+    };
+    let plan = plano(&caps, &[competitivo_com_dlss], &prefs);
     assert_eq!(valor(&plan, &jogo("jogo-a"), "dlss_preset"), None);
     assert_eq!(valor(&plan, &jogo("jogo-a"), "dlss_override"), Some(1));
     assert_eq!(valor(&plan, &jogo("jogo-a"), "energia"), None);
@@ -389,6 +390,29 @@ fn plano_e_deterministico() {
     let b = plano(&caps, &invertidos, &Preferences::default());
     assert_eq!(a.global, b.global);
     assert_eq!(a.por_jogo, b.por_jogo);
-    // F1-11: todo jogo recebe a energia por jogo, inclusive o sem DLSS.
-    assert_eq!(a.por_jogo.keys().collect::<Vec<_>>(), ["a", "m", "z"]);
+    assert_eq!(a.por_jogo.keys().collect::<Vec<_>>(), ["a", "z"]);
+}
+
+#[test]
+fn energia_por_jogo_so_em_jogo_competitivo() {
+    // Spec competitivo F1-11 e §11 item 19: o competitivo recebe a energia no
+    // próprio perfil; o não competitivo não recebe energia nem perfil.
+    let caps = Capabilities::tipicas(Arquitetura::Turing);
+    let plan = plano(
+        &caps,
+        &[competitivo("cs2"), jogo_sem_dlss("outro")],
+        &Preferences::default(),
+    );
+    let cs2 = plan.mudancas(&jogo("cs2"));
+    assert_eq!(cs2.len(), 1);
+    assert_eq!(cs2[0].setting, "energia");
+    assert_eq!(cs2[0].valor, 1);
+    assert_eq!(
+        cs2[0].origem,
+        Origem::Regra {
+            id: "energia-desempenho-maximo-por-jogo".into()
+        }
+    );
+    assert!(!plan.por_jogo.contains_key("outro"));
+    assert_eq!(valor(&plan, &Alvo::Global, "energia"), None);
 }

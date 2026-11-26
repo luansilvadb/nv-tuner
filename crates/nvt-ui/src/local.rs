@@ -1058,7 +1058,8 @@ mod testes {
     }
 
     /// Descrição da regra `energia-desempenho-maximo-por-jogo` (regras/base.toml).
-    const ENERGIA_TXT: &str = "Gerenciamento de energia em desempenho máximo no perfil do jogo";
+    const ENERGIA_TXT: &str =
+        "Gerenciamento de energia em desempenho máximo no perfil do jogo competitivo";
 
     #[test]
     fn jogos_locais_tem_o_mesmo_formato_do_servico() {
@@ -1070,18 +1071,36 @@ mod testes {
         let w = jogos.iter().find(|j| j.nome == "WARDOGS").unwrap();
         assert_eq!((w.launcher.as_str(), w.api.as_str()), ("Steam", "dx12"));
         assert_eq!(w.origem_perfil, OrigemPerfilIpc::ACriar);
-        // Spec competitivo F1-11: a energia por jogo vale para todo jogo e entra
-        // no resumo (antes: só o DLSS, e "nenhum ajuste" no jogo sem DLSS).
-        assert_eq!(
-            textos::resumo_curto(&w.resumo),
-            format!("Preset E do DLSS (Turing) + {ENERGIA_TXT}")
-        );
+        // Spec competitivo F1-11 e §11 item 19: a energia por jogo só vale para
+        // jogo competitivo. WARDOGS está fora da base: só o DLSS; LoL é
+        // competitivo (base curada): recebe a energia.
+        assert_eq!(textos::resumo_curto(&w.resumo), "Preset E do DLSS (Turing)");
         assert_eq!(
             textos::resumo_curto(resumo(&jogos, "League of Legends")),
             ENERGIA_TXT
         );
         assert!(!w.resumo.herda_do_global.is_empty());
         assert_eq!((falso.gravacoes(), falso.salvamentos()), (0, 0));
+    }
+
+    #[test]
+    fn jogo_sem_dlss_fora_da_base_explica_que_nada_foi_aplicado() {
+        // Spec competitivo §11 item 19: sem a energia por jogo, o jogo não
+        // competitivo e sem DLSS volta a dizer "nenhum ajuste específico".
+        let falso = DriverFalso::turing();
+        let e = Engine::new(SomenteLeitura(falso), Armazem::em_memoria()).unwrap();
+        let mut entrada = jogos_de_teste();
+        entrada.push(JogoEntrada::new("Jogo Qualquer", "qualquer.exe"));
+        let diff = e.planejar(&entrada).unwrap();
+        let jogos = jogos_ipc(&e, &diff);
+        assert_eq!(
+            textos::resumo_curto(resumo(&jogos, "Jogo Qualquer")),
+            "Nenhum ajuste específico — jogo sem DLSS"
+        );
+        assert_eq!(
+            textos::resumo_curto(resumo(&jogos, "League of Legends")),
+            ENERGIA_TXT
+        );
     }
 
     #[cfg(debug_assertions)]
@@ -1100,9 +1119,13 @@ mod testes {
         let fatos: Vec<_> = diff.jogos.iter().map(|j| j.fatos.clone()).collect();
         diff.plano = nvt_core::avaliar(&caps, &fatos, &Default::default(), e.regras());
         let jogos = jogos_ipc(&e, &diff);
-        // Spec competitivo F1-11: com a energia por jogo aplicada, o resumo
-        // curto não diz mais "nenhum ajuste específico" (antes: o motivo do DLSS).
-        assert_eq!(textos::resumo_curto(resumo(&jogos, "WARDOGS")), ENERGIA_TXT);
+        // WARDOGS está fora da base competitiva: sem energia por jogo, o resumo
+        // curto volta a explicar o motivo do DLSS (spec competitivo §11 item
+        // 19). LoL é competitivo e recebe a energia.
+        assert_eq!(
+            textos::resumo_curto(resumo(&jogos, "WARDOGS")),
+            "Nenhum ajuste específico — GPU Ada roda o DLSS padrão sem custo extra"
+        );
         assert_eq!(
             textos::resumo_curto(resumo(&jogos, "League of Legends")),
             ENERGIA_TXT

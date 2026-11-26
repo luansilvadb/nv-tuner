@@ -941,14 +941,14 @@ fn plano_envia_jogos_com_fatos_e_explicacao() {
     assert_eq!(w.api, "dx12");
     assert_eq!(w.dlss.as_deref(), Some("310.6"));
     assert_eq!((w.reflex, w.anticheat_kernel), (Some(true), Some(true)));
-    // Spec competitivo F1-11: a energia por jogo vale para todo jogo, então
-    // aparece aplicada ao lado do DLSS (antes: só a regra de DLSS).
+    // Spec competitivo F1-11 e §11 item 19: a energia por jogo só vale para
+    // jogo competitivo. WARDOGS está fora da base: só a regra de DLSS.
     const ENERGIA: &str = "energia-desempenho-maximo-por-jogo";
-    assert_eq!(w.resumo.aplicadas.len(), 2);
+    assert_eq!(w.resumo.aplicadas.len(), 1);
     assert_eq!(w.resumo.aplicadas[0].regra, "dlss-preset-e-turing");
     assert!(!w.resumo.aplicadas[0].descricao.is_empty());
     assert_eq!(w.resumo.aplicadas[0].settings.len(), 3);
-    assert_eq!(w.resumo.aplicadas[1].regra, ENERGIA);
+    assert!(w.resumo.nao_aplicadas.iter().any(|r| r.regra == ENERGIA));
     assert!(!w.resumo.herda_do_global.is_empty());
     let l = p
         .jogos
@@ -957,6 +957,7 @@ fn plano_envia_jogos_com_fatos_e_explicacao() {
         .unwrap();
     assert_eq!(l.launcher, "Riot");
     assert_eq!(l.dlss, None);
+    // LoL é competitivo (base curada): recebe a energia por jogo.
     assert_eq!(l.resumo.aplicadas.len(), 1);
     assert_eq!(l.resumo.aplicadas[0].regra, ENERGIA);
     // As regras de DLSS dizem "jogo sem DLSS" (a nova regra por jogo de

@@ -4,22 +4,27 @@ As decisões do nv-tuner vêm de **regras declarativas em TOML** (pasta
 `regras/`), avaliadas pelo crate `nvt-core` sobre três entradas:
 
 - **capacidades** da GPU (`Capabilities`): arquitetura, Tensor Cores, FP8,
-  Frame Generation, MFG, ReBAR, VRAM, driver e refresh do monitor;
+  Frame Generation, MFG, ReBAR, VRAM, driver, refresh do monitor principal
+  (`refresh_mhz`, em milésimos de Hz) e VRR (`vrr: EstadoVrr { possivel,
+  ativo }`);
 - **fatos** de cada jogo (`GameFacts`): API gráfica, versão do DLSS, Reflex,
-  anticheat de kernel;
+  anticheat de kernel e, para jogo casado na base curada (`regras/jogos.toml`),
+  `competitivo`, `limitador_nativo`, `jogo_base` e `orientacoes`;
 - **preferências** do usuário (`Preferences`): sincronismo, teto de qualidade,
   limite de FPS e escolhas travadas.
 
 O resultado é um **plano** (`Plan`) com as mudanças do perfil global e de
-cada jogo, sempre com origem e explicação. Os dois arquivos são embutidos no
-binário (`ConjuntoRegras::embutido()`).
+cada jogo, sempre com origem e explicação, além de orientações por jogo e
+avisos (ver “Orientações e avisos do plano”). Os arquivos são embutidos no
+binário (`ConjuntoRegras::embutido()` e `BaseJogos::embutida()`).
 
 ## Arquivos
 
 | Arquivo | Conteúdo |
 |---|---|
 | `regras/settings.toml` | Catálogo: nome simbólico → ID DRS e valores aceitos. É também a lista permitida do serviço |
-| `regras/base.toml` | Regras base (baseline global, sincronismo, DLSS) |
+| `regras/base.toml` | Regras base (baseline global, sincronismo, energia por jogo competitivo, DLSS) |
+| `regras/jogos.toml` | Base curada de jogos competitivos (ver “Base curada de jogos”); não tem regras, só fatos e orientações |
 
 Todo arquivo começa com `versao_schema = 1`.
 
@@ -106,11 +111,15 @@ arquitetura = { ada = "arquitetura_nao_precisa", blackwell = "arquitetura_nao_pr
 | `rebar_ativo` | bool | igual ao lido; **não casa se desconhecido** |
 | `vram_mb_min` | inteiro | VRAM ≥ valor |
 | `driver_min` | texto (`"560.0"`) | driver ≥ valor |
-| `refresh_conhecido` | bool | refresh do monitor conhecido (ou não) |
+| `refresh_conhecido` | bool | refresh do monitor conhecido (ou não); refresh = `refresh_mhz` arredondado para Hz inteiro (`Capabilities::refresh_hz`; abaixo de 0,5 Hz conta como desconhecido) |
+| `vrr_possivel` | bool | igual a `vrr.possivel` (monitor principal aceita VRR); **não casa se desconhecido** |
+| `vrr_ativo` | bool | igual a `vrr.ativo` (VRR ligado no painel); **não casa se desconhecido** |
 | `jogo_api` | lista: `dx9`, `dx11`, `dx12`, `vulkan`, `opengl`, `desconhecida` | API do jogo na lista |
 | `jogo_dlss` | bool | jogo tem (ou não tem) DLSS; DLSS não detectado conta como "não tem" |
 | `jogo_dlss_min` | texto (`"310.0"`) | DLSS presente e versão ≥ valor |
-| `jogo_reflex`, `jogo_anticheat_kernel` | bool | igual ao fato; **não casa se desconhecido** |
+| `jogo_reflex`, `jogo_anticheat_kernel` | bool | igual ao fato; **não casa se desconhecido**. Para jogo da base curada, o fato vem da base (anticheat pode ser `false`, ex.: VAC) |
+| `jogo_competitivo` | bool | jogo casado (ou não) na base curada; nunca é desconhecido (fora da base = `false`) |
+| `jogo_limitador_nativo` | bool | limitador de FPS nativo declarado na base; **não casa se desconhecido** (jogo fora da base) |
 | `sincronismo` | lista: `sem_sync`, `gsync`, `vsync` | preferência na lista |
 | `qualidade` | lista: `desempenho`, `equilibrado`, `fidelidade` | teto na lista |
 | `limite_fps_definido` | bool | usuário definiu (ou não) um limite de FPS |
@@ -127,6 +136,91 @@ contraditórias detectáveis (`jogo_dlss = false` com `jogo_dlss_min`) são erro
 - **Derivado do refresh**: `limite_fps = { refresh_menos = 3 }` (refresh −
   3). Exige `quando.refresh_conhecido = true` e uma setting com `faixa`; se o
   resultado sair da faixa, a mudança é descartada com motivo.
+- **Limite para VRR**: `limite_fps = { limite_vrr = true }` =
+  `min(Hz − 3, ⌊Hz − Hz²/3600⌋)` (`nvt_core::limite_vrr`, em inteiros:
+  `Hz − ⌈Hz²/3600⌉`). Coincide com o limite automático do driver no modo
+  G-SYNC (≈224 a 240 Hz) e nunca fica a menos de 3 FPS do refresh. Exige
+  `quando.refresh_conhecido = true` **e** `quando.vrr_ativo = true` e uma
+  setting com `faixa` (senão é erro de carga); resultado não positivo ou fora
+  da faixa descarta a mudança com motivo. A explicação mostra a conta
+  (“mínimo entre 240 Hz − 3 e ⌊240 − 240²/3600⌋ = 224”).
+
+  | Hz | 60 | 100 | 120 | 144 | 165 | 240 | 360 | 480 |
+  |---|---|---|---|---|---|---|---|---|
+  | `Hz − 3` | 57 | 97 | 117 | 141 | 162 | 237 | 357 | 477 |
+  | `⌊Hz − Hz²/3600⌋` | 59 | 97 | 116 | 138 | 157 | 224 | 324 | 416 |
+  | **resultado** | **57** | **97** | **116** | **138** | **157** | **224** | **324** | **416** |
+
+  A tabela é verificada pelo teste `limite_vrr_tabela_da_spec`
+  (`crates/nvt-core/tests/competitivo.rs`).
+
+## Base curada de jogos (`jogos.toml`)
+
+Lista os jogos competitivos que o app reconhece (`nvt_core::BaseJogos`,
+módulo `jogos`). Não grava nada por si: fornece fatos curados e códigos de
+orientação.
+
+```toml
+versao_schema = 1
+
+[[jogo]]
+id = "cs2"                                   # kebab-case, único
+nome = "Counter-Strike 2"
+executaveis = ["cs2.exe"]                    # ao menos um
+steam_appid = 730                            # opcional
+reflex = true
+limitador_nativo = true
+anticheat = "vac"                            # vac | vanguard | eac | battleye | eac_battleye | ricochet | blizzard | netease | proprio
+anticheat_kernel = false
+processos_protegidos = []                    # opcional: processos vigiados além dos executáveis
+config = "edicao"                            # edicao | opcoes_inicializacao | orientar | proibido (fase 3)
+orientacoes = ["reflex_on_boost", "limitador_do_jogo", "tela_cheia", "vsync_jogo_off"]  # opcional
+evidencia = "Fonte que sustenta os fatos."
+```
+
+**Validação** (todos os erros de uma vez, `ErrosJogos`; teste de carga da
+base embutida):
+
+- TOML malformado, campo desconhecido ou ausente, `anticheat`, `config` ou
+  código de orientação desconhecido → `ErroJogo::Toml`;
+- `versao_schema` diferente de 1 → `VersaoSchema`;
+- `id` fora do kebab-case (começa com `a-z`; só `a-z`, `0-9` e `-`; sem `-`
+  no fim nem `--`) → `IdInvalido`; repetido → `IdDuplicado`;
+- `nome` ou `evidencia` vazios, `executaveis` vazio ou com item vazio, item
+  vazio em `processos_protegidos` → `CampoVazio`;
+- o mesmo executável duas vezes, no jogo ou na base inteira (sem diferenciar
+  maiúsculas) → `ExecutavelDuplicado`;
+- orientação repetida no mesmo jogo → `OrientacaoRepetida`;
+- `config = "edicao"` ou `"opcoes_inicializacao"` em `valorant`, `lol`,
+  `marvel-rivals` ou `cod` (`JOGOS_SEM_EDICAO`, trava do escopo) →
+  `ConfigProibida`.
+
+**Casamento** (`BaseJogos::casar`): pelo nome do arquivo do exe (aceita
+caminho; sem diferenciar maiúsculas). Se o jogo da base tem `steam_appid` e
+quem chama informou um AppID **diferente**, não casa (exes genéricos como
+`cs2.exe` de outro jogo); sem AppID de um dos lados, vale só o exe.
+
+**Fatos curados** (`nvt_engine::fatos_do_jogo`): jogo casado tem
+`competitivo = true`, `jogo_base = id`, as `orientacoes` da base, e
+`reflex`, `limitador_nativo` e `anticheat_kernel` **vindos da base** (ela
+vence a detecção em disco, que não acha Reflex via NVAPI). Fora da base:
+fatos da detecção, `competitivo = false`, `limitador_nativo` desconhecido e
+nenhuma orientação.
+
+## Orientações e avisos do plano
+
+- **Orientações por jogo** (`plan.resumos[id].orientacoes`): códigos da base
+  (`Orientacao`), filtrados pelas preferências por `filtrar_orientacoes`, na
+  ordem da base e sem repetição. Com `sincronismo = gsync`, `vsync_jogo_off`
+  vira `vsync_driver_com_gsync` (V-Sync desligado no jogo e ligado no
+  driver); sem G-SYNC, `vsync_driver_com_gsync` sai. Jogo fora da base: lista
+  vazia. O núcleo não gera texto; a UI traduz os códigos.
+- **Avisos** (`plan.avisos`, `AvisoPlano`), só com `sincronismo = gsync`:
+  `GsyncSemVrr` quando `vrr.possivel = Some(false)` (sem VRR, a combinação
+  vira V-Sync comum, com fila; a UI orienta “sem sincronismo”);
+  `VrrDesligadoNoPainel` quando `possivel = Some(true)` e
+  `ativo = Some(false)` (o app não liga o VRR do monitor). VRR desconhecido
+  não gera aviso.
 
 ## Semântica do avaliador
 
@@ -172,7 +266,9 @@ Para cada jogo avaliado, `plan.resumos[id]` (`ResumoJogo`, módulo
   estruturado** (`MotivoNaoAplicada`). Uma regra aplicada também aparece aqui
   se uma setting dela foi travada ou perdeu um conflito;
 - `herda_do_global`: settings do plano global que o perfil do jogo não
-  sobrescreve (a UI mostra “herda N ajustes globais”).
+  sobrescreve (a UI mostra “herda N ajustes globais”);
+- `orientacoes`: códigos de orientação do jogo da base curada, já filtrados
+  pelas preferências (ver “Orientações e avisos do plano”).
 
 | Motivo | Quando |
 |---|---|
@@ -188,9 +284,10 @@ Para cada jogo avaliado, `plan.resumos[id]` (`ResumoJogo`, módulo
 
 Escolha do motivo quando a regra não casa: `Condicoes::falhas` lista as
 condições que falharam em ordem fixa — **fatos do jogo** (`jogo_dlss`,
-`jogo_dlss_min`, `jogo_api`, `jogo_reflex`, `jogo_anticheat_kernel`), depois
-`tem_tensor_cores`, `tensor_fp8`, `arquitetura`, demais capacidades e por fim
-preferências. Vence a primeira falha com motivo declarado ou padrão; se
+`jogo_dlss_min`, `jogo_api`, `jogo_reflex`, `jogo_anticheat_kernel`,
+`jogo_competitivo`, `jogo_limitador_nativo`), depois `tem_tensor_cores`,
+`tensor_fp8`, `arquitetura`, demais capacidades (terminando em
+`refresh_conhecido`, `vrr_possivel`, `vrr_ativo`) e por fim preferências. Vence a primeira falha com motivo declarado ou padrão; se
 nenhuma tiver, a primeira falha vira `FatoDesconhecido` (fato `None`) ou
 `CondicaoNaoAtendida`. Assim, um jogo sem DLSS diz “jogo sem DLSS” em
 qualquer GPU, e uma GTX 16 diz “sem Tensor Cores” antes de falar de
@@ -215,13 +312,14 @@ outras.
 | Regra | Status | Escopo | O que faz |
 |---|---|---|---|
 | `baseline-baixa-latencia-ultra` | estável | global | Low Latency Ultra |
-| `baseline-energia-desempenho-maximo` | estável | global | Energia em desempenho máximo |
+| `energia-desempenho-maximo-por-jogo` | estável | por jogo | Jogo competitivo (`jogo_competitivo = true`): energia em desempenho máximo no perfil do jogo |
 | `baseline-shader-cache` | estável | global | Shader cache ligado |
 | `baseline-indicadores-desligados` | estável | global | Indicadores VRR/MFAA/triple buffering off |
 | `baseline-filtragem-pela-aplicacao` | estável | global | AF/AA de volta à aplicação |
 | `sincronismo-sem-sync` | estável | global | V-Sync force off, G-SYNC off |
 | `sincronismo-gsync` | estável | global | G-SYNC tela cheia + janela, V-Sync on |
-| `sincronismo-gsync-limite` | estável | global | Com G-SYNC e refresh conhecido: FPS = refresh − 3 |
+| `sincronismo-gsync-limite` | experimental | global | Com G-SYNC, refresh conhecido e VRR ativo: `limite_fps = { limite_vrr = true }` (224 a 240 Hz), só sugestão |
+| `gsync-reflex-sem-limite-driver` | experimental | por jogo | Com G-SYNC, jogo competitivo com Reflex e sem limite do usuário: limitador do driver off no perfil do jogo, só sugestão |
 | `sincronismo-vsync` | estável | global | V-Sync force on, G-SYNC off |
 | `dlss-preset-e-turing` | estável | por jogo | RTX 20 + jogo com DLSS: preset E (impacto leve) |
 | `dlss-preset-e-ampere` | experimental | por jogo | Idem para RTX 30, só sugestão |
@@ -231,6 +329,17 @@ de DLSS. As duas regras de DLSS declaram
 `arquitetura = { ada = "arquitetura_nao_precisa", blackwell = "arquitetura_nao_precisa" }`
 em `motivo_quando_nao_aplica`, para a UI explicar por que nada foi aplicado
 numa RTX 40/50.
+
+**Energia só em jogos competitivos** (spec competitivo F1-11 e §11, item
+19). A antiga `baseline-energia-desempenho-maximo` (global) saiu; o global
+volta ao valor de antes da gestão pelo mecanismo de settings que saíram do
+plano. A regra por jogo exige `jogo_competitivo = true`: um jogo fora da base
+não recebe a energia e não ganha perfil só por isso, e a explicação dele
+continua sendo a das outras regras (ex.: “Nenhum ajuste específico — jogo sem
+DLSS”); a de energia aparece em `nao_aplicadas` como
+`CondicaoNaoAtendida { condicao: "jogo_competitivo" }`, que tem a menor
+relevância no resumo curto da UI. O `motivo` fala só em consistência de
+clock, nunca em ganho de latência.
 
 ## Como contribuir com uma regra
 

@@ -89,8 +89,8 @@ fn perfil_do_app_apagado_nao_trava_o_ciclo_e_e_recriado() {
     assert!(t.erros.is_empty(), "{:?}", t.erros);
     assert_eq!(
         t.removidas.len(),
-        4,
-        "as 3 settings do DLSS e a energia por jogo (F1-11) saem do esperado"
+        3,
+        "as 3 settings do DLSS saem do esperado (jogo fora da base: sem energia por jogo)"
     );
     // O global segue.
     assert_eq!(f.valor(&ProfileRef::Base, global), Some(max));
@@ -387,16 +387,9 @@ fn equilibrado_para_fidelidade_remove_as_settings_do_dlss() {
         ids.iter().all(|i| !proprias.contains_key(i)),
         "as 3 settings do DLSS saem do perfil: {proprias:?}"
     );
-    // Só a energia por jogo (F1-11, sem impacto visual) continua gerida no
-    // perfil (antes: nenhuma setting do perfil ficava no esperado).
-    let energia = id(&e, "energia");
-    assert!(
-        e.estado()
-            .esperado
-            .iter()
-            .filter(|x| x.perfil == p)
-            .all(|x| x.id == energia)
-    );
+    // Jogo fora da base competitiva: sem energia por jogo (F1-11, §11 item
+    // 19), então nenhuma setting do perfil fica no esperado.
+    assert!(e.estado().esperado.iter().all(|x| x.perfil != p));
     assert!(e.planejar(&jogos).unwrap().vazio());
 }
 
@@ -407,17 +400,13 @@ fn fidelidade_limpa_perfil_criado_pelo_app() {
     let jogos = vec![jogo_novo()];
     aplicar(&mut e, &jogos);
     let p = ProfileRef::Named(NOME_NOVO.into());
-    // 3 do DLSS + energia por jogo (spec competitivo F1-11).
-    assert_eq!(d.proprias(&p).len(), 4);
+    // Só as 3 do DLSS: jogo fora da base competitiva não recebe a energia
+    // por jogo (spec competitivo F1-11, §11 item 19).
+    assert_eq!(d.proprias(&p).len(), 3);
     e.definir_preferencias(prefs(Sincronismo::SemSync, Qualidade::Fidelidade, None))
         .unwrap();
     aplicar(&mut e, &jogos);
-    // Fica só a energia por jogo (antes: perfil vazio).
-    let energia = id(&e, "energia");
-    assert_eq!(
-        d.proprias(&p).keys().copied().collect::<Vec<_>>(),
-        [energia]
-    );
+    assert!(d.proprias(&p).is_empty());
 }
 
 #[test]

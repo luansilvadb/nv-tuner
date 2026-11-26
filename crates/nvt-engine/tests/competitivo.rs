@@ -202,10 +202,12 @@ fn energia_global_volta_ao_valor_de_antes_da_gestao() {
     let dir = dir_teste("energia");
     let d = DriverFalso::turing();
     d.definir_padrao(ENERGIA, 5); // Normal/Otimizado
-    d.adicionar_perfil_predefinido("Jogo", &["jogo.exe"], &[]);
-    let mut jogo = JogoEntrada::new("Jogo", "jogo.exe");
+    // Jogo competitivo (casa com `cs2` na base curada) e jogo fora da base.
+    d.adicionar_perfil_predefinido("Jogo", &["cs2.exe"], &[]);
+    d.adicionar_perfil_predefinido("Outro", &["outro.exe"], &[]);
+    let mut jogo = JogoEntrada::new("Jogo", "cs2.exe");
     jogo.dlss = Some(Versao::new(310, 0, 0, 0));
-    let jogos = [jogo];
+    let jogos = [jogo, JogoEntrada::new("Outro", "outro.exe")];
 
     // Versão anterior: energia gerida no global.
     {
@@ -250,6 +252,16 @@ fn energia_global_volta_ao_valor_de_antes_da_gestao() {
     );
     assert!(!d.proprias(&ProfileRef::Base).contains_key(&ENERGIA));
     assert_eq!(d.valor(&ProfileRef::Named("Jogo".into()), ENERGIA), Some(1));
+    // §11 item 19: o jogo fora da base não recebe a energia por jogo.
+    assert!(
+        diff.plano
+            .mudanca(&Alvo::Jogo("Outro".into()), "energia")
+            .is_none()
+    );
+    assert!(
+        !d.proprias(&ProfileRef::Named("Outro".into()))
+            .contains_key(&ENERGIA)
+    );
     assert!(
         !e.estado()
             .esperado

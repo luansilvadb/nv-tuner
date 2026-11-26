@@ -370,10 +370,10 @@ esses pontos em vez de “único lugar com `unsafe`”.
 | F1-08 | **Leitura de PE com compartilhamento total.** `imports()` e `versao()` (`crates/nvt-detect/src/facts/pe.rs:92-110`) deixam de usar `pelite::FileMap`: abrem com `OpenOptions::read(true).share_mode(FILE_SHARE_READ \| FILE_SHARE_WRITE \| FILE_SHARE_DELETE)` (`std::os::windows::fs::OpenOptionsExt`), leem para `Vec<u8>` com limite de 256 MiB, **fecham o handle** e então chamam `PeFile::from_bytes`. Acima do limite, o fato fica desconhecido | teste: com o handle de leitura aberto, outro handle consegue abrir para escrita com `FILE_SHARE_READ`; após a função retornar, um handle com `share_mode(0)` abre |
 | F1-09 | **Não varrer jogo aberto.** Se o exe de um jogo está em execução, a varredura reaproveita os fatos anteriores desse jogo e não abre nenhum arquivo da pasta dele (inclui DLLs de anticheat lidas em `facts/anticheat.rs:101-117`) | teste com processos falsos |
 | F1-10 | **Regras do driver revistas juntas** (7.4): baixa latência global e G-SYNC + limite | testes do avaliador + laboratório |
-| F1-11 | **Energia por jogo.** `baseline-energia-desempenho-maximo` (global) é substituída por `energia-desempenho-maximo-por-jogo` (escopo `por_jogo`). O global volta ao valor **de antes da gestão** pelo mecanismo de “settings que saíram do plano” (`docs/engine.md`). O `motivo` fala só em consistência de clock e nunca em ganho de latência (revisão driver §6: ganho de latência refutado) | teste do motor (reversão do global) + inspeção do texto |
+| F1-11 | **Energia por jogo.** `baseline-energia-desempenho-maximo` (global) é substituída por `energia-desempenho-maximo-por-jogo` (escopo `por_jogo`, só para `jogo_competitivo = true`, §11 item 19). O global volta ao valor **de antes da gestão** pelo mecanismo de “settings que saíram do plano” (`docs/engine.md`). O `motivo` fala só em consistência de clock e nunca em ganho de latência (revisão driver §6: ganho de latência refutado) | teste do motor (reversão do global) + inspeção do texto |
 | F1-12 | **Orientações por jogo.** Cada jogo da base traz `orientacoes` (códigos, 7.3). O plano passa a ter `plan.resumos[id].orientacoes`, filtradas pelas preferências (ex.: com `sincronismo = gsync`, a orientação de V-Sync do jogo é “desligado no jogo, ligado no driver”) | teste do avaliador + UI |
-| F1-13 | **Modelo generalizado** (6.1) implementado só com o armazém `Driver`, sem mudança de comportamento: os testes atuais de `nvt-core` e `nvt-engine` passam sem alteração de expectativa, e um `estado.json` v1 migra para v2 preservando travas, histórico e `esperado` | testes existentes + teste de migração |
-| F1-14 | **IPC v4** (7.6) | testes de `nvt-ipc` (ida e volta serde, rejeição de v3) |
+| F1-13 | **Adiado para o início da fase 2** (§12). **Modelo generalizado** (6.1) implementado só com o armazém `Driver`, sem mudança de comportamento: os testes atuais de `nvt-core` e `nvt-engine` passam sem alteração de expectativa, e um `estado.json` v1 migra para v2 preservando travas, histórico e `esperado` | testes existentes + teste de migração (na fase 2) |
+| F1-14 | **IPC v4** (7.6), só com os campos que a fase 1 precisa; as variantes de camada Windows/Jogo ficam para a v5 (fase 2, §12) | testes de `nvt-ipc` (ida e volta serde, rejeição de v3) |
 | F1-15 | **Aviso de G-SYNC sem VRR.** Com `sincronismo = gsync` e `vrr.possivel = Some(false)`, o plano marca o aviso `GsyncSemVrr` e a UI orienta a escolher “sem sincronismo” (sem VRR, a combinação vira V-Sync comum, com fila). Com `possivel = true` e `ativo = false`, aviso `VrrDesligadoNoPainel` (“ative G-SYNC em Painel NVIDIA > Configurar G-SYNC”); o app não liga o VRR do monitor | teste do avaliador |
 
 ### 7.2 Novos fatos de detecção
@@ -459,7 +459,7 @@ limite. Por isso:
 |---|---|---|---|---|---|
 | `baseline-baixa-latencia-ultra` (inalterada) | global | — | `low_latency_cpl = ultra` (`0x0005F543`=2), `low_latency_enabled = on` (`0x10835000`=1) | atual + NVIDIA System Latency Guide (limite automático com G-SYNC) | estável |
 | `sincronismo-gsync-limite` (corrigida) | global | `sincronismo = ["gsync"]`, `refresh_conhecido = true`, `vrr_ativo = true` | `limite_fps` (`0x10835002`) `= { limite_vrr = true }` | Blur Busters G-SYNC 101 (“pelo menos 3 FPS abaixo”); valores do limite automático ~59/116/138/224 @60/120/144/240; heurística `Hz − Hz²/3600` (Wccftech; fórum Blur Busters, sem fórmula oficial) | experimental → estável após L1-2 e L1-3 |
-| `energia-desempenho-maximo-por-jogo` (substitui a global) | por jogo | — | `energia = desempenho_maximo` (`0x1057EB71`=1) | atual (“sem regressão” em LoL e WARDOGS; sem medição de ganho) + `competitivo-driver.md` §2.6 (recomendado por perfil de jogo; ganho de consistência de clock, não de latência) | estável (mesma evidência, escopo mais estreito; decisão discutível, §11, item 19) |
+| `energia-desempenho-maximo-por-jogo` (substitui a global) | por jogo | `jogo_competitivo = true` | `energia = desempenho_maximo` (`0x1057EB71`=1) | atual (“sem regressão” em LoL e WARDOGS; sem medição de ganho) + `competitivo-driver.md` §2.6 (recomendado por perfil de jogo; ganho de consistência de clock, não de latência) | estável (mesma evidência, escopo mais estreito; só jogos competitivos, §11, item 19, resolvido) |
 | `gsync-reflex-sem-limite-driver` (nova) | por jogo | `sincronismo = ["gsync"]`, `jogo_reflex = true`, `jogo_competitivo = true`, `limite_fps_definido = false` | `limite_fps = off` no perfil do jogo | Blur Busters: limitador do jogo/Reflex fica ½–1 quadro à frente do Max Frame Rate; NVIDIA: com Reflex + V-Sync + G-SYNC o próprio Reflex limita | experimental → estável após L1-5 |
 
 Valores de `limite_vrr` (teste de tabela obrigatório):
@@ -489,7 +489,8 @@ Observações:
 
 ### 7.5 Mudanças de arquitetura da fase 1
 
-- Modelo generalizado (6.1) com armazém único `Driver`; `VERSAO_ESTADO = 2`.
+- Modelo generalizado (6.1) com armazém único `Driver`; `VERSAO_ESTADO = 2` — adiado
+  para o início da fase 2 (F1-13, §12); na fase 1, `VERSAO_ESTADO` continua `1`.
 - `nvt-detect::processos`, `nvt-drs::exibicao`, `nvt-core::jogos` (`nvt-detect::tela`
   entra na fase 2, no agente).
 - `Engine::pode_gravar()` e estado `pendente: Option<AcaoPendente>` no núcleo do serviço
@@ -502,9 +503,14 @@ Observações:
 ### 7.6 IPC v4
 
 `PROTOCOL_VERSION = 4` (`crates/nvt-ipc/src/lib.rs:25`). Sem negociação, como hoje: o MSI
-instala UI, serviço e agente juntos. O esquema já nasce com as três camadas, para que as
-fases 2 e 3 não precisem de v5; variantes ainda não implementadas são rejeitadas pelo
-serviço com `CamadaIndisponivel`.
+instala UI, serviço e agente juntos. **Decisão do líder (§12):** a v4 leva só os campos
+que a fase 1 precisa (`Capacidades.refresh_hz`/`vrr`, `Jogo.competitivo`/`em_execucao`/
+`orientacoes`, `adiamento`/`adiada`, os avisos `GsyncSemVrr`/`VrrDesligadoNoPainel` e os
+motivos da fase 1). As variantes de camada (`camada`, `AlvoIpc::Sistema`/`Usuario`/
+`ConfigJogo`, `ValorIpc` além de DWORD, mensagens do agente, `ConfirmarAcao`/`RecusarAcao`
+e os itens marcados F2/F3) entram na **v5**, no início da fase 2, com o modelo
+generalizado (F1-13). A tabela abaixo descreve o esquema completo; o que é de camada
+Windows/Jogo é v5.
 
 | Mudança | Detalhe |
 |---|---|
@@ -515,7 +521,7 @@ serviço com `CamadaIndisponivel`.
 | `Jogo` | `competitivo: Option<String>` (id da base), `em_execucao`, `orientacoes: Vec<String>` (códigos) |
 | `Estado` | `adiamento: Option<Adiamento { processos, desde, acao }>`; `avisos` ganha `GsyncSemVrr`, `VrrDesligadoNoPainel`; (F2) `reinicio_pendente`, `diagnosticos`, `agente: Option<EstadoAgente>` |
 | `Aplicacao` (resposta de `AplicarAgora`/`RestaurarOriginal`) | `adiada: Option<Adiamento>` |
-| `MotivoNaoAplicada` | novos: `JogoEmExecucao`, `VrrInativo`, `JogoComReflex`, `CamadaIndisponivel`; (F2) `RequerConfirmacao`, `RequerReinicio`, `AgenteAusente`, `BitLockerAtivo`; (F3) `ConfigPolitica { politica }`, `JanelaFechadaExigida { processos }`, `ArquivoNaNuvem`, `ArquivoSomenteLeitura`, `FormatoInesperado`, `ArquivoAlteradoPeloJogo`, `ContaAmbigua` |
+| `MotivoNaoAplicada` | novos: `JogoEmExecucao`, `VrrInativo`, `JogoComReflex`; (v5) `CamadaIndisponivel`; (F2) `RequerConfirmacao`, `RequerReinicio`, `AgenteAusente`, `BitLockerAtivo`; (F3) `ConfigPolitica { politica }`, `JanelaFechadaExigida { processos }`, `ArquivoNaNuvem`, `ArquivoSomenteLeitura`, `FormatoInesperado`, `ArquivoAlteradoPeloJogo`, `ContaAmbigua` |
 | Agente (F2) | `RegistrarAgente { versao }`, `RelatarFatosUsuario { fatos }`, `ObterTarefasUsuario`, `RelatarExecucaoUsuario { resultados, geracao_restauracao }`; resposta `Encerrar` (desinstalação, F2-11) |
 | Ações pendentes (F2) | `ConfirmarAcao { regra }`, `RecusarAcao { regra }` |
 
@@ -645,7 +651,7 @@ Todas com `impacto_visual = "nenhum"`. Game Mode **não** é escrito: efeito mis
   no serviço; `%LOCALAPPDATA%\nv-tuner\usuario\{estado.json,snapshot.json}` no agente,
   com dono = usuário e ACL herdada do perfil.
 - `ResumoSistema` em `plan.resumos` (T-05).
-- IPC: mensagens do agente e `ConfirmarAcao`/`RecusarAcao` (7.6), já previstas na v4;
+- IPC v5 (7.6, §12): camadas, mensagens do agente e `ConfirmarAcao`/`RecusarAcao`;
   `Estado.reinicio_pendente`, `Estado.diagnosticos`, `Estado.agente`.
 - `windows-sys` ganha as features `Win32_Devices_Display`, `Win32_UI_WindowsAndMessaging`,
   `Win32_System_Registry`, `Win32_System_Power`, `Win32_System_Diagnostics_ToolHelp`,
@@ -830,10 +836,11 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
     `NvAPI_Disp_GetVRRInfo` respondem no serviço (LocalSystem) como o DRS responde?
     Se não, a fase 1 precisa de outra fonte de refresh/VRR (antecipar um agente só de
     leitura, ou a UI relatar o fato) — decisão de arquitetura, não de implementação.
-19. **Energia por jogo: todos os jogos ou só `jogo_competitivo = true`?** Hoje vale para
-    todo jogo detectado (preserva o comportamento atual nos casuais). Restringir é mais
-    fiel ao §2, item 2, e reduz consumo; manter evita regressão percebida em quem já
-    usa o app.
+19. ~~**Energia por jogo: todos os jogos ou só `jogo_competitivo = true`?**~~
+    **Resolvido (decisão do líder): só jogos competitivos.** A regra
+    `energia-desempenho-maximo-por-jogo` exige `jogo_competitivo = true`; jogos fora da
+    base não recebem a energia nem ganham perfil só por isso, e o global continua
+    voltando ao valor de antes da gestão. Mais fiel ao §2, item 2, e reduz consumo.
 20. **`gsync-reflex-sem-limite-driver` depende de o usuário ligar o Reflex**, que o app
     não detecta nem liga. Com Reflex desligado em DX12, o jogo fica sem limite algum
     (L1-5). Alternativa: só remover o limite do driver depois de o usuário confirmar a
@@ -880,5 +887,6 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
 | `PROCESS_QUERY_LIMITED_INFORMATION` | proibido (“visível ao anticheat”) | excesso técnico, defensável | proibição mantida com a justificativa da revisão (N1) |
 | `GlobalTimerResolutionRequests` | [O] Microsoft | [C] comunidade | revisão (fora do escopo de qualquer forma) |
 | Plano de energia | `powercfg` | sobreposição do Win11, Modern Standby | revisão; só diagnóstico com `PowerGetActualOverlayScheme` |
+| Modelo generalizado e IPC de camadas na fase 1 | — | — (decisão do líder) | F1-13 (modelo generalizado de camadas, estado v2) e as variantes de IPC para as camadas Windows/Jogo ficam para o **início da fase 2**: não entregam valor perceptível na fase 1 e tocam quase todo o código. A fase 1 usa IPC v4 só com os campos que ela precisa; a fase 2 sobe para v5 (custo baixo: sem negociação, o MSI instala tudo junto) |
 | Fonte do refresh na fase 1 | `QueryDisplayConfig` | — (revisão da especificação) | NVAPI no serviço: as APIs Win32 de modo de vídeo não atendem a sessão 0; Win32 só no agente (fase 2) |
 | Reversão de `useplatformclock` | “só remover” | — (revisão da especificação) | “Tudo reversível” exige regravar o original; mesma trava de BitLocker e confirmação (N7, F2-08) |

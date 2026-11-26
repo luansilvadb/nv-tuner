@@ -21,6 +21,7 @@ Todo acesso ao DRS passa pelo trait `DriverStore`:
 | `settings_do_perfil` | settings gravadas no próprio perfil |
 | `capturar` | snapshot (`nvt_drs::capture`) |
 | `salvar` | `DRS_SaveSettings` (exige administrador no driver real) |
+| `exibicao` | refresh e VRR do monitor principal (`nvt_drs::ler_exibicao_principal`); nunca falha, desconhecido vira `None`. A implementação padrão não lê nada (tudo desconhecido) |
 
 Implementações:
 
@@ -35,18 +36,52 @@ Implementações:
 
 1. **Capacidades** (`capacidades`): primeira GPU da NVAPI →
    `nvt_detect::arch_facts` (arquitetura, Tensor Cores, FP8, FG, MFG, ReBAR) +
-   VRAM + versão do driver. `rebar_ativo` e `refresh_hz` ainda ficam
-   desconhecidos.
-2. **Jogos** (`jogos_da_maquina`): varredura do `nvt-detect` →
-   `JogoEntrada` (nome, launcher, exe principal, API, DLSS, Reflex, anticheat).
-   Reflex só é afirmado com confiança média ou alta; anticheat de kernel só
-   quando detectado (ausência vira "desconhecido").
+   VRAM + versão do driver + exibição (`DriverStore::exibicao`;
+   `capacidades_com_exibicao` recebe a exibição já lida). A exibição vem só
+   da NVAPI, porque o serviço roda na sessão 0: `NvAPI_DISP_GetDisplayConfig`
+   acha o caminho cuja origem é o primário GDI e dá o `displayId` e o
+   `refreshRate1K` do alvo (`refresh_mhz`, em milésimos de Hz, arredondado
+   para Hz só no avaliador); `NvAPI_Disp_GetVRRInfo(displayId)` dá
+   `vrr.possivel` e `vrr.ativo`. Falha da NVAPI, função ausente ou monitor
+   principal fora da GPU NVIDIA deixam o fato desconhecido (`None`), e as
+   condições sobre ele não casam. `rebar_ativo` continua desconhecido.
+2. **Jogos** (`DetectorJogos`, `detectar_jogos_da_maquina` /
+   `jogos_da_maquina`): varredura do `nvt-detect` → `JogoEntrada` (nome,
+   launcher, exe principal, API, DLSS, Reflex, anticheat, pasta, AppID da
+   Steam, id no launcher, `id_jogo` da base curada e `em_execucao`). Reflex só
+   é afirmado com confiança média ou alta; anticheat de kernel só quando
+   detectado (ausência vira "desconhecido").
+
+   **Jogo em execução não tem a pasta lida** (spec competitivo F1-06/F1-09).
+   Antes de analisar, o detector monta o conjunto vigiado — exes conhecidos
+   de cada jogo (o da varredura anterior e, para jogo da Steam, os
+   executáveis e `processos_protegidos` do jogo da base com o mesmo AppID),
+   `processos_protegidos` de toda a base, anticheats que só existem durante o
+   jogo (`nvt_detect::ANTICHEAT_SO_DURANTE_JOGO`: `EasyAntiCheat.exe`,
+   `EasyAntiCheat_EOS.exe`, `start_protected_game.exe`, `BEService.exe`,
+   `BEService_x64.exe`) e o exe indicado pelo launcher — e compara com os
+   processos do sistema sem diferenciar maiúsculas. Se algum exe do jogo está
+   aberto, `analisar_jogo_se_fechado` não abre nem lista nenhum arquivo da
+   pasta (DLLs de DLSS, Reflex e anticheat incluídas): a entrada é a da
+   varredura anterior (memória do detector, chave = launcher + pasta como
+   veio do launcher, sem resolver o caminho no disco) ou, sem ela, fatos
+   desconhecidos com o exe aberto como exe principal. A entrada vem com
+   `em_execucao = true`, e `ResultadoDeteccao::processos_em_execucao` lista
+   os processos vigiados que estavam rodando. O detector do processo
+   (`detectar_jogos_da_maquina`) guarda a memória entre chamadas.
 3. **Perfis** (`Engine::resolver_jogos`): para cada jogo, `find_application`
    pelo nome do exe. Origem do perfil: `Driver` (predefinido NVIDIA),
    `Usuario` (já existia, criado por outra ferramenta), `CriadoPeloApp` ou
    `ACriar`. Jogo sem perfil recebe um perfil com o nome do jogo (com sufixo
    `(nv-tuner)` se o nome estiver ocupado), criado só se houver mudança a
    fazer. O nome do perfil é o `GameFacts::id`.
+   Os fatos do jogo saem de `fatos_do_jogo` sobre o casamento na base curada
+   (`casar_na_base`: o `id_jogo` já casado ou `BaseJogos::casar` por exe +
+   AppID; `docs/regras.md`, “Base curada de jogos”). Jogo casado:
+   `competitivo = true`, Reflex, limitador nativo e anticheat de kernel da
+   base (ela vence a detecção em disco) e as orientações dela. Fora da base:
+   os fatos da detecção, `competitivo = false`. O motor usa a base embutida
+   (`Engine::new`; `Engine::com_base` troca, `Engine::base_jogos` lê).
    Nome e executável vêm de bibliotecas que qualquer usuário pode editar, então
    são conferidos **antes** de qualquer chamada à NVAPI: executável vazio, com
    caractere de controle (inclusive NUL) ou com mais de 260 unidades UTF-16
@@ -59,7 +94,12 @@ Implementações:
 4. **Avaliação**: `nvt_core::avaliar` com as preferências salvas e as
    escolhas travadas. O plano traz também a explicação por jogo
    (`plan.resumos`, chave = nome do perfil; ver `docs/regras.md`), que segue
-   no `Diff` e vai para a UI em `plano.jogos` (`docs/ipc.md`).
+   no `Diff` e vai para a UI em `plano.jogos` (`docs/ipc.md`), as
+   orientações por jogo já filtradas (`plan.resumos[id].orientacoes`) e os
+   avisos de G-SYNC sem VRR (`plan.avisos`: `GsyncSemVrr`,
+   `VrrDesligadoNoPainel`). A energia em desempenho máximo só entra no perfil
+   de **jogo competitivo** (`energia-desempenho-maximo-por-jogo`, com
+   `jogo_competitivo = true`): jogo fora da base não ganha perfil só por ela.
 5. **Diff** (`Engine::planejar`, somente leitura): cada mudança do plano é
    comparada com o valor efetivo no driver; só as diferentes entram em
    `Diff::mudancas`, com `valor_anterior` preenchido. As iguais vão para
@@ -84,7 +124,8 @@ conforme.
 Uma setting que o app gravou (está no estado esperado) e que o plano atual
 não contém mais — preferência trocada (limite de FPS desligado, V-Sync no
 lugar de G-SYNC), teto de qualidade mais alto (preset E em “Qualidade”),
-regra que deixou de casar ou foi removida — **volta ao valor de antes da
+regra que deixou de casar ou foi removida (ex.: a antiga energia global,
+substituída pela energia por jogo competitivo) — **volta ao valor de antes da
 gestão** e sai do estado esperado (`Diff::reverter`, `Aplicacao::revertidas`).
 
 O valor de antes da gestão (`Esperado::antes_da_gestao`, `ValorAntes`) é
@@ -350,3 +391,12 @@ a restauração ao snapshot (R1); perfis criados sobrevivem às duas cópias do
 estado corrompidas (R2); recuperação gravada na hora e `estado.json` ausente
 recuperado da cópia (#7); travas com grafias diferentes viram uma só (#10);
 marcador de quarentena e base pós-quarentena.
+
+`tests/competitivo.rs` cobre a fase 1 da spec competitiva: capacidades leem
+refresh e VRR da exibição (F1-01/F1-02); a base curada vence a detecção em
+disco e exe genérico com AppID diferente não casa (F1-03/F1-04); o plano traz
+orientações filtradas e avisos de VRR (F1-12/F1-15); a energia global antiga
+volta ao valor de antes da gestão, o jogo competitivo fica com desempenho
+máximo e o jogo fora da base não recebe nada (F1-11, §11 item 19); jogo em
+execução reaproveita os fatos e não tem a pasta lida (F1-09); anticheat que
+só existe durante o jogo aparece nos processos vigiados (F1-06).
