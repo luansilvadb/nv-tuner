@@ -42,12 +42,27 @@
     <SummaryInformation Description="Instalador do nv-tuner"
                         Manufacturer="nv-tuner contributors" />
 
-    <MajorUpgrade DowngradeErrorMessage="Uma versão mais recente do [ProductName] já está instalada. A instalação será encerrada." />
+    <!--
+      Atualização automática (docs/spec/atualizacao.md §11.1): o serviço roda
+      'msiexec /i <msi> /qn /norestart' como SYSTEM. Sem mudança de sequência:
+      MajorUpgrade (afterInstallValidate) remove a versão antiga antes de
+      instalar a nova; as restaurações ficam condicionadas a NOT
+      UPGRADINGPRODUCTCODE e o serviço só é removido na desinstalação; o estado
+      em %ProgramData%\nv-tuner (inclusive a pasta atualizacao\, criada pelo
+      serviço com DACL própria) não é apagado. ServiceControl Wait="yes": se o
+      serviço novo não iniciar, o MSI falha e desfaz (rollback religa o antigo).
+      Restart Manager fecha agente e UI sem forçar (MSIRMSHUTDOWN=0); nunca
+      reinicia o Windows (REBOOT=ReallySuppress). AllowSameVersionUpgrades fica
+      "no": o cliente nunca tenta versão igual (U-17).
+    -->
+    <MajorUpgrade Schedule="afterInstallValidate" AllowSameVersionUpgrades="no" DowngradeErrorMessage="Uma versão mais recente do [ProductName] já está instalada. A instalação será encerrada." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- InstallValidate usa o Restart Manager para arquivos em uso, inclusive no upgrade. -->
     <Property Id="MSIRESTARTMANAGERCONTROL" Value="0" />
     <Property Id="MSIRMSHUTDOWN" Value="0" />
+    <!-- Nunca reiniciar o Windows, nem em instalação interativa. -->
+    <Property Id="REBOOT" Value="ReallySuppress" />
 
     <!-- Exige Windows 10 (build 10240) ou superior, 64 bits. -->
     <Launch Condition="VersionNT64" Message="O [ProductName] requer Windows de 64 bits." />
@@ -62,7 +77,8 @@
     <Icon Id="nvtuner.ico" SourceFile="$(RaizRepo)\assets\nv-tuner.ico" />
     <Property Id="ARPPRODUCTICON" Value="nvtuner.ico" />
 
-    <!-- "Aplicativos instalados": ARPNOMODIFY já vem do WixUI_Minimal; ARPURLINFOABOUT entra quando houver repositório público. -->
+    <!-- "Aplicativos instalados": ARPNOMODIFY já vem do WixUI_Minimal. -->
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/luansilvadb/nv-tuner" />
 
     <!--
       Restauração do perfil original do driver na desinstalação.
@@ -183,12 +199,12 @@
         <ServiceConfig DelayedAutoStart="yes" OnInstall="yes" OnReinstall="yes" />
         <!--
           Recuperação em falha (custom action da WixToolset.Util, recomendada pelo
-          WiX em vez de MsiServiceConfigFailureActions): reinicia na 1ª e 2ª falha
-          após 5 s, desiste na 3ª; contador zera após 1 dia.
+          WiX em vez de MsiServiceConfigFailureActions): reinicia na 1ª, 2ª e nas falhas subsequentes
+          após 5 s (spec Q12: sem serviço não há atualizador); contador zera após 1 dia.
         -->
         <util:ServiceConfig FirstFailureActionType="restart"
                             SecondFailureActionType="restart"
-                            ThirdFailureActionType="none"
+                            ThirdFailureActionType="restart"
                             RestartServiceDelayInSeconds="5"
                             ResetPeriodInDays="1" />
       </ServiceInstall>

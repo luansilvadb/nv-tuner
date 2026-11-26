@@ -1704,3 +1704,276 @@ fn retomada_com_erro_real_mostra_o_erro_e_nao_jogo_aberto() {
         outro => panic!("esperava erro, veio {outro:?}"),
     }
 }
+
+// ── Atualizador na thread própria (tarefa 3.2) ─────────────────────────────
+
+mod atualizacao {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::{Duration, Instant};
+
+    use nvt_atualizacao::{MotivoAdiamento, SessaoAgente};
+    use nvt_engine::{Portao, ProcessosFalsos};
+
+    use crate::laco::{Exclusao, Executor, ThreadAtualizacao, portao_atualizacao};
+
+    type Registro = Arc<Mutex<Vec<String>>>;
+    type PortaoFn = Box<dyn Fn() -> Result<(), MotivoAdiamento> + Send>;
+
+    fn anotar(r: &Registro, s: &str) {
+        r.lock().unwrap().push(s.to_owned());
+    }
+
+    fn esperar(cond: impl Fn() -> bool) {
+        let fim = Instant::now() + Duration::from_secs(5);
+        while !cond() && Instant::now() < fim {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Executor falso: em cada `tick` consulta o portão e, liberado, "lança".
+    struct Falso {
+        portao: PortaoFn,
+        registro: Registro,
+        no_tick: mpsc::Sender<()>,
+        sessoes: Arc<Mutex<Vec<Vec<SessaoAgente>>>>,
+    }
+
+    impl Executor for Falso {
+        fn tick(&mut self, _agora: Instant) -> Option<Duration> {
+            let _ = self.no_tick.send(());
+            match (self.portao)() {
+                Ok(()) => anotar(&self.registro, "lançado"),
+                Err(m) => anotar(&self.registro, &format!("adiado {m:?}")),
+            }
+            Some(Duration::from_secs(3600))
+        }
+
+        fn definir_sessoes_agente(&mut self, sessoes: Vec<SessaoAgente>) {
+            self.sessoes.lock().unwrap().push(sessoes);
+        }
+
+        fn estado_ipc(&self) -> nvt_ipc::EstadoAtualizacao {
+            nvt_ipc::EstadoAtualizacao {
+                versao_instalada: "9.9.9".into(),
+                ..Default::default()
+            }
+        }
+    }
+
+    fn portao(processos: &[&str]) -> Portao {
+        Portao::new(ProcessosFalsos::com_nomes(processos))
+    }
+
+    #[test]
+    fn instalacao_nunca_comeca_durante_ciclo_drs() {
+        let exclusao = Arc::new(Exclusao::default());
+        let cancelar = Arc::new(AtomicBool::new(false));
+        let registro = Registro::default();
+        let (tx, rx) = mpsc::channel();
+        // Ciclo DRS em curso quando o atualizador quer lançar.
+        let guarda = exclusao.ciclo_drs();
+        let mut t = ThreadAtualizacao::iniciar(
+            Falso {
+                portao: Box::new(portao_atualizacao(
+                    portao(&[]),
+                    Arc::default(),
+                    exclusao.clone(),
+                    cancelar.clone(),
+                )),
+                registro: registro.clone(),
+                no_tick: tx,
+                sessoes: Arc::default(),
+            },
+            exclusao.clone(),
+            cancelar,
+        )
+        .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            registro.lock().unwrap().is_empty(),
+            "lançou durante o ciclo DRS"
+        );
+        anotar(&registro, "fim do ciclo DRS");
+        drop(guarda);
+        esperar(|| registro.lock().unwrap().len() >= 2);
+        // O próximo ciclo DRS só entra depois de o tick (com o lançamento) terminar.
+        let g = exclusao.ciclo_drs();
+        anotar(&registro, "novo ciclo DRS");
+        assert_eq!(
+            *registro.lock().unwrap(),
+            ["fim do ciclo DRS", "lançado", "novo ciclo DRS"]
+        );
+        assert!(!exclusao.instalacao_reservada());
+        drop(g);
+        t.parar();
+    }
+
+    #[test]
+    fn ciclo_drs_espera_instalacao_reservada() {
+        let exclusao = Arc::new(Exclusao::default());
+        let nunca = AtomicBool::new(false);
+        assert!(exclusao.reservar_instalacao(&nunca));
+        let registro = Registro::default();
+        let (e, r) = (exclusao.clone(), registro.clone());
+        let h = std::thread::spawn(move || {
+            let _g = e.ciclo_drs();
+            anotar(&r, "ciclo DRS");
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        anotar(&registro, "instalação lançada");
+        exclusao.liberar_instalacao();
+        h.join().unwrap();
+        assert_eq!(
+            *registro.lock().unwrap(),
+            ["instalação lançada", "ciclo DRS"]
+        );
+    }
+
+    #[test]
+    fn portao_adia_com_jogo_e_libera_a_reserva() {
+        let exclusao = Arc::new(Exclusao::default());
+        let p = portao(&["jogo.exe"]);
+        p.vigiar_jogos(["jogo.exe"]);
+        let f = portao_atualizacao(p, Arc::default(), exclusao.clone(), Arc::default());
+        assert_eq!(f(), Err(MotivoAdiamento::JogoAberto));
+        assert!(!exclusao.instalacao_reservada());
+        // Extras atuais também são vigiados.
+        let extras = Arc::new(Mutex::new(vec!["outro.exe".to_owned()]));
+        let f = portao_atualizacao(
+            portao(&["outro.exe"]),
+            extras,
+            exclusao.clone(),
+            Arc::default(),
+        );
+        assert_eq!(f(), Err(MotivoAdiamento::JogoAberto));
+        let f = portao_atualizacao(
+            Portao::new(ProcessosFalsos::falhando()),
+            Arc::default(),
+            exclusao.clone(),
+            Arc::default(),
+        );
+        assert_eq!(f(), Err(MotivoAdiamento::ListaIndisponivel));
+        assert!(!exclusao.instalacao_reservada());
+        let f = portao_atualizacao(
+            portao(&[]),
+            Arc::default(),
+            exclusao.clone(),
+            Arc::default(),
+        );
+        assert_eq!(f(), Ok(()));
+        assert!(exclusao.instalacao_reservada(), "reserva até o fim do tick");
+        exclusao.liberar_instalacao();
+    }
+
+    #[test]
+    fn reserva_desiste_no_encerramento() {
+        let exclusao = Exclusao::default();
+        let _g = exclusao.ciclo_drs();
+        let cancelar = AtomicBool::new(true);
+        assert!(!exclusao.reservar_instalacao(&cancelar));
+        assert!(!exclusao.instalacao_reservada());
+    }
+
+    /// Executor que simula um download longo: só sai do `tick` quando
+    /// `cancelar` é sinalizado (como o WinHTTP com o cancelamento).
+    struct Baixando {
+        cancelar: Arc<AtomicBool>,
+        no_tick: mpsc::Sender<()>,
+    }
+
+    impl Executor for Baixando {
+        fn tick(&mut self, _agora: Instant) -> Option<Duration> {
+            let _ = self.no_tick.send(());
+            let limite = Instant::now() + Duration::from_secs(600);
+            while !self.cancelar.load(Ordering::Relaxed) && Instant::now() < limite {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Some(Duration::from_secs(3600))
+        }
+
+        fn definir_sessoes_agente(&mut self, _: Vec<SessaoAgente>) {}
+
+        fn estado_ipc(&self) -> nvt_ipc::EstadoAtualizacao {
+            nvt_ipc::EstadoAtualizacao::default()
+        }
+    }
+
+    #[test]
+    fn encerramento_nao_espera_download_inteiro() {
+        let cancelar = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let mut t = ThreadAtualizacao::iniciar(
+            Baixando {
+                cancelar: cancelar.clone(),
+                no_tick: tx,
+            },
+            Arc::default(),
+            cancelar.clone(),
+        )
+        .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let inicio = Instant::now();
+        t.parar();
+        assert!(cancelar.load(Ordering::Relaxed));
+        assert!(inicio.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn sono_longo_acorda_no_pedido_e_no_encerramento() {
+        let cancelar = Arc::new(AtomicBool::new(false));
+        let sessoes = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel();
+        let mut t = ThreadAtualizacao::iniciar(
+            Falso {
+                portao: Box::new(|| Err(MotivoAdiamento::JogoAberto)),
+                registro: Registro::default(),
+                no_tick: tx,
+                sessoes: sessoes.clone(),
+            },
+            Arc::default(),
+            cancelar,
+        )
+        .unwrap();
+        assert_eq!(t.estado().versao_instalada, "9.9.9");
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let s = vec![SessaoAgente {
+            sessao: 2,
+            sid: "S-1-5-21-1".into(),
+        }];
+        t.definir_sessoes(s.clone());
+        t.acordar();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(*sessoes.lock().unwrap(), [s]);
+        let inicio = Instant::now();
+        t.parar();
+        assert!(inicio.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn atualizador_real_com_fachadas_falsas_na_thread() {
+        use crate::atualizacao::Atualizador;
+        use crate::atualizacao::fachadas::falsas::*;
+        use crate::atualizacao::fachadas::{Fachadas, VerificadorOficial};
+
+        let fachadas = Fachadas {
+            rede: Box::new(RedeFalsa::default()),
+            disco: Box::new(DiscoFalso::novo()),
+            lancador: Box::new(LancadorCompartilhado::default()),
+            portao: Box::new(PortaoFalso::default()),
+            relogio: Box::new(RelogioFalso::default()),
+            aleatorio: Box::new(AleatorioFalso::default()),
+            verificador: Box::new(VerificadorOficial),
+            sessoes: Box::new(SessoesFalsas::default()),
+        };
+        let a = Atualizador::novo(fachadas, "1.2.3".parse().unwrap());
+        let cancelar = Arc::new(AtomicBool::new(false));
+        let mut t = ThreadAtualizacao::iniciar(a, Arc::default(), cancelar).unwrap();
+        assert_eq!(t.estado().versao_instalada, "1.2.3");
+        t.acordar();
+        let inicio = Instant::now();
+        t.parar();
+        assert!(inicio.elapsed() < Duration::from_secs(5));
+    }
+}

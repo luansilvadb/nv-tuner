@@ -1,10 +1,28 @@
 name: Release
 
-# Gera o MSI e publica uma GitHub Release (normal, marcada como Latest) a cada tag v*.
+# Gera o MSI, assina (Minisign) e publica uma GitHub Release (normal, Latest) a cada tag v*
+# (docs/spec/atualizacao.md §8.7 U-60..U-66, §11.2). Ver CONTRIBUTING.md, "Como lançar".
 # As notas saem de .github/release-notes-template.md + a seção [X.Y.Z] do CHANGELOG.md
-# (sem a seção, o job falha). Ver CONTRIBUTING.md, "Como lançar uma versão".
-# A tag precisa bater com [workspace.package].version do Cargo.toml
-# (ex.: tag v0.1.0 <-> version = "0.1.0"); senão o job falha antes de compilar.
+# (sem a seção, o job falha). A tag precisa bater com [workspace.package].version do
+# Cargo.toml (ex.: tag v0.1.0 <-> version = "0.1.0") e ser maior que a Latest atual.
+#
+# CONFIGURAÇÃO NO GITHUB (mantenedor, uma vez):
+#  1. Settings > Environments > New environment "release"; em "Deployment branches and
+#     tags" escolha "Selected branches and tags" e adicione só a regra de TAG "v*".
+#     Sem aprovação manual (o lançamento continua automático).
+#  2. No Environment "release", secret NV_TUNER_MINISIGN_KEY = só a linha base64 (2ª
+#     linha) do .key gerado por `nvt-assinar gerar-chave` (Q11: o GitHub mascara por
+#     linha). NÃO crie o secret no nível do repositório.
+#  3. (Q10) Ruleset de tags v* restrito ao mantenedor e branch protection na main.
+#  4. A chave pública oficial precisa estar embutida (não a provisória); senão o job falha.
+#
+# Fluxo: confere tag, secret, versão > Latest e feature `laboratorio` -> compila ->
+# confere chave embutida -> MSI -> SHA-256 -> assina -> rascunho com os 5 arquivos ->
+# baixa para pasta limpa e verifica com o mesmo verificador do serviço -> espera CI
+# verde do commit na main -> publica como Latest. Falha depois do rascunho deixa a
+# release em rascunho (apague-a antes de reexecutar).
+#
+# Actions fixadas por SHA de commit (Q10); a versão correspondente fica no comentário.
 
 on:
   push:
@@ -24,16 +42,23 @@ env:
 
 jobs:
   msi:
-    name: MSI e release
+    name: MSI, assinatura e release
     runs-on: windows-latest
+    environment: release   # o secret NV_TUNER_MINISIGN_KEY existe só aqui (tags v*)
+    timeout-minutes: 120
     permissions:
-      contents: write   # só para criar a release e anexar os arquivos
+      contents: write   # criar/editar a release e anexar os arquivos
+      actions: read     # consultar a execução do CI do mesmo commit (U-64)
+    # Sem Swatinem/rust-cache: cache compartilhado entre refs poderia ser envenenado e
+    # entraria no binário assinado (§11.2).
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0   # traz as tags anteriores, para o link do changelog
+          fetch-depth: 0   # tags anteriores (link do changelog) e origin/main (U-64)
+          persist-credentials: false
 
       - name: Conferir tag x versão do Cargo.toml
+        id: versao
         shell: pwsh
         run: |
           $toml = Get-Content -Raw -Encoding UTF8 Cargo.toml
@@ -42,12 +67,50 @@ jobs:
           $versao = $m.Groups[1].Value
           $tag = $env:GITHUB_REF_NAME
           if ($tag -ne "v$versao") { throw "A tag '$tag' não bate com a versão '$versao' do Cargo.toml (esperado v$versao)." }
+          if ($versao -notmatch '^\d+\.\d+\.\d+$') { throw "Versão '$versao' fora do formato X.Y.Z." }
+          "versao=$versao" >> $env:GITHUB_OUTPUT
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Conferir secret de assinatura (U-62)
+        shell: pwsh
+        env:
+          NV_TUNER_MINISIGN_KEY: ${{ secrets.NV_TUNER_MINISIGN_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NV_TUNER_MINISIGN_KEY)) {
+            throw 'Secret NV_TUNER_MINISIGN_KEY ausente: a release não é publicada sem assinatura (ver CONTRIBUTING.md)'
+          }
+          Write-Host 'Secret NV_TUNER_MINISIGN_KEY presente.'
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Conferir versão maior que a Latest (U-66)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSAO: ${{ steps.versao.outputs.versao }}
+        run: |
+          $latest = gh release view --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName 2>$null
+          if ($LASTEXITCODE -ne 0 -or -not $latest) {
+            Write-Host 'Nenhuma release Latest ainda; seguindo.'
+            exit 0
+          }
+          $atual = $latest -replace '^v', ''
+          if ($atual -notmatch '^\d+\.\d+\.\d+$') { throw "Tag da Latest '$latest' fora do formato vX.Y.Z." }
+          if ([version]$env:VERSAO -le [version]$atual) {
+            throw "A versão $($env:VERSAO) não é maior que a Latest atual ($atual)."
+          }
+          Write-Host "Versão $($env:VERSAO) > Latest $atual."
 
-      - uses: actions/setup-dotnet@v6
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - name: Conferir feature laboratorio desligada (U-15a)
+        shell: pwsh
+        run: |
+          $arvore = cargo tree --locked -e features -i nvt-atualizacao -p nvt-service -p nvt-ui -p nvt-agente -p nvt-assinar --target all 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "cargo tree falhou:`n$arvore" }
+          if ($arvore -match 'feature "laboratorio"') {
+            throw "A feature 'laboratorio' de nvt-atualizacao está ativa no build de release:`n$arvore"
+          }
+          Write-Host 'Feature laboratorio desligada.'
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: '8.0.x'
 
@@ -56,7 +119,19 @@ jobs:
         run: dotnet tool restore
 
       - name: Compilar (release)
-        run: cargo build --release -p nvt-service -p nvt-ui -p nvt-agente
+        run: cargo build --release --locked -p nvt-service -p nvt-ui -p nvt-agente -p nvt-assinar
+
+      - name: Conferir chave oficial embutida (não provisória)
+        shell: pwsh
+        run: |
+          # `verificar` recusa primeiro se a chave embutida for a provisória; numa pasta
+          # vazia qualquer outra falha é esperada (falta o manifesto).
+          $vazia = Join-Path $env:RUNNER_TEMP 'chave-vazia'
+          New-Item -ItemType Directory -Force $vazia | Out-Null
+          $saida = & ./target/release/nvt-assinar.exe verificar --dir $vazia 2>&1 | Out-String
+          if ($saida -match 'provis') { throw "Chave oficial embutida é a provisória; nenhuma release é publicada.`n$saida" }
+          Write-Host 'Chave oficial embutida não é a provisória.'
+          exit 0
 
       - name: Gerar MSI (inclui validação ICE)
         shell: pwsh
@@ -66,14 +141,31 @@ jobs:
         id: hash
         shell: pwsh
         run: |
-          $msi = Get-ChildItem target/dist/*.msi | Select-Object -First 1
-          if (-not $msi) { throw 'MSI não encontrado em target/dist.' }
+          $msi = @(Get-ChildItem target/dist/*.msi)
+          if ($msi.Count -ne 1) { throw "Esperado exatamente um MSI em target/dist (achados: $($msi.Count))." }
+          $msi = $msi[0]
           $hash = (Get-FileHash -Algorithm SHA256 $msi.FullName).Hash.ToLowerInvariant()
           $registrado = ((Get-Content -Raw "$($msi.FullName).sha256") -split '\s+')[0]
           if ($hash -ne $registrado) { throw "SHA256 divergente: $hash x $registrado" }
           "msi=$($msi.FullName)" >> $env:GITHUB_OUTPUT
           "sha=$($msi.FullName).sha256" >> $env:GITHUB_OUTPUT
           "## $($msi.Name)`n`nSHA256: ``$hash``" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Assinar MSI e manifesto
+        id: assinar
+        shell: pwsh
+        env:
+          NV_TUNER_MINISIGN_KEY: ${{ secrets.NV_TUNER_MINISIGN_KEY }}
+          VERSAO: ${{ steps.versao.outputs.versao }}
+          MSI: ${{ steps.hash.outputs.msi }}
+        run: |
+          & ./target/release/nvt-assinar.exe assinar --versao $env:VERSAO --msi $env:MSI
+          if ($LASTEXITCODE -ne 0) { throw "nvt-assinar assinar falhou ($LASTEXITCODE)" }
+          $dir = Split-Path -Parent $env:MSI
+          foreach ($f in @("$($env:MSI).minisig", (Join-Path $dir 'atualizacao.json'), (Join-Path $dir 'atualizacao.json.minisig'))) {
+            if (-not (Test-Path -LiteralPath $f)) { throw "Arquivo de assinatura ausente: $f" }
+          }
+          "dir=$dir" >> $env:GITHUB_OUTPUT
 
       - name: Montar notas da release
         id: notas
@@ -140,14 +232,63 @@ jobs:
           "titulo=$titulo" >> $env:GITHUB_OUTPUT
           "## $titulo`n`nNotas: ``$arquivo``" >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Criar release (normal, Latest)
+      - name: Criar release em rascunho (U-63)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           TITULO: ${{ steps.notas.outputs.titulo }}
           NOTAS: ${{ steps.notas.outputs.arquivo }}
+          MSI: ${{ steps.hash.outputs.msi }}
+          DIR: ${{ steps.assinar.outputs.dir }}
         run: |
-          gh release create $env:GITHUB_REF_NAME `
-            '${{ steps.hash.outputs.msi }}' '${{ steps.hash.outputs.sha }}' `
-            --verify-tag --latest --title $env:TITULO --notes-file $env:NOTAS
+          $arquivos = @(
+            $env:MSI, "$($env:MSI).sha256", "$($env:MSI).minisig",
+            (Join-Path $env:DIR 'atualizacao.json'), (Join-Path $env:DIR 'atualizacao.json.minisig')
+          )
+          gh release create $env:GITHUB_REF_NAME @arquivos `
+            --repo $env:GITHUB_REPOSITORY --verify-tag --draft `
+            --title $env:TITULO --notes-file $env:NOTAS
           if ($LASTEXITCODE -ne 0) { throw "gh release create falhou ($LASTEXITCODE)" }
+
+      - name: Baixar assets e verificar (mesmo verificador do serviço)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $limpa = Join-Path $env:RUNNER_TEMP "verificar-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          if (Test-Path $limpa) { throw "Pasta de verificação já existe: $limpa" }
+          New-Item -ItemType Directory $limpa | Out-Null
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --dir $limpa
+          if ($LASTEXITCODE -ne 0) { throw "gh release download falhou ($LASTEXITCODE)" }
+          $n = @(Get-ChildItem -File $limpa).Count
+          if ($n -ne 5) { throw "Esperados 5 arquivos na release, baixados $n." }
+          & ./target/release/nvt-assinar.exe verificar --dir $limpa
+          if ($LASTEXITCODE -ne 0) { throw "nvt-assinar verificar falhou ($LASTEXITCODE); a release fica em rascunho." }
+
+      - name: Esperar CI verde do mesmo commit na main (U-64)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "O commit $($env:GITHUB_SHA) não está na main; a release fica em rascunho." }
+          # Espera a execução do CI (push na main) deste commit aparecer: até 30 min.
+          $id = $null
+          for ($i = 0; $i -lt 60 -and -not $id; $i++) {
+            $id = gh run list --repo $env:GITHUB_REPOSITORY --workflow ci.yml --commit $env:GITHUB_SHA `
+              --event push --branch main --limit 1 --json databaseId --jq '.[0].databaseId'
+            if (-not $id) { Start-Sleep -Seconds 30 }
+          }
+          if (-not $id) { throw "Nenhuma execução do CI para $($env:GITHUB_SHA) na main; a release fica em rascunho." }
+          gh run watch $id --repo $env:GITHUB_REPOSITORY --exit-status --interval 30
+          if ($LASTEXITCODE -ne 0) { throw "CI $id não terminou com sucesso; a release fica em rascunho." }
+          $conclusao = gh run view $id --repo $env:GITHUB_REPOSITORY --json conclusion --jq .conclusion
+          if ($conclusao -ne 'success') { throw "CI $id concluiu '$conclusao'; a release fica em rascunho." }
+
+      - name: Publicar como Latest (U-65)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --latest --prerelease=false
+          if ($LASTEXITCODE -ne 0) { throw "gh release edit falhou ($LASTEXITCODE)" }

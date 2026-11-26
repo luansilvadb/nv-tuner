@@ -648,3 +648,136 @@ fn reverter_individual_apos_reinicio_usa_valor_do_agente() {
         );
     }
 }
+
+// ── Atualização automática: projeção por SID e `MarcarAtualizacaoVista` ────
+
+fn estado_atualizado(para: &str) -> nvt_ipc::EstadoAtualizacao {
+    nvt_ipc::EstadoAtualizacao {
+        versao_instalada: para.into(),
+        ultima_atualizacao: Some(nvt_ipc::AtualizacaoConcluida {
+            de: "1.0.0".into(),
+            para: para.into(),
+            quando_unix: 10,
+            reinicio_pendente: false,
+        }),
+        ..Default::default()
+    }
+}
+
+fn nao_vista_projetada(
+    c: &Coordenador,
+    id: &IdentidadeCliente,
+    e: &nvt_ipc::EstadoAtualizacao,
+) -> bool {
+    let mut r = Resposta::Estado(nvt_ipc::Estado {
+        agente: Default::default(),
+        diagnosticos: Vec::new(),
+        versao_servico: "x".into(),
+        driver: None,
+        gpu: None,
+        preferencias: crate::nucleo::prefs_ipc(&nvt_core::Preferences::default()),
+        jogos: 0,
+        ultima_aplicacao: None,
+        alertas_deriva: Vec::new(),
+        avisos: Vec::new(),
+        adiamento: None,
+        atualizacao: e.clone(),
+    });
+    c.projetar(id, &mut r, 0, Instant::now());
+    let Resposta::Estado(estado) = r else {
+        unreachable!()
+    };
+    assert_eq!(estado.atualizacao.ultima_atualizacao, e.ultima_atualizacao);
+    estado.atualizacao.nao_vista
+}
+
+fn marcar(c: &mut Coordenador, id: &IdentidadeCliente, versao: &str) -> Option<Resposta> {
+    c.tratar(
+        id,
+        &Requisicao::MarcarAtualizacaoVista {
+            versao: versao.into(),
+        },
+        Instant::now(),
+        12,
+    )
+}
+
+#[test]
+fn nao_vista_e_por_sid_e_persistida() {
+    let memoria = Memoria::default();
+    let mut c = abrir(memoria.clone());
+    let (a, b) = (cliente("S-1-5-21-A", 1), cliente("S-1-5-21-B", 2));
+    let sem = nvt_ipc::EstadoAtualizacao::default();
+    assert!(
+        !nao_vista_projetada(&c, &a, &sem),
+        "sem atualização concluída"
+    );
+    let e = estado_atualizado("1.1.0");
+    c.definir_atualizacao(e.clone());
+    assert!(nao_vista_projetada(&c, &a, &e));
+    assert!(nao_vista_projetada(&c, &b, &e));
+    assert_eq!(marcar(&mut c, &a, "1.1.0"), Some(Resposta::Ok));
+    assert!(!nao_vista_projetada(&c, &a, &e));
+    assert!(nao_vista_projetada(&c, &b, &e), "outro SID ainda não viu");
+    // Gravado por SID em usuarios.json: sobrevive ao reinício do coordenador.
+    let c2 = abrir(memoria.clone());
+    assert!(!nao_vista_projetada(&c2, &cliente("S-1-5-21-A", 7), &e));
+    assert!(nao_vista_projetada(&c2, &b, &e));
+    // A atualização seguinte volta a ser não vista.
+    assert!(nao_vista_projetada(&c2, &a, &estado_atualizado("1.2.0")));
+    // Repetir a marcação não regrava.
+    let antes = serde_json::to_string(&*memoria.0.borrow()).unwrap();
+    assert_eq!(marcar(&mut c, &a, "1.1.0"), Some(Resposta::Ok));
+    assert_eq!(serde_json::to_string(&*memoria.0.borrow()).unwrap(), antes);
+}
+
+#[test]
+fn marcar_atualizacao_vista_invalida() {
+    let mut c = abrir(Memoria::default());
+    let a = cliente("S-1-5-21-A", 1);
+    let codigo = |r: Option<Resposta>| match r {
+        Some(Resposta::Erro { codigo, .. }) => codigo,
+        outra => panic!("esperado erro: {outra:?}"),
+    };
+    // Sem atualização concluída.
+    assert_eq!(
+        codigo(marcar(&mut c, &a, "1.1.0")),
+        CodigoErro::EntradaInvalida
+    );
+    c.definir_atualizacao(estado_atualizado("1.1.0"));
+    assert_eq!(
+        codigo(marcar(&mut c, &a, "1.0.0")),
+        CodigoErro::EntradaInvalida
+    );
+    assert_eq!(
+        codigo(marcar(&mut c, &a, "1.2.0")),
+        CodigoErro::EntradaInvalida
+    );
+    // Forma inválida.
+    assert_eq!(
+        codigo(marcar(&mut c, &a, "1 1")),
+        CodigoErro::RequisicaoInvalida
+    );
+    assert!(nao_vista_projetada(&c, &a, &estado_atualizado("1.1.0")));
+}
+
+#[test]
+fn sessoes_agente_so_com_presenca() {
+    let mut c = abrir(Memoria::default());
+    let agora = Instant::now();
+    let (a, b) = (cliente("S-1-5-21-A", 1), cliente("S-1-5-21-B", 3));
+    consultar(&mut c, &b, agora, 0, 1);
+    consultar(&mut c, &a, agora, 0, 1);
+    let esperado = [
+        nvt_atualizacao::SessaoAgente {
+            sessao: 1,
+            sid: a.sid.clone(),
+        },
+        nvt_atualizacao::SessaoAgente {
+            sessao: 3,
+            sid: b.sid.clone(),
+        },
+    ];
+    assert_eq!(c.sessoes_agente(agora), esperado);
+    assert!(c.sessoes_agente(agora + PRESENCA).is_empty());
+}

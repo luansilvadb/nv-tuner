@@ -43,6 +43,8 @@ struct DadosSid {
     aceites: BTreeSet<String>,
     historico: VecDeque<EntradaHistorico>,
     recibos: BTreeMap<u32, VecDeque<Recibo>>,
+    /// Última atualização do nv-tuner já vista por este SID (U-47, U-52).
+    atualizacao_vista: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -147,6 +149,8 @@ pub(crate) struct Coordenador {
     serial: u64,
     windows_build: Option<u32>,
     processos: BTreeSet<String>,
+    /// Projeção atual da atualização automática (vem da thread do atualizador).
+    atualizacao: nvt_ipc::EstadoAtualizacao,
 }
 
 impl Coordenador {
@@ -180,6 +184,7 @@ impl Coordenador {
             serial: SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64,
             windows_build,
             processos: BTreeSet::new(),
+            atualizacao: nvt_ipc::EstadoAtualizacao::default(),
         };
         coordenador.atualizar_restauracao(geracao, false);
         Ok(coordenador)
@@ -215,6 +220,72 @@ impl Coordenador {
                 sessao.invalidar();
             }
         }
+    }
+
+    /// Estado atual da atualização automática, para validar
+    /// `MarcarAtualizacaoVista` (U-52).
+    pub(crate) fn definir_atualizacao(&mut self, estado: nvt_ipc::EstadoAtualizacao) {
+        self.atualizacao = estado;
+    }
+
+    /// Sessões com agente conectado agora (U-28, U-43), sem repetição.
+    pub(crate) fn sessoes_agente(&self, agora: Instant) -> Vec<nvt_atualizacao::SessaoAgente> {
+        let mut v: Vec<_> = self
+            .sessoes
+            .iter()
+            .filter(|(_, s)| s.presente(agora))
+            .map(|(id, _)| nvt_atualizacao::SessaoAgente {
+                sessao: id.sessao,
+                sid: id.sid.clone(),
+            })
+            .collect();
+        v.sort_by(|a, b| (a.sessao, &a.sid).cmp(&(b.sessao, &b.sid)));
+        v.dedup();
+        v
+    }
+
+    /// A última atualização concluída ainda não foi vista por `sid` (U-53).
+    pub(crate) fn nao_vista(&self, sid: &str, estado: &nvt_ipc::EstadoAtualizacao) -> bool {
+        estado.ultima_atualizacao.as_ref().is_some_and(|u| {
+            self.dados
+                .por_sid
+                .get(sid)
+                .and_then(|d| d.atualizacao_vista.as_deref())
+                != Some(u.para.as_str())
+        })
+    }
+
+    fn marcar_atualizacao_vista(
+        &mut self,
+        identidade: &IdentidadeCliente,
+        versao: &str,
+    ) -> Result<Resposta, Erro> {
+        let ultima = self.atualizacao.ultima_atualizacao.as_ref();
+        if ultima.map(|u| u.para.as_str()) != Some(versao) {
+            return Err((
+                CodigoErro::EntradaInvalida,
+                "versão diferente da última atualização concluída".into(),
+            ));
+        }
+        let vista = self
+            .dados
+            .por_sid
+            .get(&identidade.sid)
+            .and_then(|d| d.atualizacao_vista.as_deref());
+        if vista == Some(versao) {
+            return Ok(Resposta::Ok);
+        }
+        let mut dados = self.dados.clone();
+        dados
+            .por_sid
+            .entry(identidade.sid.clone())
+            .or_default()
+            .atualizacao_vista = Some(versao.to_owned());
+        self.armazenamento
+            .salvar(&dados)
+            .map_err(erro_armazenamento)?;
+        self.dados = dados;
+        Ok(Resposta::Ok)
     }
 
     pub(crate) fn tratar(
@@ -266,6 +337,10 @@ impl Coordenador {
                 .validar()
                 .and_then(|()| self.reverter(identidade, destino))
                 .map_err(invalida),
+            Requisicao::MarcarAtualizacaoVista { versao } => req
+                .validar()
+                .map_err(invalida)
+                .and_then(|()| self.marcar_atualizacao_vista(identidade, versao)),
             _ => return None,
         };
         Some(resultado.unwrap_or_else(|(codigo, mensagem)| Resposta::erro(codigo, mensagem)))
@@ -552,6 +627,7 @@ impl Coordenador {
                     presente,
                     restauracao_pendente: self.geracao > s.map_or(0, |s| s.restaurada),
                 };
+                estado.atualizacao.nao_vista = self.nao_vista(&identidade.sid, &estado.atualizacao);
                 if let Some(s) = s.filter(|_| presente) {
                     estado.diagnosticos.extend(s.diagnosticos.clone());
                 }

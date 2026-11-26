@@ -4595,6 +4595,7 @@ version = "0.0.2"
 dependencies = [
  "clap",
  "embed-resource",
+ "minisign",
  "nvt-atualizacao",
  "nvt-core",
  "nvt-drs",

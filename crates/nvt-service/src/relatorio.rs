@@ -99,7 +99,96 @@ fn sim(b: bool) -> &'static str {
 
 /// `status`: somente leitura.
 pub fn status(dir: &Path) -> ExitCode {
+    for linha in linhas_atualizacao(&ler_estado_atualizacao()) {
+        println!("{linha}");
+    }
     sair(status_interno(dir))
+}
+
+/// Estado persistido da atualização (`%ProgramData%\nv-tuner\atualizacao`), só
+/// leitura. `Err` com o motivo se não pôde ser lido.
+fn ler_estado_atualizacao() -> Result<nvt_atualizacao::EstadoPersistido, String> {
+    use std::io::Read;
+    const LIMITE: u64 = 64 * 1024;
+    let pasta = crate::atualizacao::arquivo::pasta_padrao().map_err(|e| e.to_string())?;
+    let ler = |nome: &str| -> Result<Option<Vec<u8>>, String> {
+        match std::fs::File::open(pasta.join(nome)) {
+            Ok(f) => {
+                let mut v = Vec::new();
+                f.take(LIMITE)
+                    .read_to_end(&mut v)
+                    .map_err(|e| e.to_string())?;
+                Ok(Some(v))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let principal = ler(crate::atualizacao::ESTADO)?;
+    let bak = ler(crate::atualizacao::ESTADO_BAK)?;
+    Ok(nvt_atualizacao::EstadoPersistido::carregar(
+        principal.as_deref(),
+        bak.as_deref(),
+        crate::atualizacao::fachadas::versao_instalada(),
+    ))
+}
+
+/// Linhas do `status` sobre a atualização automática.
+pub(crate) fn linhas_atualizacao(
+    r: &Result<nvt_atualizacao::EstadoPersistido, String>,
+) -> Vec<String> {
+    use nvt_atualizacao::Fase;
+    let mut v = vec![format!("Versão instalada: {}", env!("CARGO_PKG_VERSION"))];
+    let e = match r {
+        Ok(e) => e,
+        Err(m) => {
+            v.push(format!("Atualização: estado indisponível ({m})"));
+            return v;
+        }
+    };
+    let fase = match &e.fase {
+        Fase::Ocioso => "ociosa".to_owned(),
+        Fase::Verificando => "verificando".to_owned(),
+        Fase::Baixando { versao, .. } => format!("baixando v{versao}"),
+        Fase::Pronta {
+            versao,
+            adiada_desde_unix,
+            ..
+        } => match adiada_desde_unix {
+            Some(d) => format!("v{versao} pronta, adiada desde unix {d}"),
+            None => format!("v{versao} pronta para instalar"),
+        },
+        Fase::Instalando { de, para, .. } => format!("instalando v{de} → v{para}"),
+    };
+    let quando = |t: Option<u64>| t.map_or_else(|| "nunca".to_owned(), |t| format!("unix {t}"));
+    v.push(format!(
+        "Atualização: {fase} | última verificação {} | próxima {} | resultado {}",
+        quando(e.ultima_verificacao_unix),
+        e.proxima_verificacao_unix
+            .map_or_else(|| "não agendada".to_owned(), |t| format!("unix {t}")),
+        e.ultimo_resultado
+            .map_or_else(|| "nenhum".to_owned(), |r| format!("{r:?}"))
+    ));
+    if let Some(u) = &e.ultima_atualizacao {
+        v.push(format!(
+            "  última atualização: v{} → v{} (unix {}, código {})",
+            u.de, u.para, u.quando_unix, u.codigo
+        ));
+    }
+    if let Some(f) = &e.ultima_falha {
+        let abandonada = if e.abandonadas.contains(&f.versao) {
+            ", abandonada"
+        } else {
+            ""
+        };
+        v.push(format!(
+            "  última falha: v{} (código {}, {} tentativa(s){abandonada})",
+            f.versao,
+            f.codigo,
+            e.falhas.get(&f.versao).copied().unwrap_or(0)
+        ));
+    }
+    v
 }
 
 fn status_interno(dir: &Path) -> Result<(), Erro> {
@@ -598,5 +687,37 @@ mod testes {
         assert_eq!(codigo_saida(&res), 1);
         p.adiada = None;
         assert_eq!(codigo_saida(&mostrar(&Resposta::Plano(p), false, true)), 0);
+    }
+}
+
+#[cfg(test)]
+mod testes_atualizacao {
+    use super::linhas_atualizacao;
+    use nvt_atualizacao::{AtualizacaoConcluida, EstadoPersistido, Fase};
+
+    #[test]
+    fn status_mostra_estado_da_atualizacao() {
+        let e = EstadoPersistido {
+            fase: Fase::Baixando {
+                versao: "1.2.0".parse().unwrap(),
+                msi: "m".into(),
+                tamanho: 1,
+                sha256: "0".repeat(64),
+            },
+            ultima_verificacao_unix: Some(100),
+            ultima_atualizacao: Some(AtualizacaoConcluida {
+                de: "1.0.0".parse().unwrap(),
+                para: "1.1.0".parse().unwrap(),
+                quando_unix: 50,
+                codigo: 0,
+            }),
+            ..EstadoPersistido::default()
+        };
+        let l = linhas_atualizacao(&Ok(e)).join("\n");
+        assert!(l.contains("baixando v1.2.0"), "{l}");
+        assert!(l.contains("última verificação unix 100"), "{l}");
+        assert!(l.contains("v1.0.0 → v1.1.0"), "{l}");
+        let l = linhas_atualizacao(&Err("negado".into())).join("\n");
+        assert!(l.contains("indisponível (negado)"), "{l}");
     }
 }

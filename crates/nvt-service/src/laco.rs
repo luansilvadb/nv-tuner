@@ -233,6 +233,8 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
         req: Requisicao,
         agora: Instant,
     ) -> Resposta {
+        let exclusao = self.integracao.exclusao.clone();
+        let _drs = exclusao.ciclo_drs();
         if let Some(usuario) = &mut self.integracao.usuario
             && matches!(req, Requisicao::AgenteConsultar { .. })
         {
@@ -259,10 +261,25 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
     }
 
     fn notificar_mudanca_drs(&mut self, agora: Instant) {
+        let _drs = self.integracao.exclusao.ciclo_drs();
         self.nucleo.notificar_mudanca_drs(agora);
     }
 
     fn tick(&mut self, agora: Instant) {
+        let exclusao = self.integracao.exclusao.clone();
+        let _drs = exclusao.ciclo_drs();
+        let extras: Vec<String> = self.nucleo.portao_extras();
+        {
+            let mut atual = self
+                .integracao
+                .extras_portao
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *atual != extras {
+                *atual = extras;
+            }
+        }
+        self.integracao.repassar_sessoes(agora);
         if self.integracao.atualizar_console(false) {
             self.nucleo
                 .definir_aceites_drs(self.integracao.aceites_drs.clone());
@@ -394,8 +411,15 @@ pub fn executar(
 
     if esperar_diretorio_seguro(op, &rx) {
         let mut integracao = Integracao::abrir(op);
+        if !op.config.somente_leitura {
+            integracao.iniciar_atualizacao();
+        }
         let diagnosticos = iniciar_diagnosticos(integracao.diagnosticos.clone());
         executar_com_driver(op, &rx, &mut integracao);
+        // Encerramento: `cancelar` faz a rede desistir; não espera um download inteiro.
+        if let Some(mut t) = integracao.atualizacao.take() {
+            t.parar();
+        }
         drop(diagnosticos);
     }
 
@@ -470,8 +494,9 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>, integracao: &mut Inte
     loop {
         let mut nucleo = loop {
             let drs_dir = op.vigiar.clone();
+            let portao = integracao.portao.clone();
             let r = protegido("início do motor", || {
-                let nucleo = Nucleo::novo(
+                let nucleo = Nucleo::novo_com_portao(
                     Box::new(|| Ok(DrsReal::abrir(&api)?)),
                     Box::new(|| {
                         let (jogos, avisos) = jogos_da_maquina();
@@ -484,6 +509,7 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>, integracao: &mut Inte
                     Some(op.estado_dir.clone()),
                     op.config,
                     Instant::now(),
+                    portao,
                 )?;
                 nucleo.engine().capacidades()?;
                 Ok::<_, nvt_engine::ErroEngine>(nucleo)
@@ -511,7 +537,11 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>, integracao: &mut Inte
         };
         integracao.atualizar_console(true);
         nucleo.definir_aceites_drs(integracao.aceites_drs.clone());
-        let fim = match protegido("início do ciclo", || nucleo.iniciar(Instant::now())) {
+        let exclusao = integracao.exclusao.clone();
+        let fim = match protegido("início do ciclo", || {
+            let _drs = exclusao.ciclo_drs();
+            nucleo.iniciar(Instant::now());
+        }) {
             Some(()) => laco_principal(
                 &mut Atendimento {
                     nucleo: &mut nucleo,
@@ -543,6 +573,13 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>, integracao: &mut Inte
 #[derive(Default)]
 pub(crate) struct Integracao {
     pub(crate) usuario: Option<Coordenador>,
+    /// Portão de processos único do serviço (núcleo e atualizador).
+    pub(crate) portao: nvt_engine::Portao,
+    /// Extras atuais do portão, vistos também pelo atualizador.
+    pub(crate) extras_portao: Arc<Mutex<Vec<String>>>,
+    pub(crate) exclusao: Arc<Exclusao>,
+    pub(crate) atualizacao: Option<ThreadAtualizacao>,
+    sessoes_agente: Option<Vec<nvt_atualizacao::SessaoAgente>>,
     diagnosticos: Arc<Mutex<Vec<nvt_ipc::Diagnostico>>>,
     regras_drs: Option<nvt_core::ConjuntoRegras>,
     console: Option<IdentidadeCliente>,
@@ -584,6 +621,48 @@ impl Integracao {
         integracao
     }
 
+    /// Sobe a thread do atualizador com as fachadas reais (fora de somente leitura).
+    fn iniciar_atualizacao(&mut self) {
+        let cancelar = Arc::new(AtomicBool::new(false));
+        let portao = portao_atualizacao(
+            self.portao.clone(),
+            self.extras_portao.clone(),
+            self.exclusao.clone(),
+            cancelar.clone(),
+        );
+        let r =
+            crate::atualizacao::fachadas::Fachadas::reais(portao, cancelar.clone()).and_then(|f| {
+                let a = crate::atualizacao::Atualizador::novo(
+                    f,
+                    crate::atualizacao::fachadas::versao_instalada(),
+                );
+                ThreadAtualizacao::iniciar(a, self.exclusao.clone(), cancelar)
+            });
+        match r {
+            Ok(t) => self.atualizacao = Some(t),
+            Err(e) => error!("atualização automática indisponível: {e}"),
+        }
+    }
+
+    /// Projeção atual da atualização (sem `nao_vista`, que é por SID).
+    pub(crate) fn estado_atualizacao(&self) -> nvt_ipc::EstadoAtualizacao {
+        self.atualizacao
+            .as_ref()
+            .map_or_else(estado_atualizacao_padrao, ThreadAtualizacao::estado)
+    }
+
+    /// Repassa ao atualizador as sessões com agente, quando mudam.
+    pub(crate) fn repassar_sessoes(&mut self, agora: Instant) {
+        let (Some(usuario), Some(t)) = (&self.usuario, &self.atualizacao) else {
+            return;
+        };
+        let sessoes = usuario.sessoes_agente(agora);
+        if self.sessoes_agente.as_ref() != Some(&sessoes) {
+            t.definir_sessoes(sessoes.clone());
+            self.sessoes_agente = Some(sessoes);
+        }
+    }
+
     fn atualizar_console(&mut self, forcar: bool) -> bool {
         let Some(usuario) = &self.usuario else {
             return false;
@@ -608,14 +687,18 @@ impl Integracao {
             Requisicao::ListarHistorico { limite } => limite as usize,
             _ => 0,
         };
+        let atualizacao = self.estado_atualizacao();
         if let Some(usuario) = &mut self.usuario {
             usuario.atualizar_restauracao(estado.geracao_restauracao, estado.autonomia_pausada);
+            usuario.definir_atualizacao(atualizacao.clone());
             if let Some(resposta) = usuario.tratar(&identidade, &req, agora, agora_unix()) {
+                self.repassar_sessoes(agora);
                 return resposta;
             }
         }
         let (mut resposta, estado) = driver(req);
         if let Resposta::Estado(estado) = &mut resposta {
+            estado.atualizacao = atualizacao;
             estado.diagnosticos = self
                 .diagnosticos
                 .lock()
@@ -668,6 +751,7 @@ impl Integracao {
                 }
             }
         }
+        self.repassar_sessoes(agora);
         resposta
     }
 }
@@ -795,6 +879,262 @@ fn plano_sem_driver() -> Resposta {
         jogos: Vec::new(),
         adiada: None,
     })
+}
+
+// ── Atualização automática ─────────────────────────────────────────────────
+//
+// O [`Atualizador`](crate::atualizacao::Atualizador) roda numa thread própria
+// (`tick` é síncrono e pode baixar o MSI por minutos). A exclusão com o ciclo
+// DRS é feita por [`Exclusao`]: a thread principal marca `drs` durante cada
+// requisição, notificação e temporizador do núcleo; o portão do atualizador,
+// consultado imediatamente antes de lançar o msiexec, primeiro espera o fim do
+// ciclo DRS em curso e **reserva** a instalação, que só é liberada quando o
+// `tick` termina. Enquanto reservada, nenhum ciclo DRS começa.
+
+/// Exclusão mútua entre o ciclo DRS (thread principal) e o lançamento da
+/// instalação (thread do atualizador).
+#[derive(Default)]
+pub(crate) struct Exclusao {
+    ocupacao: Mutex<Ocupacao>,
+    cv: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct Ocupacao {
+    drs: bool,
+    instalacao: bool,
+}
+
+/// Ciclo DRS em curso; ao soltar, libera a instalação que estiver esperando.
+pub(crate) struct GuardaDrs<'a>(&'a Exclusao);
+
+impl Drop for GuardaDrs<'_> {
+    fn drop(&mut self) {
+        self.0.ocupar().drs = false;
+        self.0.cv.notify_all();
+    }
+}
+
+impl Exclusao {
+    fn ocupar(&self) -> std::sync::MutexGuard<'_, Ocupacao> {
+        self.ocupacao
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Entra num ciclo DRS, esperando o fim de uma instalação reservada.
+    pub(crate) fn ciclo_drs(&self) -> GuardaDrs<'_> {
+        let mut o = self.ocupar();
+        while o.instalacao {
+            o = self
+                .cv
+                .wait(o)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        o.drs = true;
+        GuardaDrs(self)
+    }
+
+    /// Reserva a instalação, esperando o ciclo DRS em curso terminar. `false`
+    /// se `cancelar` foi sinalizado durante a espera.
+    pub(crate) fn reservar_instalacao(&self, cancelar: &AtomicBool) -> bool {
+        let mut o = self.ocupar();
+        while o.drs {
+            if cancelar.load(Ordering::Relaxed) {
+                return false;
+            }
+            o = self
+                .cv
+                .wait_timeout(o, Duration::from_millis(100))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        o.instalacao = true;
+        true
+    }
+
+    /// Libera a reserva (idempotente).
+    pub(crate) fn liberar_instalacao(&self) {
+        self.ocupar().instalacao = false;
+        self.cv.notify_all();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn instalacao_reservada(&self) -> bool {
+        self.ocupar().instalacao
+    }
+}
+
+/// Portão do atualizador: o mesmo [`nvt_engine::Portao`] do núcleo, com a
+/// base curada e os extras atuais, consultado só depois de reservar a
+/// instalação contra o ciclo DRS (U-26).
+pub(crate) fn portao_atualizacao(
+    portao: nvt_engine::Portao,
+    extras: Arc<Mutex<Vec<String>>>,
+    exclusao: Arc<Exclusao>,
+    cancelar: Arc<AtomicBool>,
+) -> impl Fn() -> Result<(), nvt_atualizacao::MotivoAdiamento> + Send + 'static {
+    let base = nvt_core::BaseJogos::embutida()
+        .map_err(|e| error!("atualização: base de jogos indisponível ({e}); portão fechado"))
+        .ok();
+    move || {
+        use nvt_atualizacao::MotivoAdiamento;
+        let Some(base) = &base else {
+            return Err(MotivoAdiamento::ListaIndisponivel);
+        };
+        if !exclusao.reservar_instalacao(&cancelar) {
+            return Err(MotivoAdiamento::JogoAberto);
+        }
+        let extras = extras
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let refs: Vec<&str> = extras.iter().map(String::as_str).collect();
+        let r = crate::atualizacao::fachadas::motivo_do_portao(portao.verificar(base, &refs));
+        if r.is_err() {
+            exclusao.liberar_instalacao();
+        }
+        r
+    }
+}
+
+/// O que a thread de atualização executa (o `Atualizador`; nos testes, um falso).
+pub(crate) trait Executor: Send + 'static {
+    fn tick(&mut self, agora: Instant) -> Option<Duration>;
+    fn definir_sessoes_agente(&mut self, sessoes: Vec<nvt_atualizacao::SessaoAgente>);
+    fn estado_ipc(&self) -> nvt_ipc::EstadoAtualizacao;
+}
+
+impl Executor for crate::atualizacao::Atualizador {
+    fn tick(&mut self, agora: Instant) -> Option<Duration> {
+        crate::atualizacao::Atualizador::tick(self, agora)
+    }
+
+    fn definir_sessoes_agente(&mut self, sessoes: Vec<nvt_atualizacao::SessaoAgente>) {
+        crate::atualizacao::Atualizador::definir_sessoes_agente(self, sessoes);
+    }
+
+    fn estado_ipc(&self) -> nvt_ipc::EstadoAtualizacao {
+        crate::atualizacao::Atualizador::estado_ipc(self)
+    }
+}
+
+/// Sono máximo da thread sem prazo devolvido.
+const SONO_MAXIMO: Duration = Duration::from_secs(3600);
+
+#[derive(Default)]
+struct Caixa {
+    acordar: bool,
+    sessoes: Option<Vec<nvt_atualizacao::SessaoAgente>>,
+    estado: nvt_ipc::EstadoAtualizacao,
+}
+
+#[derive(Default)]
+struct Compartilhado {
+    caixa: Mutex<Caixa>,
+    cv: std::sync::Condvar,
+}
+
+impl Compartilhado {
+    fn caixa(&self) -> std::sync::MutexGuard<'_, Caixa> {
+        self.caixa
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Thread do atualizador: dorme até o próximo prazo de `tick`, acorda cedo no
+/// encerramento (`cancelar`) e quando o laço pede ([`acordar`](Self::acordar)).
+pub(crate) struct ThreadAtualizacao {
+    comp: Arc<Compartilhado>,
+    cancelar: Arc<AtomicBool>,
+    h: Option<JoinHandle<()>>,
+}
+
+impl ThreadAtualizacao {
+    pub(crate) fn iniciar(
+        mut exec: impl Executor,
+        exclusao: Arc<Exclusao>,
+        cancelar: Arc<AtomicBool>,
+    ) -> std::io::Result<Self> {
+        let comp = Arc::new(Compartilhado::default());
+        comp.caixa().estado = exec.estado_ipc();
+        let (c, parar) = (comp.clone(), cancelar.clone());
+        let h = thread::Builder::new()
+            .name("nvt-atualizacao".into())
+            .spawn(move || {
+                while !parar.load(Ordering::Relaxed) {
+                    if let Some(s) = c.caixa().sessoes.take() {
+                        exec.definir_sessoes_agente(s);
+                    }
+                    let r = protegido("atualização", || exec.tick(Instant::now()));
+                    // Reserva feita pelo portão neste tick: o lançamento já ocorreu.
+                    exclusao.liberar_instalacao();
+                    let Some(prazo) = r else {
+                        error!("atualização automática desligada até o próximo início do serviço");
+                        return;
+                    };
+                    let estado = exec.estado_ipc();
+                    let mut caixa = c.caixa();
+                    caixa.estado = estado;
+                    let fim = Instant::now() + prazo.unwrap_or(SONO_MAXIMO).min(SONO_MAXIMO);
+                    while !caixa.acordar && !parar.load(Ordering::Relaxed) {
+                        let resta = fim.saturating_duration_since(Instant::now());
+                        if resta.is_zero() {
+                            break;
+                        }
+                        caixa =
+                            c.cv.wait_timeout(caixa, resta)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .0;
+                    }
+                    caixa.acordar = false;
+                }
+            })?;
+        Ok(Self {
+            comp,
+            cancelar,
+            h: Some(h),
+        })
+    }
+
+    /// Antecipa o próximo `tick`.
+    pub(crate) fn acordar(&self) {
+        self.comp.caixa().acordar = true;
+        self.comp.cv.notify_all();
+    }
+
+    /// Sessões com agente; aplicadas antes do próximo `tick`.
+    pub(crate) fn definir_sessoes(&self, sessoes: Vec<nvt_atualizacao::SessaoAgente>) {
+        self.comp.caixa().sessoes = Some(sessoes);
+    }
+
+    /// Última projeção publicada pela thread.
+    pub(crate) fn estado(&self) -> nvt_ipc::EstadoAtualizacao {
+        self.comp.caixa().estado.clone()
+    }
+
+    /// Sinaliza `cancelar` (a rede desiste) e espera a thread.
+    pub(crate) fn parar(&mut self) {
+        self.cancelar.store(true, Ordering::Relaxed);
+        self.acordar();
+        if let Some(h) = self.h.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for ThreadAtualizacao {
+    fn drop(&mut self) {
+        self.parar();
+    }
+}
+
+fn estado_atualizacao_padrao() -> nvt_ipc::EstadoAtualizacao {
+    nvt_ipc::EstadoAtualizacao {
+        versao_instalada: env!("CARGO_PKG_VERSION").into(),
+        ..Default::default()
+    }
 }
 
 fn build_windows() -> Option<u32> {

@@ -663,6 +663,20 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         self.assinatura_propria = (self.assinador)();
     }
 
+    /// Extras atuais do portão compartilhado com o atualizador: os executáveis
+    /// dos jogos detectados (os mesmos que as gravações DRS vigiam).
+    pub fn portao_extras(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .jogos
+            .iter()
+            .map(|j| j.exe.clone())
+            .filter(|e| !e.is_empty())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     pub fn processos_vigiados(&self) -> std::collections::BTreeSet<String> {
         self.portao
             .vigiados(self.engine.base_jogos(), &[])
