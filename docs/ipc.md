@@ -93,7 +93,16 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
   incompatível**.
 - Ao receber `VersaoIncompativel`, a UI entra no modo de visualização e
   mostra um alerta com as duas versões e a instrução de atualizar o nv-tuner
-  pelo instalador (que atualiza UI e serviço juntos).
+  pelo instalador (que atualiza UI e serviço juntos). Se a diferença surge
+  **depois** de já ter conectado (atualização automática em curso), a UI mostra
+  “O nv-tuner foi atualizado. Feche e abra de novo.” e para de reconectar
+  ([`docs/ui.md`](ui.md)).
+- O agente trata `versao_incompativel` (envelope ou erro) como serviço
+  indisponível temporário: não grava nem aplica nada e tenta de novo com recuo;
+  serviço presente em outra versão não conta como desinstalação. O agente só se
+  encerra sozinho com o serviço sem responder por 120 s **e** o executável ou a
+  entrada `Run` ausentes de forma contínua por 120 s. No upgrade, o Restart
+  Manager o fecha e o serviço novo o relança.
 
 | Versão | Mudança |
 |---|---|

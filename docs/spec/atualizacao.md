@@ -84,6 +84,22 @@ serviço NOVO ao iniciar: lê estado "instalando" + log + versão própria ─�
 | A10 | Bootstrap manual: quem tem v0.0.2 instala uma vez a primeira versão com atualizador | v0.0.2 não tem código de atualização |
 | A11 | Laboratório obrigatório em VM antes do primeiro lançamento | Sobrevivência do msiexec ao stop do serviço não é documentada (P§1, pendência 1) |
 
+### 4.1 Desvios da implementação (registrados em 2026-11-26, lotes 1–3)
+
+O texto dos requisitos abaixo já foi alinhado; esta tabela guarda o que mudou e por quê.
+
+| # | Original | Implementado | Justificativa |
+|---|---|---|---|
+| D-01 | `CHAVE_OFICIAL` como literal em `chave.rs`, entregue pelo Lote 0 | `PUB_OFICIAL = include_str!("instalador/nv-tuner-minisign.pub")` e `CHAVE_OFICIAL` = segunda linha desse arquivo; hoje o arquivo traz o marcador `NVT-CHAVE-PROVISORIA` e `Chave::oficial()` falha fechada (`ErroVerificacao::ChaveProvisoria`). **Lote 0 adiado** | Uma única fonte para a chave (binários, README, verificação manual), sem copiar a linha à mão; o marcador permite implementar e testar tudo antes de o mantenedor gerar a chave, sem risco: enquanto existir, todo release falha (passo do `release.yml`) e todo serviço recusa atualização |
+| D-02 | U-22: `ReOpenFile(GENERIC_READ, FILE_SHARE_READ)` direto do handle de escrita | Troca por um handle **intermediário** de leitura que compartilha tudo (`ReOpenFile`); fecha-se o de escrita; o handle final é `ReOpenFile(intermediário, GENERIC_READ, FILE_SHARE_READ)`; **SHA-256 e tamanho recalculados no handle final** e comparados | A abertura direta é violação de compartilhamento (o novo handle negaria a escrita que o antigo já tem); a janela entre fechar o de escrita e abrir o final exige escrever numa pasta só SYSTEM/Administradores e é detectada pelo novo hash |
+| D-03 | A6: msiexec “destacado” | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP \| CREATE_UNICODE_ENVIRONMENT` (+ `CREATE_BREAKAWAY_FROM_JOB` se em job, com nova tentativa sem o flag), **sem** `DETACHED_PROCESS`, ambiente mínimo (`SystemRoot`, `windir`, `TEMP`/`TMP` = pasta protegida) | `DETACHED_PROCESS` não combina com `CREATE_NO_WINDOW` (P§1); o ambiente mínimo não herda variáveis do serviço |
+| D-04 | U-33: guardar o handle do processo msiexec e consultar `WaitForSingleObject` | O lançador **fecha** os handles de processo e thread logo após `CreateProcessW`; o resultado vem só do log `/l*v`, relido a cada 60 s (`RELER_LOG`) enquanto `fase = instalando`, com teto de 2 h | Menos estado e menos handles vivos no serviço que será parado; o log já é a fonte de verdade do serviço novo (U-35), então o mesmo caminho cobre o serviço antigo ainda vivo (ex.: 1618) |
+| D-05 | U-41: agente sai com código próprio ao receber `versao_incompativel` | O agente trata serviço/protocolo diferente como **indisponível temporário** (não grava, não aplica, tenta de novo com recuo) e isso não conta como desinstalação; só sai sozinho com serviço sem responder por 120 s **e** executável ou entrada `Run` ausentes continuamente por mais 120 s | Sair na primeira resposta incompatível derrubaria o agente em toda janela de upgrade mesmo quando o RM não o fechou; o relançamento (U-43) continua sendo o caminho normal |
+| D-06 | U-60/U-61: subcomandos `manifesto`, `assinar --chave-env … <arq> --comentario`, `verificar --dir --versao` | `gerar-chave --publica <pub> --secreta <key>`; `assinar --versao X.Y.Z --msi <msi>` (gera `atualizacao.json`, `atualizacao.json.minisig` e `<msi>.minisig` ao lado do MSI, comentários montados pela ferramenta; chave só de `NV_TUNER_MINISIGN_KEY`, aceitando a linha base64 ou o `.key` inteiro); `verificar --dir <pasta>` (versão lida do manifesto verificado) | Menos parâmetros livres no workflow (comentário e nomes não são digitados), e a geração da chave usa o mesmo crate fixado, sem baixar o minisign no runner nem na máquina do mantenedor (Q11 resolvida: secret = só a linha base64) |
+| D-07 | `minisign` 0.11 com `-G -W` para gerar a chave | `nvt-assinar gerar-chave`, que usa `minisign` **0.7.9** com `KeyPair::generate_encrypted_keypair(Some(""))` | `generate_unencrypted_keypair` do 0.7.9 não grava a soma de conferência da chave secreta (bug do modo sem senha); com senha vazia o resultado é equivalente a `-W` e carrega em `SecretKey` sem interação |
+| D-08 | §7: transições no laço principal, rede/hash numa thread de trabalho devolvendo `Evento::Atualizacao(..)` | O `Atualizador` inteiro roda numa **thread própria** (`nvt-atualizacao`, `ThreadAtualizacao` em `laco.rs`); `tick` é síncrono; a exclusão com o ciclo DRS é a `Exclusao` (o portão do atualizador reserva a instalação esperando o ciclo DRS em curso; reservada, nenhum ciclo DRS começa até o fim do `tick`); o laço só lê a última projeção e repassa as sessões com agente | Mantém o laço DRS livre de downloads de minutos e de estado de atualização; a garantia que importava (“nenhuma instalação começa durante uma gravação DRS”) fica explícita num único ponto testável |
+| D-09 | §11.1: recuperação do SCM inalterada (Q12) | `ThirdFailureActionType="restart"` e `REBOOT=ReallySuppress` no WiX | Sem serviço não há atualizador (Q12); nunca reiniciar o Windows também em instalação interativa |
+
 ---
 
 ## 5. Modelo de ameaças e mitigações
@@ -110,7 +126,7 @@ privacidade.
 
 1. O mantenedor gera a chave nova offline e faz backup.
 2. Publica a versão N assinada pela chave **antiga**, embutindo a pública **nova** em
-   `crates/nvt-atualizacao/src/chave.rs`.
+   `instalador/nv-tuner-minisign.pub` (lida por `include_str!`, D-01).
 3. A partir de N+1, o workflow assina com a chave nova (troca do secret).
 4. Máquinas que pularam N continuam aceitando só a antiga: N precisa ficar como
    intermediária obrigatória enquanto houver máquinas antigas; se a chave antiga vazou,
@@ -171,10 +187,12 @@ Regras de leitura (`deny_unknown_fields`, UTF-8 sem BOM, ≤ 16 KiB):
   Publicado para conferência manual (`minisign -Vm nv-tuner-0.1.0-x64.msi -P <pub>`);
   o serviço não o baixa (o MSI já está amarrado pelo SHA-256 do manifesto assinado).
 - `.minisig` ≤ 4 KiB; comentário não confiável ignorado.
-- Chave pública: só a linha base64 (`RW…`, 56 caracteres) como constante
-  `CHAVE_OFICIAL` em `crates/nvt-atualizacao/src/chave.rs`, nunca lida de arquivo nem de
-  variável de ambiente em build de release. A cópia `.pub` completa fica em
-  `instalador/nv-tuner-minisign.pub` para o README e a verificação manual.
+- Chave pública: `instalador/nv-tuner-minisign.pub` é a única fonte, embutida em
+  compilação por `include_str!` (`PUB_OFICIAL` em `crates/nvt-atualizacao/src/chave.rs`);
+  `CHAVE_OFICIAL` é a sua segunda linha (base64, `RW…`). Nunca lida de arquivo em
+  execução nem de variável de ambiente em build de release. Enquanto o arquivo tiver o
+  marcador `NVT-CHAVE-PROVISORIA` (ou a linha não decodificar), `Chave::oficial()`
+  falha fechada e o `release.yml` se recusa a publicar (D-01).
 
 ### 6.3 Estado persistido `%ProgramData%\nv-tuner\atualizacao\estado.json`
 
@@ -221,10 +239,13 @@ não sejam do último resultado (U-25).
 
 ## 7. Máquina de estados
 
-Estados (`fase.tipo`), um por vez; transições só no laço principal do serviço
-(single-thread, `crates/nvt-service/src/laco.rs`); rede e hash rodam numa thread de
-trabalho que devolve um `Evento::Atualizacao(..)` ao laço, então nenhuma instalação
-começa durante uma gravação DRS.
+Estados (`fase.tipo`), um por vez; transições pela função pura
+`nvt_atualizacao::transicao`, aplicadas pelo `Atualizador` numa **thread própria**
+(`nvt-atualizacao`, `ThreadAtualizacao` em `crates/nvt-service/src/laco.rs`), onde rede e
+hash rodam de forma síncrona dentro do `tick`. A exclusão com o ciclo DRS é a
+`Exclusao` de `laco.rs`: o portão do atualizador reserva a instalação esperando o
+ciclo DRS em curso, e reservada nenhum ciclo DRS começa até o fim do `tick`; então
+nenhuma instalação começa durante uma gravação DRS (D-08).
 
 | De | Evento | Para | Persistir |
 |---|---|---|---|
@@ -244,7 +265,7 @@ começa durante uma gravação DRS.
 | `instalando` | serviço inicia com versão = `de` e log com código | `ocioso` | 1618 → `adiada_msi_ocupado` sem contar; outro → `falhas[para]`+1; 3ª → `abandonadas` |
 | `instalando` | serviço inicia com versão = `de`, sem código no log e ≤ 2 h (ex.: serviço antigo religado pelo rollback enquanto o msiexec ainda termina) | `instalando` | nada; relê o log a cada 60 s; nenhuma verificação nova nem lançamento enquanto estiver aqui |
 | `instalando` | serviço inicia, sem código no log e > 2 h | `ocioso` | conta falha com código `-1` (“resultado desconhecido”) |
-| `instalando` | serviço antigo ainda vivo e msiexec terminou (espera opcional não bloqueante pelo handle de processo, §8.4) | `ocioso` | código real |
+| `instalando` | serviço antigo ainda vivo e o log relido (a cada 60 s) já traz o código (ex.: 1618) | `ocioso` | código do log, como nas linhas acima (D-04) |
 
 A versão instalada é `env!("CARGO_PKG_VERSION")` do próprio serviço (o MSI é o único
 caminho de instalação e instala os três binários juntos).
@@ -300,7 +321,10 @@ caminho de instalação e instala os três binários juntos).
   pelo mesmo handle que o escreveu (não do buffer de rede). Divergência apaga o
   `.parcial`. **T** (sistema de arquivos falso) + **T** Windows em pasta temporária.
 - **U-15** A chave embutida não é a de teste e decodifica como pública Minisign válida;
-  em build de release não existe forma de substituí-la (sem `option_env!`). **T** + **I**.
+  em build de release não existe forma de substituí-la (sem `option_env!` fora da
+  feature `laboratorio`). Enquanto `instalador/nv-tuner-minisign.pub` tiver o marcador
+  provisório, toda verificação oficial falha fechada (`ChaveProvisoria`) e o
+  `release.yml` falha no passo “Conferir chave oficial embutida” (D-01). **T** + **I**.
 - **U-15a** Feature `laboratorio` (URL base e chave de ensaio) não vaza para release:
   (a) teste normal confere que `CHAVE_OFICIAL` é igual à linha base64 de
   `instalador/nv-tuner-minisign.pub` (`include_str!`) e diferente da chave de ensaio;
@@ -330,9 +354,11 @@ caminho de instalação e instala os três binários juntos).
 - **U-21** O `.parcial` é criado com `CreateFileW(CREATE_NEW, GENERIC_READ|GENERIC_WRITE|DELETE,
   FILE_SHARE_READ, FILE_FLAG_OPEN_REPARSE_POINT)` via `diretorio::abrir_sem_reparse`. **T**.
 - **U-22** Após verificar, o arquivo é renomeado pelo próprio handle
-  (`SetFileInformationByHandle(FileRenameInfo)`, sem substituir) para o nome final e o
-  **mesmo handle** permanece aberto com compartilhamento só de leitura até: o serviço
-  parar (o MSI para o serviço durante o upgrade), o processo msiexec terminar, ou 30 min
+  (`SetFileInformationByHandle(FileRenameInfo)`, sem substituir) para o nome final; o
+  handle de escrita é trocado por um handle só de leitura (`GENERIC_READ`,
+  `FILE_SHARE_READ`) **via handle intermediário** (D-02), com SHA-256 e tamanho
+  recalculados no handle final; esse handle permanece aberto até: o serviço parar (o MSI
+  para o serviço durante o upgrade), a fase sair de `pronta`/`instalando`, ou 30 min
   após o lançamento. **T** (o handle impede escrita e exclusão por outro handle) + **L**.
 
   *Viabilidade (A4).* O cliente `msiexec` e o `msiserver` abrem o pacote só para leitura
@@ -340,9 +366,12 @@ caminho de instalação e instala os três binários juntos).
   um handle nosso com `FILE_SHARE_READ` e acesso de leitura+escrita? **Não**: quem abre
   depois com negação de escrita (`FILE_SHARE_READ` sem `FILE_SHARE_WRITE`) falha se já
   existe handle com `GENERIC_WRITE`. Por isso, antes de lançar, o handle de escrita é
-  trocado por um handle **só de leitura** (`GENERIC_READ`, `FILE_SHARE_READ`) aberto por
-  `ReOpenFile` a partir do handle verificado (mesmo objeto, sem nova resolução de
-  caminho), e só então o de escrita é fechado. Esse handle de leitura nega escrita e
+  trocado por um handle **só de leitura** (`GENERIC_READ`, `FILE_SHARE_READ`). Abri-lo
+  direto do handle de escrita é violação de compartilhamento; a implementação abre por
+  `ReOpenFile` um intermediário de leitura que compartilha tudo (mesmo objeto, sem nova
+  resolução de caminho), fecha o de escrita, abre o final por
+  `ReOpenFile(intermediário, GENERIC_READ, FILE_SHARE_READ)` e recalcula o hash nele
+  (D-02). Esse handle de leitura nega escrita e
   exclusão a terceiros e é compatível com a abertura de leitura do Windows Installer.
   A compatibilidade real é **inferência** sobre o modo de abertura do Windows Installer
   (não documentado): o laboratório (L-02) confirma. **Alternativa segura se falhar**:
@@ -384,11 +413,14 @@ caminho de instalação e instala os três binários juntos).
   CREATE_UNICODE_ENVIRONMENT` (não combina com `DETACHED_PROCESS`, P§1);
   `CREATE_BREAKAWAY_FROM_JOB` só se `IsProcessInJob` = verdadeiro, e falha nessa
   tentativa é registrada e lança sem o flag; `lpCurrentDirectory` = System32; ambiente
-  mínimo (`SystemRoot`, `windir`, `TEMP`/`TMP` = pasta protegida). **T** (escolha das
-  flags pura) + **L**.
-- **U-33** O serviço não espera o msiexec: guarda o handle de processo e, no laço,
-  consulta `WaitForSingleObject(h, 0)` a cada passo; se terminar antes do stop (ex.:
-  1618), lê `GetExitCodeProcess` e aplica U-36..U-38. **T** (fachada).
+  mínimo (`SystemRoot`, `windir`, `TEMP`/`TMP` = pasta protegida), em vez de
+  `DETACHED_PROCESS` e do ambiente herdado (D-03). **T** (escolha das flags e montagem
+  do ambiente puras) + **L**.
+- **U-33** O serviço não espera o msiexec nem guarda seu handle: o lançador fecha os
+  handles de processo e thread logo após criar o processo e devolve só o PID. Enquanto
+  `fase = instalando`, o `Atualizador` relê o log `/l*v` a cada 60 s (`RELER_LOG`); se o
+  msiexec terminar antes do stop (ex.: 1618), o código sai do log e aplica U-36..U-38;
+  sem código em 2 h, conta falha `-1` (D-04). **T** (fachada).
 - **U-34** Cada lançamento registra no log do serviço: de/para, SHA-256, caminho, PID,
   horário, flags. **T** (captura de `tracing`).
 - **U-35** Serviço novo, ao iniciar com `fase = instalando`: determina o código pela
@@ -416,8 +448,13 @@ caminho de instalação e instala os três binários juntos).
 - **U-40** O agente responde a `WM_QUERYENDSESSION`/`WM_CLOSE` encerrando limpo
   (`crates/nvt-agente/src/windows/janela.rs:73-74`, já existente); o laboratório confirma
   que o RM o fecha sem 3010. **L**.
-- **U-41** O agente que receber `versao_incompativel` do serviço (envelope v6 x v5) sai
-  com código próprio sem tocar no estado local, para ser relançado. **T**.
+- **U-41** O agente que receber `versao_incompativel` do serviço (envelope ou erro)
+  trata o serviço como **indisponível temporário**: não grava, não aplica, não toca no
+  estado local e tenta de novo com recuo; isso não conta como desinstalação. Só sai
+  sozinho com o serviço sem responder por 120 s **e** o executável ou a entrada `Run`
+  ausentes de forma contínua por mais 120 s (o MSI remove e regrava os dois no upgrade;
+  ausência momentânea não basta). O caminho normal no upgrade é o RM fechá-lo e U-43
+  relançá-lo (D-05). **T**.
 - **U-42** A UI, ao perder o pipe depois de já ter conectado, ou ao receber
   `versao_servico` diferente da própria `CARGO_PKG_VERSION`, mostra
   “O nv-tuner foi atualizado. Feche e abra de novo.” e para de reconectar; não se
@@ -462,15 +499,19 @@ caminho de instalação e instala os três binários juntos).
 
 ### 8.7 Release (`U-60..U-68`)
 
-- **U-60** `crates/nvt-assinar` (binário, `publish = false`) com subcomandos:
-  `manifesto --msi <arq> --versao X.Y.Z --saida <dir>` (gera `atualizacao.json`),
-  `assinar --chave-env NV_TUNER_MINISIGN_KEY <arq> --comentario <texto>` e
-  `verificar --dir <dir> --versao X.Y.Z` (usa `nvt-atualizacao` com `CHAVE_OFICIAL`,
-  confere manifesto, comentário, tamanho, SHA-256 e o `.minisig` do MSI). Crate
-  `minisign` com versão exata (`=0.x.y`, fixada na implementação) e `--locked`. **T**.
-- **U-61** A chave secreta vem só da variável de ambiente (conteúdo do arquivo `.key`
-  gerado com `-W`, sem senha); nunca é gravada em disco pela ferramenta; mensagens de erro
-  não a ecoam. **T** + **I**.
+- **U-60** `crates/nvt-assinar` (binário, `publish = false`, nunca no MSI) com
+  subcomandos (D-06):
+  `gerar-chave --publica <arq.pub> --secreta <arq.key>` (sem senha, recusa sobrescrever;
+  D-07), `assinar --versao X.Y.Z --msi <nv-tuner-X.Y.Z-x64.msi>` (gera, ao lado do MSI,
+  `atualizacao.json`, `atualizacao.json.minisig` e `<msi>.minisig` com os comentários
+  confiáveis de §6.2) e `verificar --dir <pasta>` (usa `nvt-atualizacao` com
+  `CHAVE_OFICIAL`; confere manifesto, comentário, tamanho, SHA-256 e o `.minisig` do MSI;
+  recusa primeiro se a chave embutida for a provisória). Crate `minisign = "=0.7.9"` e
+  `--locked`. **T**.
+- **U-61** A chave secreta vem só de `NV_TUNER_MINISIGN_KEY`: de preferência só a linha
+  base64 do `.key` (Q11; a ferramenta remonta a caixa), aceitando também o `.key` de duas
+  linhas; sem senha; nunca é gravada em disco pela ferramenta (só `gerar-chave` cria o
+  `.key`); mensagens de erro não a ecoam. **T** + **I**.
 - **U-62** Sem `NV_TUNER_MINISIGN_KEY`, o job falha antes de compilar com
   “Secret NV_TUNER_MINISIGN_KEY ausente: a release não é publicada sem assinatura (ver
   CONTRIBUTING.md)”. **I** (workflow) + teste manual numa tag de ensaio em fork.
@@ -517,8 +558,9 @@ caminho de instalação e instala os três binários juntos).
 | `lancador.rs` | **único** ponto de `CreateProcessW` (msiexec) e `CreateProcessAsUserW` (agente), `IsProcessInJob`, `GetSystemDirectoryW`, mutex `_MSIExecute`, WTS e bloco de ambiente |
 | `testes.rs` | testes do `Atualizador` com fachadas falsas |
 
-Integração: `crates/nvt-service/src/laco.rs` (novo `Evento::Atualizacao`, prazo do
-agendador no `recv_timeout`, thread de trabalho, handle do msiexec), `nucleo.rs`
+Integração: `crates/nvt-service/src/laco.rs` (`ThreadAtualizacao`, que roda o
+`Atualizador` e dorme até o prazo devolvido por `tick`; `Exclusao` com o ciclo DRS;
+`portao_atualizacao`; sem `Evento::Atualizacao` nem handle do msiexec, D-04/D-08), `nucleo.rs`
 (projeção `Estado.atualizacao`, `MarcarAtualizacaoVista`), `usuario.rs` (lista de
 sessões com agente presente; `atualizacao_vista` por SID), `main.rs` (nenhum
 subcomando novo; `status` mostra o estado da atualização via `relatorio.rs`),
@@ -606,7 +648,9 @@ Requisição: `MarcarAtualizacaoVista { versao }`. `usuarios.json` ganha
 
 Ordem nova: (1) conferir tag × `Cargo.toml`; (2) **conferir secret** (U-62); (3) conferir
 versão > Latest (U-66); (4) compilar `nvt-service nvt-ui nvt-agente nvt-assinar`; (5)
-MSI; (6) SHA-256; (7) `nvt-assinar manifesto` e `assinar` (manifesto e MSI); (8) notas;
+MSI; (6) SHA-256; (7) `nvt-assinar assinar --versao X.Y.Z --msi <msi>` (manifesto e as
+duas assinaturas; antes, (4b) `nvt-assinar verificar` numa pasta vazia falha o job se a
+chave embutida for a provisória); (8) notas;
 (9) `gh release create --draft` com os cinco arquivos; (10) `gh release download` para
 pasta nova + `nvt-assinar verificar`; (11) esperar CI verde (U-64; `permissions:
 actions: read`); (12) `gh release edit --draft=false --latest`. O secret entra só nos
@@ -621,18 +665,23 @@ compartilhado pode ser envenenado por outro ref e entraria no binário assinado)
 
 ### 11.3 `CONTRIBUTING.md` (“Chave de assinatura” e “Como lançar”)
 
-Comandos exatos a documentar (minisign 0.11+ oficial, fora do repositório):
+Comandos exatos (implementados com `nvt-assinar`, D-06/D-07; documentados em
+`CONTRIBUTING.md`, “Chave de assinatura”):
 
 ```powershell
-# 1. Gerar (uma vez, máquina confiável, offline de preferência), sem senha (-W):
-minisign -G -W -p nv-tuner-minisign.pub -s nv-tuner-minisign.key
-# 2. Gravar o secret (GitHub CLI autenticado como mantenedor):
-Get-Content -Raw nv-tuner-minisign.key | gh secret set NV_TUNER_MINISIGN_KEY --repo luansilvadb/nv-tuner
-# 3. Copiar a linha base64 de nv-tuner-minisign.pub para crates/nvt-atualizacao/src/chave.rs
-#    e o arquivo para instalador/nv-tuner-minisign.pub; commit.
+# 1. Gerar (uma vez, máquina confiável, offline de preferência), sem senha:
+cargo run -p nvt-assinar -- gerar-chave --publica C:\chave\nv-tuner-minisign.pub --secreta C:\chave\nv-tuner-minisign.key
+# 2. Gravar só a linha base64 (Q11) no secret do Environment release, sem eco:
+(Get-Content C:\chave\nv-tuner-minisign.key)[1] | gh secret set NV_TUNER_MINISIGN_KEY --env release --repo luansilvadb/nv-tuner
+# 3. Copiar o .pub para instalador/nv-tuner-minisign.pub (substitui o marcador
+#    provisório; include_str! leva a chave aos binários); commit.
 # 4. Backup: guardar nv-tuner-minisign.key em dois meios offline (ex.: pendrive cifrado
 #    + cofre de senhas); apagar a cópia da máquina de trabalho.
 ```
+
+Também: criar o Environment `release` com regra só para tags `v*`, ruleset de tags
+`v*` restrito ao mantenedor e proteção da `main` (Q10); como apagar um rascunho que
+falhou antes de reexecutar.
 
 E o aviso: sem a chave, nenhuma máquina instalada aceita atualizações; perda da chave
 exige reinstalação manual em todas as máquinas; procedimento de rotação (§5.5).
@@ -650,7 +699,7 @@ disjuntos**. Pronto = critério testável + `cargo fmt --all -- --check`,
 
 | Tarefa | Escreve | Pronto quando |
 |---|---|---|
-| 0.1 Gerar chave, gravar secret, backup (§11.3) | nenhum arquivo do repositório (a linha pública é entregue à tarefa 1.1) | `gh secret list` mostra `NV_TUNER_MINISIGN_KEY`; backup confirmado pelo mantenedor |
+| 0.1 Gerar chave, gravar secret, backup (§11.3) — **adiada** (D-01): o lote 1 seguiu com o marcador provisório em `instalador/nv-tuner-minisign.pub`; agora é pré-requisito do lote 6 | `instalador/nv-tuner-minisign.pub` | `gh secret list --env release` mostra `NV_TUNER_MINISIGN_KEY`; `.pub` oficial commitado; backup confirmado pelo mantenedor |
 
 ### Lote 1 — núcleo puro e contratos (depende de 0)
 
@@ -701,7 +750,7 @@ lote) e as demais implementam.
 | 5.1 `nvt-assinar` | `crates/nvt-assinar/**` | U-60, U-61: teste gera chave temporária em memória, assina, verifica (com chave injetada no teste) e recusa adulteração |
 | 5.2 Workflow | `.github/workflows/release.yml` | §11.2; `actionlint` limpo; ensaio em fork com tag `v0.0.99`: sem secret falha (U-62), com secret fica em rascunho até CI verde e publica |
 | 5.3 WiX | `instalador/nv-tuner.wxs`, `instalador/nv-tuner-minisign.pub` | §11.1; `build-msi.ps1` gera MSI com ICE limpo |
-| 5.4 Documentação | `docs/arquitetura.md`, `docs/servico.md`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md` | U-54 (se 1.2 já não cobriu), U-67, §9.7 |
+| 5.4 Documentação | `docs/arquitetura.md`, `docs/servico.md`, `docs/ipc.md`, `docs/ui.md`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, esta spec (§4.1) e `docs/spec/atualizacao-laboratorio.md` (roteiro, sem resultados) | U-54 (se 1.2 já não cobriu), U-67, §9.7 |
 
 ### Lote 6 — laboratório e primeiro lançamento (depende de tudo)
 
@@ -718,6 +767,11 @@ lote) e as demais implementam.
 Servidor de teste: build de laboratório com `URL_BASE` e `CHAVE` trocadas **só** por
 feature de compilação `laboratorio` (desligada em release; teste U-15 garante), servindo
 de um repositório de ensaio no GitHub (fork) para exercitar redirecionamentos reais.
+Hoje o crate `nvt-atualizacao` define `laboratorio::{URL_BASE_ENSAIO, CHAVE_ENSAIO}`
+(de `NVT_ATUALIZACAO_URL_ENSAIO`/`NVT_ATUALIZACAO_CHAVE_ENSAIO` em compilação) e
+`Chave::ensaio()`, mas o serviço ainda usa só `URL_MANIFESTO` e `Chave::oficial()` e não
+repassa a feature: a ligação é pendência de código antes do laboratório. Roteiro
+detalhado, com campos de resultado: [`atualizacao-laboratorio.md`](atualizacao-laboratorio.md).
 
 | # | Caso | Esperado |
 |---|---|---|
@@ -732,6 +786,7 @@ de um repositório de ensaio no GitHub (fork) para exercitar redirecionamentos r
 | L-08 | Manifesto com versão igual e menor | recusado (U-17) |
 | L-09 | Outra instalação MSI em andamento | adia sem contar falha (1618/mutex) |
 | L-10 | MSI que falha (custom action forçada a 1603) 3 vezes | abandona a versão; publica maior → volta a tentar |
+| L-11 | Serviço novo que não inicia (Q12) | `ServiceControl Wait="yes"` falha o MSI, rollback religa o antigo, que lê o log e conta a falha |
 
 ---
 
@@ -767,14 +822,14 @@ de um repositório de ensaio no GitHub (fork) para exercitar redirecionamentos r
     estiver no commit; a assinatura não distingue. Proposto: ruleset de tags `v*` só para
     o mantenedor e branch protection na `main`; ações do workflow fixadas por SHA
     (hoje por tag móvel, `@v7`, `@stable`, `@v2`).
-11. **Q11 — mascaramento do secret de várias linhas**: o `.key` tem duas linhas; o
-    GitHub mascara por linha e a primeira (“untrusted comment: …”) é texto comum.
-    Proposto: gravar só a linha base64 e o `nvt-assinar` remontar a caixa; confirmar
-    no lote 5.1.
+11. **Q11 — mascaramento do secret de várias linhas** (resolvida, D-06): o `.key` tem
+    duas linhas; o GitHub mascara por linha e a primeira (“untrusted comment: …”) é
+    texto comum. O secret guarda só a linha base64 e o `nvt-assinar` remonta a caixa.
 12. **Q12 — serviço novo que não inicia**: `ServiceControl Wait="yes"` faz o MSI falhar e
     reverter (rollback religa o antigo, que conta a falha via log); se iniciar e cair
     depois, a recuperação do SCM (reinicia 2×, depois nada) deixa a máquina sem serviço e
-    sem atualizador até reinstalação manual. Aceitar ou pôr `ThirdFailureActionType`
-    também `restart` com `ResetPeriodInDays`.
+    sem atualizador até reinstalação manual. Decidido (D-09): `ThirdFailureActionType`
+    também `restart`, com `ResetPeriodInDays="1"`; L-11 do laboratório confirma o
+    rollback.
 13. **Q13 — Q3**: recomenda-se **não** aceitar `*.githubusercontent.com`; a lista exata
     é defesa em profundidade e mudança do GitHub vira falha de rede visível, não risco.

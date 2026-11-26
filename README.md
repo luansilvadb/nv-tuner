@@ -20,9 +20,46 @@ um driver). Espere bugs, mudanças de formato entre versões e regras ainda
 perfil do driver.
 
 - O MSI **não é assinado** digitalmente (veja o aviso do SmartScreen abaixo).
-- Os lançamentos são publicados como *pre-release*.
-- Não há atualização automática ainda: baixe a nova versão e instale por cima
-  (o instalador substitui a anterior).
+- Os lançamentos são publicados como release normal (Latest), assinados com
+  Minisign.
+- A partir da primeira versão com atualizador, o nv-tuner **se atualiza
+  sozinho** (veja [Atualização automática](#atualização-automática)).
+
+## Atualização automática
+
+O serviço do nv-tuner mantém o app na última versão estável publicada aqui no
+GitHub, **sem você fazer nada** e sem opção de desligar:
+
+- **Verifica a cada ~6 h** (a primeira vez entre 5 e 15 min depois de o serviço
+  iniciar), baixando só um manifesto pequeno de `github.com`. O pedido não leva
+  dados pessoais, identificador nem cookies; não há telemetria.
+- **Só instala versão assinada e maior que a instalada.** O manifesto e o MSI
+  são conferidos com a chave Minisign do projeto (embutida no app) e pelo SHA-256
+  antes de instalar; versão igual ou menor, ou assinatura inválida, é recusada.
+- **Nunca com jogo aberto:** usa o mesmo portão das gravações no driver; com jogo
+  ou anticheat aberto (ou lista de processos ilegível), espera e reavalia a cada
+  minuto.
+- **Silenciosa:** instala com `msiexec /qn /norestart`. **Nunca reinicia o
+  Windows**; se o instalador pedir reinício, a interface só avisa.
+- **Preserva seus ajustes:** a atualização não restaura nem apaga o perfil do
+  driver, os ajustes do Windows, os aceites nem o histórico.
+- O agente é reaberto sozinho nas sessões em que estava aberto; a interface, se
+  estava aberta, pede para ser fechada e aberta de novo. Depois, a **Visão geral**
+  mostra “Atualizado para a vX.Y.Z” uma vez e, sempre, a versão, a última
+  verificação e qualquer pendência.
+- **Sem internet**, nada é bloqueado: o app continua funcionando normalmente, a
+  Visão geral mostra “sem conexão com o GitHub” e a próxima tentativa é feita com
+  espera crescente (30 min, 1 h, 2 h… até 6 h).
+- Uma versão que falhar ao instalar 3 vezes é deixada de lado até sair outra maior.
+
+**Bootstrap:** versões anteriores ao atualizador (como a v0.0.2) não sabem se
+atualizar. Instale **uma vez, à mão**, a primeira versão com atualizador
+(baixe o MSI e instale por cima, como em [Instalação](#instalação)); dali em
+diante as atualizações são automáticas.
+
+Para conferir uma release à mão com o `minisign` oficial, veja “Verificação
+manual” no [CONTRIBUTING.md](CONTRIBUTING.md#verificação-manual-usuários) (a
+chave pública está em [`instalador/nv-tuner-minisign.pub`](instalador/nv-tuner-minisign.pub)).
 
 ## Instalação
 

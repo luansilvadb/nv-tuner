@@ -372,6 +372,90 @@ tarefa de restaurar seu snapshot, antes de qualquer aplicação, mesmo depois
 de “Aplicar agora” ou no próximo logon. O DRS mantém seu próprio retry sob o
 portão; o estado do agente mostra separadamente a pendência do usuário.
 
+## Atualização automática
+
+Especificação: [`docs/spec/atualizacao.md`](spec/atualizacao.md). Código:
+`crates/nvt-atualizacao` (núcleo puro: manifesto, Minisign, versões, política e
+máquina de estados `transicao`) e `crates/nvt-service/src/atualizacao/`
+(`mod.rs` = `Atualizador`; `fachadas.rs`, `http.rs` WinHTTP, `arquivo.rs`,
+`lancador.rs`). Não há subcomando, flag, chave de registro nem requisição IPC que
+a desligue; só `--somente-leitura` não sobe o atualizador.
+
+### Thread do atualizador e exclusão com o ciclo DRS
+
+`Integracao::iniciar_atualizacao` (`laco.rs`) sobe a thread `nvt-atualizacao`
+com as fachadas reais. `Atualizador::tick` é síncrono (rede e hash podem levar
+minutos) e devolve o próximo prazo; a thread dorme até ele, acorda cedo no stop
+(`cancelar`, que também faz a rede desistir) e recebe do laço as sessões com
+agente. Um pânico no `tick` é contido e desliga a atualização até o próximo
+início do serviço. O laço lê só a última projeção publicada (`estado.atualizacao`
+do IPC v6; `nao_vista` é calculado por SID pelo coordenador).
+
+A exclusão com o ciclo DRS é a `Exclusao` de `laco.rs`: a thread principal marca
+`drs` durante cada requisição, notificação e temporizador do núcleo; o portão do
+atualizador primeiro **reserva a instalação** (espera o ciclo DRS em curso
+terminar) e só então consulta o mesmo `nvt_engine::Portao`, com a base curada e
+os extras atuais. Reservada, nenhum ciclo DRS começa até o fim do `tick`. Portão
+fechado (jogo, anticheat, lista ilegível, base indisponível) → fase `pronta` e
+reavaliação a cada 60 s; mutex `Global\_MSIExecute` presente → 30 min.
+
+### Pasta protegida e estado
+
+Tudo fica em `%ProgramData%\nv-tuner\atualizacao\` (pasta obtida por
+`SHGetKnownFolderPath`, independente de `--estado-dir`), criada com dono
+Administradores e DACL protegida `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`, sem
+leitura de Usuários; nenhum componente do caminho pode ser reparse point.
+
+| Arquivo | Conteúdo |
+|---|---|
+| `estado.json` | estado persistido (§6.3 da spec): `maior_vista`, verificações, espera de rede, falhas por versão, abandonadas, `fase`, `ultima_atualizacao`, `ultima_falha` |
+| `estado.json.bak` | mesma gravação, a cada mudança; se `estado.json` estiver ilegível, recupera ao menos `maior_vista` (nunca abaixo da versão instalada) |
+| `nv-tuner-X.Y.Z-x64.msi(.parcial)` | download; `.parcial` criado com `CREATE_NEW`, sem reparse, compartilhamento só de leitura |
+| `instalacao-X.Y.Z.log` | log `/l*v` do msiexec |
+
+Gravação por arquivo privado + troca atômica; falha ao persistir desfaz a
+transição em memória e nada é lançado. No início, a limpeza apaga `.parcial`,
+MSIs e logs que não sejam da última instalação, sem seguir links.
+
+O MSI é verificado (tamanho e SHA-256) lendo pelo **mesmo handle** que o
+escreveu, renomeado pelo handle e trocado por um handle só de leitura que nega
+escrita e exclusão a terceiros (via handle intermediário; o hash é recalculado no
+handle final). Esse handle fica aberto até o serviço parar, a fase sair de
+`pronta`/`instalando` ou 30 min após o lançamento.
+
+### Portão antes do lançamento e o lançamento
+
+Imediatamente antes de lançar: reserva contra o DRS, portão, persistência de
+`fase = instalando` com `sessoes_agente` (`[{sessao, sid}]` das sessões com agente
+conectado). Só então `lancador::lancar_msiexec` (única exceção à regra “nenhum
+processo externo”, ver [`docs/arquitetura.md`](arquitetura.md#segurança-do-serviço)).
+O serviço **não guarda handle do msiexec** nem espera por ele; o registro do
+lançamento (de/para, SHA-256, caminhos, PID, flags, breakaway recusado, horário)
+vai para o log do serviço.
+
+### Depois do upgrade
+
+O msiexec para o serviço (Restart Manager fecha agente e UI), troca os arquivos e
+inicia o serviço novo. Com `fase = instalando`, o `Atualizador` lê o código da
+linha `MainEngineThread is returning N` no log `/l*v` (até 8 MiB do fim, sem
+reparse) e, sem código, presume sucesso se a própria versão for a de destino:
+
+- 0/3010 (3010 = reinício pendente, só informado) → `ultima_atualizacao`, limpa
+  as falhas da versão e relança o agente;
+- 1618 → adia 30 min sem contar; 1625 → abandona; outros → conta falha (3ª
+  abandona a versão até surgir uma maior);
+- versão antiga e log ainda sem código (msiexec terminando, ou rollback) → relê o
+  log a cada 60 s por até 2 h; depois disso conta falha com código `-1`.
+
+O relançamento (`lancador::relancar_agente`) ocorre uma vez, só nas sessões
+gravadas que estão ativas, sem agente presente e cujo token tem o mesmo SID; a
+lista é apagada (persistida) antes. Falha só é registrada: o agente volta no
+próximo logon pela entrada `Run`.
+
+`status` mostra a versão instalada, a fase, a última e a próxima verificação, o
+último resultado, a última atualização e a última falha, lendo o estado
+persistido.
+
 ## Estado e logs
 
 Em `<estado-dir>`:

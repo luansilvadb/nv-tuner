@@ -152,9 +152,30 @@ explicitamente.
 - Valores são validados por tipo e faixa antes da gravação.
 - **Nenhum componente executa processos externos** (nem `powercfg.exe`,
   `bcdedit.exe`, `reg.exe`, `cmd.exe`): toda ação usa APIs Win32/NVAPI
-  diretamente. Exceção: o instalador.
+  diretamente. Exceções: o instalador e a **atualização automática**, abaixo.
+- **Exceção auditada (atualização automática).** Um único arquivo de produção,
+  `crates/nvt-service/src/atualizacao/lancador.rs`, cria processos, e só dois:
+  - o `msiexec.exe` do upgrade: caminho montado por `GetSystemDirectoryW` +
+    `\msiexec.exe` em `lpApplicationName` (nunca o PATH), linha de comando fixa
+    `/i "<msi>" /qn /norestart /l*v "<log>"`, caminhos só da pasta protegida com
+    nome validado, `bInheritHandles = FALSE`, diretório atual System32, ambiente
+    mínimo e `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+    CREATE_UNICODE_ENVIRONMENT` (mais `CREATE_BREAKAWAY_FROM_JOB` se o serviço
+    estiver num job); o serviço não espera o processo;
+  - o relançamento do `nvt-agente.exe` na sessão do usuário depois do upgrade:
+    `WTSQueryUserToken` + `CreateEnvironmentBlock` + `CreateProcessAsUserW`, só o
+    executável fixo da pasta de instalação (filha de `%ProgramFiles%`, sem
+    reparse), só nas sessões gravadas antes do upgrade e com o mesmo SID, uma vez.
+
+  `crates/nvt-core/tests/proibicoes.rs` proíbe `CreateProcess*`, `ShellExecute*`,
+  `WinExec` e `Command::new` em todo o código e permite exatamente uma ocorrência
+  de `CreateProcessW` e uma de `CreateProcessAsUserW` em `lancador.rs` (contagem a
+  mais **ou a menos** falha). Alternativa rejeitada: `MsiInstallProduct` dentro do
+  serviço, que trava com o `StopServices` do próprio pacote
+  (`docs/spec/atualizacao.md` A6).
 - O serviço **grava** apenas no DRS (via NVAPI) e nos seus diretórios de
-  estado (inclusive `usuarios.json`, com aceites e recibos por SID). Nunca
+  estado (inclusive `usuarios.json`, com aceites e recibos por SID, e a subpasta
+  `atualizacao\`, só SYSTEM/Administradores). Nunca
   abre arquivos do perfil do usuário em nome do agente.
 - O agente **grava** só no perfil do próprio usuário: o DWORD
   `HistoricalCaptureEnabled`, o token `SwapEffectUpgradeEnable` dentro de
@@ -177,3 +198,30 @@ O MSI instala os três executáveis (`nvt-service`, `nvt-ui`, `nvt-agente`)
 juntos, sem negociação de versão do protocolo. Builds de desenvolvimento
 são sem assinatura; a assinatura de código dos executáveis e do MSI é
 pré-requisito de lançamento da Fase 2 (D3) e ainda está pendente.
+
+### Atualização automática
+
+Especificação: [`docs/spec/atualizacao.md`](spec/atualizacao.md); detalhes do
+serviço em [`docs/servico.md`](servico.md#atualização-automática). Obrigatória,
+sem opção de desligar, nunca reinicia o Windows.
+
+```
+release.yml (tag v*, Environment release)
+  MSI ─► nvt-assinar assinar ─► atualizacao.json(.minisig) + msi.minisig
+      ─► rascunho ─► baixa e verifica ─► CI verde na main ─► Latest
+
+serviço (LocalSystem), thread nvt-atualizacao
+  5–15 min após iniciar, depois 6 h ± 30 min
+  WinHTTP (proxy do sistema, só hosts do GitHub) ─► manifesto + assinatura
+  ─► Minisign com a chave embutida (instalador/nv-tuner-minisign.pub)
+  ─► versão > instalada e ≥ maior vista ─► MSI para %ProgramData%\nv-tuner\atualizacao
+  ─► tamanho + SHA-256 pelo handle ─► handle só de leitura mantido
+  ─► reserva contra o ciclo DRS + portão de processos (jogo aberto adia)
+  ─► persiste "instalando" ─► lancador: msiexec /qn /norestart, sem esperar
+msiexec: Restart Manager fecha agente/UI ─► para o serviço ─► troca arquivos ─► inicia o serviço
+serviço novo: lê o código no log /l*v ─► registra ─► relança o agente ─► IPC v6 informa a UI
+```
+
+A chave pública vem de `instalador/nv-tuner-minisign.pub` por `include_str!`;
+enquanto o arquivo tiver o marcador provisório, toda verificação falha fechada e o
+workflow de release se recusa a publicar.

@@ -31,6 +31,26 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - **Restaurar original** cobre o driver e o Windows; a restauração tem uma geração persistida no serviço, e um agente que estava fora (logoff, reinício) restaura quando voltar. A interface separa “driver concluído” de “usuário pendente”.
 - Instalador: inclui `nvt-agente.exe` e a entrada de inicialização no logon (removida na desinstalação); o Restart Manager fecha o agente de forma cooperativa na atualização e na remoção.
 
+*Atualização automática*
+
+> Pendência de lançamento: `instalador/nv-tuner-minisign.pub` ainda tem a chave **provisória**; enquanto o mantenedor não gravar a oficial (CONTRIBUTING.md, “Chave de assinatura”), todo release falha e todo serviço recusa atualização. A primeira versão com atualizador é instalada à mão (bootstrap).
+
+### Adicionado
+
+- **Atualização automática, obrigatória e silenciosa.** O serviço verifica a release Latest do GitHub entre 5 e 15 min após iniciar e depois a cada ~6 h, baixa o MSI para `%ProgramData%\nv-tuner\atualizacao` (pasta só SYSTEM/Administradores) e instala com `msiexec /qn /norestart`, sem reiniciar o Windows e sem restaurar nem apagar ajustes. Sem opção de desligar.
+- **Só versão assinada e maior:** manifesto `atualizacao.json` assinado com Minisign (pré-hash, comentário confiável com a versão), MSI amarrado por tamanho e SHA-256, proteção contra downgrade e replay pela maior versão já vista; a chave pública vem de `instalador/nv-tuner-minisign.pub`.
+- **Nunca com jogo aberto:** o portão de processos é consultado imediatamente antes de lançar o instalador, em exclusão mútua com o ciclo DRS; adiamento reavaliado a cada 60 s. Outra instalação do Windows em andamento adia 30 min.
+- **Sem internet, nada bloqueia:** espera crescente de 30 min até 6 h; `Retry-After` respeitado. Três falhas de instalação da mesma versão a abandonam até surgir outra maior.
+- Depois do upgrade, o serviço novo lê o resultado no log do instalador, relança o agente uma vez nas sessões (do mesmo usuário) que o tinham aberto, e a **Visão geral** mostra a versão, a última verificação, pendências e “Atualizado para a vX.Y.Z” uma vez por usuário. `nvt-service status` mostra o estado da atualização.
+- Ferramenta do mantenedor `nvt-assinar` (`gerar-chave`, `assinar`, `verificar`), fora do MSI.
+- Release: secret de assinatura só no Environment `release` (tags `v*`), rascunho, verificação dos arquivos baixados com o mesmo verificador do serviço, espera do CI verde na `main` e só então Latest.
+
+### Alterado
+
+- Protocolo entre interface, agente e serviço atualizado para a **v6** (`estado.atualizacao` e requisição `marcar_atualizacao_vista`; sem compatibilidade com a v5). O agente trata serviço de outra versão como indisponível temporário durante o upgrade.
+- Exceção auditada à regra “nenhum processo externo”: só `nvt-service::atualizacao::lancador` cria processos (msiexec e o relançamento do agente), vigiado por teste com contagem exata.
+- Instalador: `REBOOT=ReallySuppress`, `ARPURLINFOABOUT`, e o SCM reinicia o serviço também a partir da 3ª falha (sem serviço não há atualizador).
+
 *Fase competitiva 1: driver e fatos dos jogos*
 
 ### Adicionado
