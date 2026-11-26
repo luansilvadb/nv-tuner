@@ -6,20 +6,29 @@ mudanças relevantes devem ser registradas aqui.
 ## Escopo
 
 - Somente Windows e GPUs NVIDIA.
-- Nesta versão atua **apenas na camada `driver`**: perfis DRS (global e por
-  aplicativo) via NVAPI, com FFI própria em Rust — sem depender de
-  ferramentas externas ou de .NET. As camadas `windows` e `jogo`
-  (`docs/spec/competitivo.md`, fases 2 e 3) ainda não existem.
-- A camada `driver` tem snapshot do original, releitura após gravar,
-  histórico e restauração.
+- Atua em **camadas de ajuste**: `driver` (perfis DRS, global e por
+  aplicativo, via NVAPI com FFI própria em Rust, sem ferramentas externas nem
+  .NET) e `windows` (registro do usuário, parâmetros do sistema e modo de
+  vídeo, só os quatro itens da lista permitida de `regras/windows.toml`). A
+  camada `jogo` (`docs/spec/competitivo.md`, fase 3) ainda não existe.
+- Cada camada tem snapshot do original, releitura após gravar, histórico e
+  restauração. A camada `windows` usa um modelo paralelo
+  (`nvt_core::usuario`) e não altera o estado DRS v1 (decisão D5 de
+  `docs/spec/competitivo.md` §12).
+- Regras experimentais (de qualquer camada; hoje todas as da camada
+  `windows`) só entram no plano com aceite explícito do usuário, por regra
+  (D2).
 - Não injeta código, não abre handle para processos de jogos ou de
   anticheats (jogos abertos são vistos só pela lista de processos,
   `TH32CS_SNAPPROCESS`, por nome), não altera executáveis nem arquivos da
   pasta de instalação dos jogos (só os lê, com compartilhamento total) e não
   altera recursos de segurança do sistema.
-- Não grava no DRS enquanto detecta jogo ou anticheat vigiado em execução: a
-  gravação fica adiada e roda quando o jogo fecha (portão único de gravação,
-  `crates/nvt-engine/src/portao.rs`).
+- Não grava no DRS nem no Windows enquanto detecta jogo ou anticheat vigiado
+  em execução: a gravação fica adiada e roda quando o jogo fecha (portão
+  único de gravação, `crates/nvt-engine/src/portao.rs`, usado pelo serviço e
+  pelo agente).
+- Não grava no BCD nem altera TPM, Secure Boot ou VBS/HVCI; esses itens só
+  aparecem como diagnóstico (D1).
 
 ## Camadas
 
@@ -31,9 +40,23 @@ mudanças relevantes devem ser registradas aqui.
    regras, avaliador e plano de configuração.
 4. **`nvt-telemetry`** — medição passiva via PresentMon CLI (a partir da v0.2).
 5. **`nvt-ipc`** — protocolo versionado (serde) do named pipe.
-6. **`nvt-service`** — serviço do Windows com privilégios; único componente que
-   grava no driver.
-7. **`nvt-ui`** — interface sem privilégios de administrador.
+6. **`nvt-service`** — serviço do Windows com privilégios; **único avaliador**
+   e único componente que grava no driver. Coordena os agentes por SID e
+   sessão (`src/usuario.rs`) e coleta os diagnósticos de máquina.
+7. **`nvt-windows`** — fachadas dos ajustes do usuário (`registro.rs`,
+   `token.rs`, `mouse.rs`, `tela.rs`) e diagnósticos somente leitura
+   (`diagnosticos.rs`, cuja interface não tem operação de escrita).
+8. **`nvt-agente`** — processo interativo sem privilégios, um por sessão
+   (mutex `Local\nv-tuner-agente`), iniciado no logon pela entrada `Run` de
+   HKLM. Executa as tarefas da camada `windows` que o serviço planeja,
+   guarda snapshot e estado em `%LOCALAPPDATA%\nv-tuner\usuario` e lê os
+   diagnósticos de sessão (decisão D4).
+9. **`nvt-ui`** — interface sem privilégios de administrador.
+
+O serviço não grava no Windows: o HKCU e as APIs de modo de vídeo e de
+parâmetros do sistema são da sessão interativa, e o serviço roda na sessão
+0. Por isso a gravação da camada `windows` fica no agente, que não decide
+nada: recebe ações tipadas, confere o portão, grava, relê e relata.
 
 O UAC é solicitado apenas na instalação (registro do serviço). No uso diário a
 UI não precisa de elevação.
@@ -85,6 +108,9 @@ detecção ──► fatos + capacidades ──► regras (TOML) + preferências
    com valor anterior, valor novo e regra de origem.
 5. O **serviço** calcula o plano, valida e aplica, guardando o histórico
    para rollback; a UI só pede ações pelo named pipe.
+6. Na camada `windows`, o **agente** envia os fatos da sessão
+   (`agente_consultar`), recebe as tarefas do plano do seu usuário, executa
+   sob o portão, relê e confirma com `agente_relatar`.
 
 ## Modelo de decisão
 
@@ -128,7 +154,15 @@ explicitamente.
   `bcdedit.exe`, `reg.exe`, `cmd.exe`): toda ação usa APIs Win32/NVAPI
   diretamente. Exceção: o instalador.
 - O serviço **grava** apenas no DRS (via NVAPI) e nos seus diretórios de
-  estado.
+  estado (inclusive `usuarios.json`, com aceites e recibos por SID). Nunca
+  abre arquivos do perfil do usuário em nome do agente.
+- O agente **grava** só no perfil do próprio usuário: o DWORD
+  `HistoricalCaptureEnabled`, o token `SwapEffectUpgradeEnable` dentro de
+  `DirectXUserGlobalSettings` (preservando os demais tokens), o trio SPI do
+  mouse e o modo de vídeo por `SetDisplayConfig` (mesma topologia, resolução
+  e profundidade), além do seu estado local.
+- A identidade de quem chama o pipe vem do token do cliente; SID ou sessão no
+  corpo da mensagem nunca dão autoridade.
 - O serviço **lê** arquivos fora do seu estado só para detecção: pastas de
   instalação dos jogos (executáveis, com compartilhamento total
   `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`, handle curto,
@@ -139,4 +173,7 @@ explicitamente.
 ## Distribuição
 
 Instalador MSI publicado em GitHub Releases com hash SHA-256 para conferência.
-Inicialmente sem certificado de assinatura de código.
+O MSI instala os três executáveis (`nvt-service`, `nvt-ui`, `nvt-agente`)
+juntos, sem negociação de versão do protocolo. Builds de desenvolvimento
+são sem assinatura; a assinatura de código dos executáveis e do MSI é
+pré-requisito de lançamento da Fase 2 (D3) e ainda está pendente.

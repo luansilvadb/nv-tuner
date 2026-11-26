@@ -39,10 +39,11 @@ converte para o seu modelo interno.
   | Limite | Padrão | Ao exceder |
   |---|---|---|
   | Duração de uma conexão | 5 min | nenhuma leitura nova; a conexão é encerrada (vale também para quem manda um byte por vez) |
-  | Requisições por conexão | 1000 | a seguinte recebe `ocupado` e a conexão é encerrada |
+  | Requisições por conexão | 1 (v5) | depois da resposta, qualquer byte extra encerra a conexão sem despachar outro quadro |
   | Taxa (balde de fichas do servidor) | 10/s, rajada de 20 | `ocupado` sem chamar o tratador; a conexão continua. O balde não se renova ao reconectar |
 
-  A UI abre uma conexão por requisição e fica muito abaixo desses limites.
+  A UI e o agente abrem uma conexão por requisição e ficam muito abaixo
+  desses limites.
 - A espera de uma parada (`Parada`) devolve `ConnectionAborted`, e não
   `Interrupted`, para que leituras com repetição automática não girem em
   falso depois da parada.
@@ -77,7 +78,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 ## Envelope e versão
 
 ```json
-{"versao": 4, "corpo": { "tipo": "...", ... }}
+{"versao": 5, "corpo": { "tipo": "...", ... }}
 ```
 
 - `versao` é conferida **antes** de interpretar `corpo`. Versão diferente de
@@ -100,6 +101,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | 2 | `estado.avisos`; `plano.reversoes` e `plano.ignorados` |
 | 3 | `plano.jogos` (fatos por jogo e explicação: regras aplicadas e não aplicadas com motivo, herança do global) |
 | 4 | Fase 1 competitiva (`docs/spec/competitivo.md` §7.6, só o que a fase 1 usa): `capacidades.refresh_mhz` e `capacidades.vrr` (objeto, antes `bool`); `jogo.competitivo`, `jogo.em_execucao`, `jogo.orientacoes`; `estado.adiamento` (com `lista_indisponivel`); `plano.adiada`; resposta `restauracao` (antes `ok`) para `restaurar_original`; resposta `adiada` para `definir_preferencias`/`destravar_setting` adiados; avisos `gsync_sem_vrr`, `vrr_desligado_no_painel` e `acao_pendente_descartada`; motivos `vrr_inativo` e `jogo_com_reflex`. As variantes de camada (Windows/jogo) ficam para a v5 |
+| 5 | Fase 2 (camada Windows, decisão D6): identidade do cliente pelo token; requisições `agente_consultar`, `agente_relatar`, `definir_aceite_experimental` e `reverter_ajuste_usuario`; respostas `plano_agente` e `encerrar`; `estado.agente` e `estado.diagnosticos`; `plano.sistema` (`ResumoSistema`) e `plano.sugestoes_driver`; erro `identidade_indisponivel`. Mensagens v4 são recusadas antes de desserializar o corpo |
 
 ## Requisições (`corpo.tipo`)
 
@@ -114,6 +116,10 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | `travar_setting`        | `perfil`, `setting`                                        |
 | `destravar_setting`     | `perfil`, `setting`                                        |
 | `reescanear_jogos`      | —                                                          |
+| `agente_consultar`      | `fatos` (fatos da sessão e diagnósticos de sessão), `ultima_tarefa` (estado da última tarefa ou `null`), `geracao_restaurada` |
+| `agente_relatar`        | `id_tarefa`, `operacao`, `revisao`, `resultados[]` (`destino`, `status`, `detalhe`, `mudanca`) |
+| `definir_aceite_experimental` | `regra` (ID), `aceito` (bool)                        |
+| `reverter_ajuste_usuario` | `destino` (setting de usuário tipada), `alvo_tela` (opcional, caminho estável do monitor) |
 
 - `sincronismo`: `desligado` \| `v_sync` \| `g_sync`.
 - `qualidade`: `desempenho` \| `equilibrado` \| `qualidade`.
@@ -129,7 +135,7 @@ validação semântica (lista permitida, existência do perfil) é do serviço.
 Exemplo:
 
 ```json
-{"versao":4,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
+{"versao":5,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
 ```
 
 ## Respostas (`corpo.tipo`)
@@ -141,8 +147,43 @@ Exemplo:
 | `historico` | `entradas[]`                                                    |
 | `restauracao` | `adiada` (resposta de `restaurar_original`)                   |
 | `adiada`    | `adiamento` (resposta de `definir_preferencias`/`destravar_setting` aceitos com a aplicação pendente) |
+| `plano_agente` | `revisao`, `geracao_restauracao`, `tarefa` (ações tipadas ou `null`), `processos_vigiados` (resposta de `agente_consultar`) |
+| `encerrar`  | instrui o agente a encerrar; o serviço atual não a emite       |
 | `ok`        | —                                                               |
 | `erro`      | `codigo`, `mensagem`                                            |
+
+A partir da v5, `estado` traz também `agente` (presença e status do agente
+da sessão chamadora, inclusive restauração pendente) e `diagnosticos`
+(código e estado: conhecido, indisponível ou orientação; a UI traduz), e
+`plano` traz `sistema` (`ResumoSistema` da camada Windows do SID chamador:
+ajustes geridos e sugestões experimentais) e `sugestoes_driver` (experimentais
+de driver com o estado do aceite).
+
+## Identidade do cliente e mensagens do agente (v5)
+
+- Depois de ler a requisição, o servidor chama `ImpersonateNamedPipeClient`
+  e `OpenThreadToken`, obtém `TokenUser` (SID) e `TokenSessionId` e volta a
+  si com `RevertToSelf` (guarda que reverte mesmo em erro) **antes** de
+  despachar. Token anônimo, falha de identificação ou falha ao reverter
+  recusam a requisição (`identidade_indisponivel`). A identificação ocorre
+  depois da versão, da taxa e da validação de forma. A `IdentidadeCliente`
+  (SID e sessão) segue com o pedido até o tratador.
+- SID ou sessão presentes no corpo **nunca** dão autoridade: só o token
+  conta. A validação de forma e os limites valem também para clientes do
+  mesmo SID.
+- `obter_estado`, `obter_plano` e `listar_historico` projetam a camada
+  Windows e o agente **do SID e da sessão chamadores**; um usuário não vê os
+  dados de outro.
+- O agente usa `agente_consultar` no logon, quando os fatos mudam e a cada
+  60 s (com retentativa espaçada e jitter); a presença expira em três
+  minutos sem contato. `agente_relatar` confirma o resultado de uma tarefa:
+  o serviço confere o par SID/sessão, o identificador da tarefa, a revisão e
+  os tipos; repetição do mesmo relato é idempotente.
+- `definir_aceite_experimental` e `reverter_ajuste_usuario` valem para o SID
+  chamador. A reversão individual cria uma trava e usa o valor de antes da
+  gestão.
+- Uma requisição e uma resposta por conexão; o trabalho do agente (gravar,
+  reler) acontece fora da conexão.
 
 `aplicar_agora` responde `plano` (com o resultado da aplicação) e
 `restaurar_original` responde `restauracao`. `definir_preferencias` e

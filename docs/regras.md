@@ -25,8 +25,10 @@ binário (`ConjuntoRegras::embutido()` e `BaseJogos::embutida()`).
 | `regras/settings.toml` | Catálogo: nome simbólico → ID DRS e valores aceitos. É também a lista permitida do serviço |
 | `regras/base.toml` | Regras base (baseline global, sincronismo, energia por jogo competitivo, DLSS) |
 | `regras/jogos.toml` | Base curada de jogos competitivos (ver “Base curada de jogos”); não tem regras, só fatos e orientações |
+| `regras/windows.toml` | Camada de usuário (Windows): catálogo embutido dos quatro destinos e suas regras (ver “Camada de usuário”) |
 
-Todo arquivo começa com `versao_schema = 1`.
+Os arquivos da camada de driver começam com `versao_schema = 1`;
+`regras/windows.toml` usa `versao_schema = 2`.
 
 ## Catálogo (`settings.toml`)
 
@@ -235,6 +237,15 @@ nenhuma orientação.
    para `plan.descartes` com o motivo.
 4. **Status.** Só `estavel` entra no plano automático. `experimental` que casa
    aparece em `plan.experimentais` como sugestão, com as mudanças que faria.
+   **Aceite de experimental** (Fase 2, D2): o avaliador recebe o conjunto de
+   IDs aceitos (`avaliar_com_aceites`); uma experimental aceita entra no
+   plano com a mesma precedência e os mesmos filtros das estáveis, e a
+   explicação leva o código `ExperimentalAceitaPorVoce`. Vale para as
+   experimentais de driver (inclusive as da Fase 1) e da camada de usuário.
+   No driver, o conjunto é o do SID da sessão de console ativa (o DRS é
+   compartilhado); sem SID elegível, é vazio. Retirar o aceite recalcula os
+   vencedores: se a setting sair do plano, o driver usa a reversão existente
+   e a camada de usuário volta ao valor de antes da gestão.
 5. **Conflitos** (mesmo alvo e mesma setting), em ordem:
    1. **preferência direta** do usuário (hoje: `limite_fps` → setting
       `limite_fps` no global) vence tudo;
@@ -343,6 +354,54 @@ DLSS”); a de energia aparece em `nao_aplicadas` como
 `CondicaoNaoAtendida { condicao: "jogo_competitivo" }`, que tem a menor
 relevância no resumo curto da UI. O `motivo` fala só em consistência de
 clock, nunca em ganho de latência.
+
+## Camada de usuário (`windows.toml`)
+
+Modelo paralelo em `nvt_core::usuario` (decisão D5): não usa `DriverStore`
+nem o estado DRS. O avaliador do serviço gera um `PlanoUsuario` por SID, e
+o agente da sessão executa as ações; a explicação vai para `ResumoSistema`.
+
+- **Escopo** `usuario` (único válido neste arquivo). IDs precisam ser únicos
+  também entre as camadas.
+- **Catálogo** (`[catalogo.<destino>]`): os quatro destinos são fixos no
+  código; o TOML só nomeia os valores aceitos de cada um. TOML e IPC carregam
+  apenas a seleção do destino tipado, nunca caminhos de registro.
+
+  | Destino | Valores | Onde o agente grava |
+  |---|---|---|
+  | `tela_refresh` | `maximo_nativo`, `original` | modo de vídeo (`SetDisplayConfig`, mesma topologia, resolução e profundidade, taxa racional) |
+  | `mouse_aceleracao` | `off` = `[0, 0, 0]`, `original` | trio SPI do mouse (`SPI_SETMOUSE`); sensibilidade intocada |
+  | `dx_swap_effect_upgrade` | `on` = `"1"`, `off` = `"0"`, `ausente` | token `SwapEffectUpgradeEnable` em `DirectXUserGlobalSettings` (HKCU) |
+  | `gamedvr_captura_historica` | `off` = 0, `on` = 1, `ausente` | DWORD `HistoricalCaptureEnabled` (HKCU) |
+
+- **Condições novas** (só nesta camada; **desconhecido difere de ausente e
+  não casa**):
+
+  | Condição | Tipo | Casa quando |
+  |---|---|---|
+  | `windows_build_min` | inteiro | build do Windows (lido com `RtlGetVersion`) ≥ valor |
+  | `refresh_abaixo_do_maximo` | bool | a taxa atual está (ou não) abaixo da maior taxa disponível na mesma resolução e profundidade |
+  | `mouse_aceleracao_ligada` | bool | o trio SPI indica (ou não) aceleração ligada |
+  | `swap_effect_upgrade` | lista: `on`, `off`, `ausente` | estado do token na lista |
+  | `captura_historica_ligada` | bool | `HistoricalCaptureEnabled` vale (ou não) 1 |
+
+- **Condições corretivas não se autodesativam**: enquanto a setting estiver
+  gerida e a releitura bater com o esperado, a condição é avaliada sobre o
+  valor de antes da gestão. Se uma mudança manual invalidar o valor gerido,
+  a escolha detectada é preservada (trava) e explicada na UI.
+
+Regras atuais (todas `experimental`, `impacto_visual = "nenhum"`, só valem
+com aceite):
+
+| ID | Quando | Aplica |
+|---|---|---|
+| `windows-refresh-maximo` | `refresh_abaixo_do_maximo = true` | `tela_refresh = "maximo_nativo"` |
+| `windows-mouse-sem-aceleracao` | `mouse_aceleracao_ligada = true` | `mouse_aceleracao = "off"` |
+| `windows-otimizacoes-janela` | `windows_build_min = 22000`, `swap_effect_upgrade = ["off", "ausente"]` | `dx_swap_effect_upgrade = "on"` |
+| `windows-captura-historica-off` | `captura_historica_ligada = true` | `gamedvr_captura_historica = "off"` |
+
+A promoção para `estavel` exige o teste de laboratório correspondente
+(L2-1 a L2-4) registrado em `docs/spec/fase2-laboratorio.md`.
 
 ## Como contribuir com uma regra
 

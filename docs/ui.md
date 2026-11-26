@@ -291,6 +291,14 @@ Avisos mostra o texto próprio da UI (`textos::SNAPSHOT_ORIGINAL_PERDIDO`):
 “Restaurar original” passa a voltar à base pós-quarentena, que pode já
 conter mudanças do nv-tuner, e não ao estado anterior ao app.
 
+A partir da v5, o pedido cobre as duas camadas: o serviço restaura o driver
+e avança a geração de restauração, e o agente de cada sessão restaura os
+ajustes do Windows do seu usuário (no próximo contato ou no próximo logon,
+se estiver ausente). A tela distingue driver concluído de usuário pendente.
+Antes de desinstalar, cada usuário da máquina que tenha ajustes do Windows
+deve usar este botão: a desinstalação com `RESTAURAR_PERFIL=1` só restaura
+o usuário que a executa.
+
 ## Textos e tradução
 
 Todas as frases da interface estão em `crates/nvt-ui/src/textos.rs`

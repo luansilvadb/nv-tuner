@@ -17,6 +17,7 @@ struct RegistroFalso {
     valores: RefCell<BTreeMap<DestinoRegistro, ValorRegistro>>,
     escritas: Cell<usize>,
     ignorar: Cell<bool>,
+    log: RefCell<Vec<&'static str>>,
 }
 
 impl RegistroFalso {
@@ -35,10 +36,12 @@ impl RegistroFalso {
 
 impl Registro for &RegistroFalso {
     fn ler(&self, destino: DestinoRegistro) -> Result<Option<ValorRegistro>, Erro> {
+        self.log.borrow_mut().push("ler");
         Ok(self.valores.borrow().get(&destino).cloned())
     }
 
     fn gravar_captura(&self, valor: Option<bool>) -> Result<(), Erro> {
+        self.log.borrow_mut().push("gravar");
         self.escritas.set(self.escritas.get() + 1);
         if !self.ignorar.get() {
             self.definir(
@@ -49,10 +52,8 @@ impl Registro for &RegistroFalso {
         Ok(())
     }
 
-    fn gravar_directx(&self, esperado: Option<&str>, valor: Option<&str>) -> Result<(), Erro> {
-        if self.ler(DestinoRegistro::DirectX)? != esperado.map(|s| ValorRegistro::Sz(s.into())) {
-            return Err(Erro::Alterado);
-        }
+    fn gravar_directx(&self, valor: Option<&str>) -> Result<(), Erro> {
+        self.log.borrow_mut().push("gravar");
         self.escritas.set(self.escritas.get() + 1);
         if !self.ignorar.get() {
             self.definir(
@@ -68,6 +69,7 @@ struct SpiFalso {
     trio: Cell<[i32; 3]>,
     escritas: Cell<usize>,
     ignorar: Cell<bool>,
+    log: RefCell<Vec<&'static str>>,
 }
 
 impl Default for SpiFalso {
@@ -76,16 +78,19 @@ impl Default for SpiFalso {
             trio: Cell::new([5, 12, 2]),
             escritas: Cell::default(),
             ignorar: Cell::default(),
+            log: RefCell::default(),
         }
     }
 }
 
 impl Spi for &SpiFalso {
     fn ler(&self) -> Result<[i32; 3], Erro> {
+        self.log.borrow_mut().push("ler");
         Ok(self.trio.get())
     }
 
     fn gravar(&self, trio: [i32; 3]) -> Result<(), Erro> {
+        self.log.borrow_mut().push("gravar");
         self.escritas.set(self.escritas.get() + 1);
         if !self.ignorar.get() {
             self.trio.set(trio);
@@ -113,6 +118,7 @@ struct DisplayFalso {
     resultados: RefCell<VecDeque<RefreshRacional>>,
     preparadas: RefCell<Vec<RefreshRacional>>,
     escritas: RefCell<Vec<RefreshRacional>>,
+    log: RefCell<Vec<&'static str>>,
 }
 
 impl Default for DisplayFalso {
@@ -123,6 +129,7 @@ impl Default for DisplayFalso {
             resultados: RefCell::default(),
             preparadas: RefCell::default(),
             escritas: RefCell::default(),
+            log: RefCell::default(),
         }
     }
 }
@@ -131,6 +138,7 @@ impl Display for &DisplayFalso {
     type Configuracao = RefreshRacional;
 
     fn ler(&self, alvo: &str) -> Result<RefreshRacional, Erro> {
+        self.log.borrow_mut().push("ler");
         if alvo != "monitor-estavel" {
             return Err(Erro::AlvoIndisponivel);
         }
@@ -145,11 +153,18 @@ impl Display for &DisplayFalso {
         alvo: &str,
         taxa: RefreshRacional,
     ) -> Result<(RefreshRacional, Self::Configuracao), Erro> {
+        self.log.borrow_mut().push("preparar");
         self.preparadas.borrow_mut().push(taxa);
         Ok((self.ler(alvo)?, taxa))
     }
 
+    fn conferir(&self, _: &Self::Configuracao) -> Result<(), Erro> {
+        self.log.borrow_mut().push("conferir");
+        Ok(())
+    }
+
     fn gravar(&self, taxa: Self::Configuracao) -> Result<(), Erro> {
+        self.log.borrow_mut().push("gravar");
         self.escritas.borrow_mut().push(taxa);
         self.taxa
             .set(self.resultados.borrow_mut().pop_front().unwrap_or(taxa));
@@ -210,19 +225,18 @@ fn directx_preserva_vazio_ausencia_e_edicoes_concorrentes() {
     }
     r.definir(DestinoRegistro::DirectX, None);
     let original = a.ler(DxSwapEffectUpgrade, None).unwrap();
+    // Edicao externa entre a leitura do agente e a escrita: incorporada antes do portao.
+    r.definir(
+        DestinoRegistro::DirectX,
+        Some(ValorRegistro::Sz("Terceiro=á🦀;".into())),
+    );
     let mut chamadas = 0;
     a.escrever(&original, &ValorUsuario::Token("1".into()), || {
         chamadas += 1;
-        if chamadas == 1 {
-            r.definir(
-                DestinoRegistro::DirectX,
-                Some(ValorRegistro::Sz("Terceiro=á🦀;".into())),
-            );
-        }
         Ok(())
     })
     .unwrap();
-    assert_eq!(chamadas, 2);
+    assert_eq!(chamadas, 1);
     let esperado = a.ler(DxSwapEffectUpgrade, None).unwrap();
     a.restaurar(&esperado, &original, autorizar).unwrap();
     assert_eq!(
@@ -422,4 +436,140 @@ fn leituras_reais() {
     let _ = armazem.ler(MouseAceleracao, None);
     let _ = armazem.ler(DxSwapEffectUpgrade, None);
     let _ = armazem.ler(GamedvrCapturaHistorica, None);
+}
+
+/// Cada gravacao e precedida imediatamente pelo portao, sem I/O no meio.
+fn portao_cola_na_gravacao(log: &[&str]) {
+    for (i, chamada) in log.iter().enumerate() {
+        if *chamada == "gravar" {
+            assert!(i > 0 && log[i - 1] == "portao", "{log:?}");
+        }
+    }
+}
+
+fn portao<'a>(log: &'a RefCell<Vec<&'static str>>) -> impl FnMut() -> Result<(), Erro> + 'a {
+    move || {
+        log.borrow_mut().push("portao");
+        Ok(())
+    }
+}
+
+#[test]
+fn ordem_portao_gravacao_nos_quatro_destinos() {
+    let r = RegistroFalso::default();
+    let s = SpiFalso::default();
+    let d = DisplayFalso::default();
+    let a = ArmazemUsuario::novo(&r, &s, &d);
+
+    // Tela, ida e volta.
+    let anterior = a.ler(TelaRefresh, Some("monitor-estavel")).unwrap();
+    d.log.borrow_mut().clear();
+    a.escrever(&anterior, &ValorUsuario::Refresh(DEPOIS), portao(&d.log))
+        .unwrap();
+    assert_eq!(
+        *d.log.borrow(),
+        ["preparar", "ler", "conferir", "portao", "gravar", "ler"]
+    );
+    let atual = a.ler(TelaRefresh, Some("monitor-estavel")).unwrap();
+    d.log.borrow_mut().clear();
+    a.restaurar(&atual, &anterior, portao(&d.log)).unwrap();
+    portao_cola_na_gravacao(&d.log.borrow());
+    assert_eq!(d.log.borrow().iter().filter(|c| **c == "gravar").count(), 1);
+
+    // Mouse, ida e volta.
+    let original = a.ler(MouseAceleracao, None).unwrap();
+    s.log.borrow_mut().clear();
+    a.escrever(&original, &ValorUsuario::Spi([0; 3]), portao(&s.log))
+        .unwrap();
+    assert_eq!(*s.log.borrow(), ["ler", "portao", "gravar", "ler"]);
+    let atual = a.ler(MouseAceleracao, None).unwrap();
+    s.log.borrow_mut().clear();
+    a.restaurar(&atual, &original, portao(&s.log)).unwrap();
+    assert_eq!(*s.log.borrow(), ["ler", "portao", "gravar", "ler"]);
+
+    // Token DirectX, ida e volta (restauracao apaga o valor ausente).
+    let original = a.ler(DxSwapEffectUpgrade, None).unwrap();
+    r.log.borrow_mut().clear();
+    a.escrever(&original, &ValorUsuario::Token("1".into()), portao(&r.log))
+        .unwrap();
+    assert_eq!(*r.log.borrow(), ["ler", "portao", "gravar", "ler"]);
+    let atual = a.ler(DxSwapEffectUpgrade, None).unwrap();
+    r.log.borrow_mut().clear();
+    a.restaurar(&atual, &original, portao(&r.log)).unwrap();
+    assert_eq!(*r.log.borrow(), ["ler", "portao", "gravar", "ler"]);
+
+    // Captura historica, ida e volta.
+    r.definir(DestinoRegistro::Captura, Some(ValorRegistro::Dword(1)));
+    let original = a.ler(GamedvrCapturaHistorica, None).unwrap();
+    r.log.borrow_mut().clear();
+    a.escrever(&original, &ValorUsuario::Dword(0), portao(&r.log))
+        .unwrap();
+    assert_eq!(*r.log.borrow(), ["ler", "portao", "gravar", "ler"]);
+    let atual = a.ler(GamedvrCapturaHistorica, None).unwrap();
+    r.log.borrow_mut().clear();
+    a.restaurar(&atual, &original, portao(&r.log)).unwrap();
+    assert_eq!(*r.log.borrow(), ["ler", "portao", "gravar", "ler"]);
+}
+
+#[test]
+fn compensacao_de_refresh_chama_portao_imediatamente_antes() {
+    let r = RegistroFalso::default();
+    let s = SpiFalso::default();
+    let d = DisplayFalso::default();
+    let a = ArmazemUsuario::novo(&r, &s, &d);
+    let anterior = a.ler(TelaRefresh, Some("monitor-estavel")).unwrap();
+    d.resultados.borrow_mut().push_back(DIVERGENTE);
+    d.log.borrow_mut().clear();
+    let erro = a
+        .escrever(&anterior, &ValorUsuario::Refresh(DEPOIS), portao(&d.log))
+        .unwrap_err();
+    assert!(matches!(
+        erro,
+        Erro::RefreshNaoConfirmado {
+            compensacao: Ok(()),
+            ..
+        }
+    ));
+    let ciclo = ["preparar", "ler", "conferir", "portao", "gravar", "ler"];
+    assert_eq!(*d.log.borrow(), [ciclo, ciclo].concat());
+    portao_cola_na_gravacao(&d.log.borrow());
+}
+
+#[test]
+fn portao_recusando_nao_grava_em_nenhum_destino() {
+    let r = RegistroFalso::default();
+    let s = SpiFalso::default();
+    let d = DisplayFalso::default();
+    let a = ArmazemUsuario::novo(&r, &s, &d);
+    let recusa = || Err(Erro::Bloqueado);
+    r.definir(DestinoRegistro::Captura, Some(ValorRegistro::Dword(1)));
+    let casos = [
+        (
+            TelaRefresh,
+            Some("monitor-estavel"),
+            ValorUsuario::Refresh(DEPOIS),
+        ),
+        (MouseAceleracao, None, ValorUsuario::Spi([0; 3])),
+        (DxSwapEffectUpgrade, None, ValorUsuario::Token("1".into())),
+        (GamedvrCapturaHistorica, None, ValorUsuario::Dword(0)),
+    ];
+    for (setting, alvo, valor) in casos {
+        let original = a.ler(setting, alvo).unwrap();
+        assert_eq!(a.escrever(&original, &valor, recusa), Err(Erro::Bloqueado));
+    }
+    for log in [&r.log, &s.log, &d.log] {
+        assert!(!log.borrow().contains(&"gravar"));
+    }
+    assert_eq!(r.escritas.get() + s.escritas.get(), 0);
+    assert!(d.escritas.borrow().is_empty());
+    // Restauracao recusada tambem nao grava.
+    let original = a.ler(MouseAceleracao, None).unwrap();
+    s.trio.set([0; 3]);
+    let atual = a.ler(MouseAceleracao, None).unwrap();
+    let alvo = nvt_windows::LeituraUsuario {
+        valor: original.valor.clone(),
+        ..atual.clone()
+    };
+    assert_eq!(a.restaurar(&atual, &alvo, recusa), Err(Erro::Bloqueado));
+    assert_eq!(s.escritas.get(), 0);
 }

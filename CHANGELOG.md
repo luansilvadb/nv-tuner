@@ -9,6 +9,28 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
+*Fase competitiva 2: camada Windows*
+
+> Pendência de lançamento: os executáveis e o MSI desta fase precisam ser
+> **assinados digitalmente** (Authenticode) antes da publicação. Builds de
+> desenvolvimento continuam sem assinatura.
+
+### Adicionado
+
+- **Ajustes do Windows do seu usuário**, todos **experimentais**: taxa de atualização no máximo compatível (mesma resolução e profundidade), aceleração do mouse desligada (sensibilidade intocada), otimizações para jogos em janela (Windows 11, build 22000+) e captura histórica do Game Bar desligada (só se estiver ligada). Regras em `regras/windows.toml`.
+- **Aceite por regra experimental.** Na aba **Windows** (e em **Mudanças**, para o driver), cada experimental aparece com **Aceitar**; aceita, mostra “experimental aceita por você” e pode ser **Retirada**, voltando ao valor de antes da gestão. O aceite é por usuário do Windows e vale também para as regras experimentais de driver da Fase 1; como o perfil do driver é compartilhado, só os aceites de quem está na sessão de console ativa entram no plano do driver.
+- **Agente do usuário** (`nvt-agente`), sem privilégios, iniciado no logon de cada usuário. Só ele grava a camada Windows; o serviço continua sendo o único avaliador. O agente guarda o valor original de cada ajuste, relê após gravar, detecta mudanças manuais (que viram escolha sua) e confere deriva a cada 10 minutos.
+- **Nada é gravado no Windows com jogo ou anticheat aberto**, inclusive reversão, restauração e desinstalação: o agente usa o mesmo portão do serviço, conferido imediatamente antes de cada escrita.
+- Aba **Windows** na interface: **O que o app fez** com reversão individual, **Experimentais** e **Diagnóstico**; mudanças e histórico identificam a camada (driver ou Windows).
+- **Diagnóstico somente leitura**: Game Mode, VRR do Windows, otimizações por jogo e polling do mouse (orientação) na sessão; HAGS, MPO, plano de energia, CPU X3D, modo MSI da GPU, VBS/HVCI/IOMMU, TPM, Secure Boot e build do Windows na máquina. O app nunca altera TPM, Secure Boot, VBS nem o BCD.
+- Desinstalação com `RESTAURAR_PERFIL=1` restaura também os ajustes do Windows do usuário que desinstala; outros usuários devem usar **Restaurar original** antes.
+
+### Alterado
+
+- Protocolo entre interface, agente e serviço atualizado para a **v5** (sem compatibilidade com a v4; o MSI instala tudo junto). A identidade de quem chama vem do token do cliente do pipe, nunca do corpo da mensagem.
+- **Restaurar original** cobre o driver e o Windows; a restauração tem uma geração persistida no serviço, e um agente que estava fora (logoff, reinício) restaura quando voltar. A interface separa “driver concluído” de “usuário pendente”.
+- Instalador: inclui `nvt-agente.exe` e a entrada de inicialização no logon (removida na desinstalação); o Restart Manager fecha o agente de forma cooperativa na atualização e na remoção.
+
 *Fase competitiva 1: driver e fatos dos jogos*
 
 ### Adicionado

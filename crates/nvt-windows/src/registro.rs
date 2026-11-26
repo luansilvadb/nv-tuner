@@ -27,8 +27,9 @@ pub enum ValorRegistro {
 pub trait Registro {
     fn ler(&self, destino: DestinoRegistro) -> Result<Option<ValorRegistro>, Erro>;
     fn gravar_captura(&self, valor: Option<bool>) -> Result<(), Erro>;
-    /// Confere o REG_SZ esperado e altera apenas o token SwapEffectUpgradeEnable.
-    fn gravar_directx(&self, esperado: Option<&str>, valor: Option<&str>) -> Result<(), Erro>;
+    /// Apenas grava o REG_SZ final (ou apaga), sem leituras. A validacao contra o
+    /// valor lido ocorre antes do portao.
+    fn gravar_directx(&self, valor: Option<&str>) -> Result<(), Erro>;
 }
 
 #[derive(Debug, Default)]
@@ -64,22 +65,7 @@ impl Registro for RegistroWindows {
         }
     }
 
-    fn gravar_directx(&self, esperado: Option<&str>, valor: Option<&str>) -> Result<(), Erro> {
-        let bruto = self.ler(DestinoRegistro::DirectX)?;
-        let atual = match bruto.as_ref() {
-            None => None,
-            Some(ValorRegistro::Sz(texto)) => Some(texto.as_str()),
-            _ => return Err(Erro::ValorInvalido),
-        };
-        if atual != esperado {
-            return Err(Erro::Alterado);
-        }
-        let atual = atual.unwrap_or_default();
-        token::swap(atual)?;
-        let novo = valor.unwrap_or_default();
-        if token::substituir(atual, token::swap(novo)?)? != novo {
-            return Err(Erro::Alterado);
-        }
+    fn gravar_directx(&self, valor: Option<&str>) -> Result<(), Erro> {
         match valor {
             Some(valor) => chave_gravavel(DestinoRegistro::DirectX)?
                 .set_value(GLOBAL, &valor)
@@ -180,73 +166,70 @@ pub(crate) fn escrever(
     apagar_vazio: bool,
     mut autorizar: impl FnMut() -> Result<(), Erro>,
 ) -> Result<(), Erro> {
-    // Rele depois do portao para incorporar edicoes externas vistas durante a
-    // preparacao. O Registro do Windows nao oferece compare-and-swap de valores.
-    for _ in 0..4 {
-        let bruto = registro.ler(destino)?;
-        if interpretar(destino, bruto.as_ref())? != *esperado {
-            return Err(Erro::Alterado);
-        }
-        let novo = match (destino, valor) {
-            (DestinoRegistro::Captura, ValorUsuario::Ausente) => None,
-            (DestinoRegistro::Captura, ValorUsuario::Dword(n)) => Some(ValorRegistro::Dword(*n)),
-            (DestinoRegistro::DirectX, ValorUsuario::Ausente | ValorUsuario::Token(_)) => {
-                if bruto.is_none() && *valor == ValorUsuario::Ausente {
-                    return Ok(());
-                }
-                let texto = match bruto.as_ref() {
-                    Some(ValorRegistro::Sz(texto)) => texto,
-                    _ => "",
-                };
-                let desejado = match valor {
-                    ValorUsuario::Token(token) => Some(token.as_str()),
-                    _ => None,
-                };
-                let novo = token::substituir(texto, desejado)?;
-                if novo.is_empty() && apagar_vazio {
-                    None
-                } else {
-                    Some(ValorRegistro::Sz(novo))
-                }
+    // Leitura, preparacao e validacao; depois o portao; depois a gravacao, sem
+    // I/O entre os dois. O Registro do Windows nao oferece compare-and-swap, e
+    // uma edicao externa entre portao e gravacao e detectada na releitura.
+    let bruto = registro.ler(destino)?;
+    if interpretar(destino, bruto.as_ref())? != *esperado {
+        return Err(Erro::Alterado);
+    }
+    let novo = match (destino, valor) {
+        (DestinoRegistro::Captura, ValorUsuario::Ausente) => None,
+        (DestinoRegistro::Captura, ValorUsuario::Dword(n)) => Some(ValorRegistro::Dword(*n)),
+        (DestinoRegistro::DirectX, ValorUsuario::Ausente | ValorUsuario::Token(_)) => {
+            if bruto.is_none() && *valor == ValorUsuario::Ausente {
+                return Ok(());
             }
-            _ => return Err(Erro::ValorInvalido),
-        };
-        if bruto == novo {
-            return Ok(());
-        }
-        autorizar()?;
-        if registro.ler(destino)? != bruto {
-            continue;
-        }
-        match (destino, novo.as_ref()) {
-            (DestinoRegistro::Captura, None) => registro.gravar_captura(None)?,
-            (DestinoRegistro::Captura, Some(ValorRegistro::Dword(n))) => {
-                registro.gravar_captura(Some(*n == 1))?
+            let texto = match bruto.as_ref() {
+                Some(ValorRegistro::Sz(texto)) => texto,
+                _ => "",
+            };
+            let desejado = match valor {
+                ValorUsuario::Token(token) => Some(token.as_str()),
+                _ => None,
+            };
+            let novo = token::substituir(texto, desejado)?;
+            // O resultado precisa preservar os demais tokens e conter so o pedido.
+            if token::substituir(texto, token::swap(&novo)?)? != novo {
+                return Err(Erro::Alterado);
             }
-            (DestinoRegistro::DirectX, None | Some(ValorRegistro::Sz(_))) => {
-                let texto = match novo.as_ref() {
-                    Some(ValorRegistro::Sz(s)) => Some(s.as_str()),
-                    _ => None,
-                };
-                let anterior = match bruto.as_ref() {
-                    Some(ValorRegistro::Sz(s)) => Some(s.as_str()),
-                    _ => None,
-                };
-                match registro.gravar_directx(anterior, texto) {
-                    Err(Erro::Alterado) => continue,
-                    resultado => resultado?,
-                }
+            if novo.is_empty() && apagar_vazio {
+                None
+            } else {
+                Some(ValorRegistro::Sz(novo))
             }
-            _ => return Err(Erro::ValorInvalido),
         }
-        let lido = registro.ler(destino)?;
-        if interpretar(destino, lido.as_ref())? != *valor
-            || (lido.is_none() && novo.is_some())
-            || (novo.is_none() && matches!(lido, Some(ValorRegistro::Sz(s)) if s.is_empty()))
-        {
-            return Err(Erro::Releitura);
-        }
+        _ => return Err(Erro::ValorInvalido),
+    };
+    if bruto == novo {
         return Ok(());
     }
-    Err(Erro::Alterado)
+    match (destino, novo.as_ref()) {
+        (DestinoRegistro::Captura, None) => {
+            autorizar()?;
+            registro.gravar_captura(None)?
+        }
+        (DestinoRegistro::Captura, Some(ValorRegistro::Dword(n))) => {
+            let ligado = *n == 1;
+            autorizar()?;
+            registro.gravar_captura(Some(ligado))?
+        }
+        (DestinoRegistro::DirectX, None) => {
+            autorizar()?;
+            registro.gravar_directx(None)?
+        }
+        (DestinoRegistro::DirectX, Some(ValorRegistro::Sz(s))) => {
+            autorizar()?;
+            registro.gravar_directx(Some(s))?
+        }
+        _ => return Err(Erro::ValorInvalido),
+    }
+    let lido = registro.ler(destino)?;
+    if interpretar(destino, lido.as_ref())? != *valor
+        || (lido.is_none() && novo.is_some())
+        || (novo.is_none() && matches!(lido, Some(ValorRegistro::Sz(s)) if s.is_empty()))
+    {
+        return Err(Erro::Releitura);
+    }
+    Ok(())
 }

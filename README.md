@@ -42,16 +42,17 @@ conta de administrador (o instalador pede elevação pelo UAC).
 3. Execute o MSI. Como ele não é assinado, o Windows SmartScreen pode mostrar
    “O Windows protegeu o computador”: clique em **Mais informações** →
    **Executar assim mesmo** (só depois de conferir o SHA256).
-4. O instalador registra o serviço `nv-tuner (serviço)` e cria o atalho
-   **nv-tuner** no Menu Iniciar. A interface roda sem privilégios.
+4. O instalador registra o serviço `nv-tuner (serviço)`, cria o atalho
+   **nv-tuner** no Menu Iniciar e registra o agente `nvt-agente` para iniciar
+   no logon de cada usuário. A interface e o agente rodam sem privilégios.
 
 ### Desinstalar
 
 Em **Configurações → Aplicativos → Aplicativos instalados → nv-tuner →
 Desinstalar**, ou `msiexec /x nv-tuner-<versão>-x64.msi`.
 
-A desinstalação **não** desfaz as mudanças no perfil do driver por padrão.
-Para voltar aos valores originais:
+A desinstalação **não** desfaz as mudanças no perfil do driver nem os
+ajustes do Windows por padrão. Para voltar aos valores originais:
 
 - antes de desinstalar, use **Restaurar original** na interface; ou
 - desinstale pela linha de comando (como administrador), com o mesmo MSI:
@@ -68,6 +69,18 @@ Para voltar aos valores originais:
   Os dados do app (snapshot e histórico) ficam em
   `%ProgramData%\nv-tuner`: reinstalando o nv-tuner, **Restaurar original**
   volta a funcionar.
+
+Com `RESTAURAR_PERFIL=1`, a desinstalação restaura o driver e os ajustes do
+Windows **apenas do usuário que está desinstalando** (o agente roda
+`nvt-agente --restaurar` com a conta dele; executada como SYSTEM ou sem
+usuário interativo, essa parte é pulada). **Outros usuários da máquina
+precisam usar Restaurar original antes da desinstalação**: os snapshots
+deles ficam em `%LOCALAPPDATA%\nv-tuner\usuario` de cada perfil e não são
+apagados. A desinstalação pede ao Restart Manager que feche o agente de forma
+cooperativa, sem forçar; agentes de outras sessões não são fechados por ele
+(feche-os com logoff dessas contas). A restauração bloqueada (jogo aberto)
+fica registrada no log, sem impedir a remoção. Numa atualização por cima,
+nada é restaurado.
 
 ## Como reportar problemas
 
@@ -92,14 +105,18 @@ caminhos da sua máquina, números de série). Vulnerabilidades de segurança
   privilégios de administrador.
 - Prioridade das decisões: **estabilidade > latência > FPS**, respeitando um
   teto de qualidade (padrão: "Equilibrado") e as escolhas manuais do usuário.
-- Ajusta só o **driver NVIDIA** (perfis DRS via NVAPI), por mecanismos
-  oficiais; ajustes do Windows e de jogos chegam nas próximas versões.
+- Ajusta, por mecanismos oficiais, duas camadas: o **driver NVIDIA** (perfis
+  DRS via NVAPI) e o **Windows** (configurações documentadas, por APIs do
+  sistema, só itens de uma lista permitida — veja [Ajustes do
+  Windows](#ajustes-do-windows-experimental)); ajustes em arquivos de
+  configuração de jogos chegam numa próxima versão.
 - Toda alteração é registrada, explicada e pode ser desfeita com **Restaurar
   original**.
 - Nunca injeta código, nunca abre processos de jogos ou de anticheats (vê os
   jogos abertos só pela lista de processos, por nome), nunca altera
   executáveis nem arquivos da pasta de instalação dos jogos (só os lê, com
-  compartilhamento total) e adia qualquer gravação no driver enquanto detecta
+  compartilhamento total), nunca mexe em recursos de segurança (Secure Boot,
+  TPM, VBS/HVCI) nem no BCD e adia qualquer gravação (no driver e no Windows) enquanto detecta
   um jogo (instalado detectado ou da base competitiva) ou anticheat aberto.
   Como a detecção é por nome, ela pode falhar; por isso a promessa é “adia
   enquanto detecta”. Enquanto isso, a faixa **Jogo aberto** da interface
@@ -131,6 +148,35 @@ caminhos da sua máquina, números de série). Vulnerabilidades de segurança
 - **Energia em desempenho máximo só nos jogos competitivos**, no perfil de cada
   jogo; o perfil global volta ao valor que tinha antes do nv-tuner.
 
+## Ajustes do Windows (experimental)
+
+Além do driver, o nv-tuner pode corrigir quatro configurações do Windows do
+**seu usuário**:
+
+| Ajuste | O que faz |
+|---|---|
+| Taxa de atualização no máximo | põe o monitor na maior taxa compatível com a resolução e a profundidade atuais (corrige, por exemplo, a volta a 60 Hz depois de uma atualização) |
+| Aceleração do mouse desligada | desliga “Aumentar precisão do ponteiro”; a sensibilidade não é tocada |
+| Otimizações para jogos em janela | liga a opção do Windows 11 (build 22000+) que permite o *flip model* em jogos em janela ou sem bordas |
+| Gravação em segundo plano desligada | desliga a captura histórica do Game Bar, só se ela estiver ligada |
+
+- **Tudo isso é experimental e nada acontece sem o seu aceite.** Na aba
+  **Windows**, cada regra aparece como sugestão com **Aceitar**; aceita, ela
+  mostra “experimental aceita por você” e pode ser **Retirada** a qualquer
+  momento (o ajuste volta ao valor que tinha antes do nv-tuner). O aceite é
+  por regra e por usuário do Windows. O mesmo vale para as regras
+  experimentais do driver.
+- Quem grava é o **agente** (`nvt-agente`), um processo **sem privilégios**
+  que inicia no logon de cada usuário e grava só no perfil desse usuário. O
+  serviço decide o que fazer; o agente executa, relê e relata.
+- **Nada é gravado com jogo ou anticheat aberto**, nem a reversão nem a
+  restauração: a ação fica pendente até o jogo fechar.
+- Cada ajuste tem o valor original guardado, pode ser revertido sozinho na
+  seção **O que o app fez** da aba Windows e entra em **Restaurar original**.
+- A seção **Diagnóstico** é **somente leitura**: mostra, por exemplo, Game
+  Mode, VRR do Windows, HAGS, MPO, plano de energia, TPM, Secure Boot e
+  VBS/HVCI. O app nunca altera TPM, Secure Boot, VBS nem o BCD.
+
 Plataforma: somente Windows com GPU NVIDIA. Licença: [MIT](LICENSE).
 
 ## Arquitetura em camadas
@@ -142,7 +188,9 @@ Plataforma: somente Windows com GPU NVIDIA. Licença: [MIT](LICENSE).
 | Detecção | `nvt-detect` | GPU/capacidades e jogos/bibliotecas |
 | Telemetria | `nvt-telemetry` | Medição passiva via PresentMon CLI (v0.2) |
 | Protocolo | `nvt-ipc` | Mensagens do named pipe entre UI e serviço |
-| Serviço | `nvt-service` | Serviço do Windows privilegiado que aplica planos |
+| Serviço | `nvt-service` | Serviço do Windows privilegiado: único avaliador, aplica planos no driver |
+| Windows | `nvt-windows` | Ajustes do usuário e diagnósticos somente leitura |
+| Agente | `nvt-agente` | Processo do usuário, sem privilégios, que grava a camada Windows |
 | Interface | `nvt-ui` | Aplicativo do usuário, sem privilégios |
 
 Detalhes em [`docs/arquitetura.md`](docs/arquitetura.md).

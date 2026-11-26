@@ -60,10 +60,8 @@ pub(crate) fn escrever(
         return Err(Erro::Alterado);
     }
     if antes != depois {
+        // Portao imediatamente antes da gravacao, sem I/O entre os dois.
         autorizar()?;
-        if spi.ler()? != antes {
-            return Err(Erro::Alterado);
-        }
         spi.gravar(depois)?;
     }
     if spi.ler()? != depois {

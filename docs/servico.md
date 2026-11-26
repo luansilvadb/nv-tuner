@@ -227,6 +227,16 @@ plano novo (ex.: limite 141 → usuário põe 100 → limite desligado ⇒ antes
 ficava sem limite; agora 100 vira trava do usuário).
 | `reescanear_jogos` | nova varredura + ciclo |
 
+Requisições da camada Windows (v5; ver “Camada Windows” abaixo), todas
+vinculadas à identidade do token do cliente:
+
+| Requisição | Ação |
+|---|---|
+| `agente_consultar` | registra presença e fatos da sessão, avalia a camada Windows do SID e devolve `plano_agente` (revisão, geração de restauração, tarefa tipada e processos vigiados) |
+| `agente_relatar` | valida SID/sessão, tarefa, revisão e tipos; aceita repetição idempotente; grava o recibo e responde `ok` |
+| `definir_aceite_experimental` | grava o aceite ou a retirada da regra para o SID chamador; se for regra de driver e o chamador estiver no console ativo, reavalia o DRS sob o portão |
+| `reverter_ajuste_usuario` | cria uma trava no destino e agenda a volta ao valor de antes da gestão |
+
 Capacidades no estado: `dlss` = Tensor Cores; `geracao_quadros` = FG da
 arquitetura; `reflex` = arquitetura reconhecida; `rebar` = ativo, se lido,
 senão suportado; `refresh_mhz` e `vrr { possivel, ativo }` do monitor
@@ -300,6 +310,52 @@ do DRS e GPU ausente → `driver_indisponivel`; ID/valor fora da lista →
 `setting_nao_permitida`; estado/regras → `interno`; `Adiada` que escape da
 conversão em pendência → `ocupado` (não executado).
 
+## Camada Windows (Fase 2)
+
+O serviço é o **único avaliador** também da camada Windows, mas não grava
+nela: quem grava é o `nvt-agente` na sessão interativa (decisão D4).
+
+### Coordenador por usuário
+
+`src/usuario.rs` mantém, por SID e sessão, os fatos recebidos do agente, a
+revisão do plano, a tarefa em voo e a presença (expira em 3 min sem
+contato). O coordenador continua ativo enquanto o serviço espera o driver:
+sem NVIDIA ou com o DRS indisponível, só o trabalho de driver fica suspenso,
+e a camada Windows e os diagnósticos continuam consultáveis. Sem agente
+presente ou sem fatos válidos, nenhuma tarefa é emitida; uma restauração com
+snapshot continua pendente até ser atendida.
+
+### Aceites por SID
+
+Os aceites de regras experimentais ficam nas preferências por SID em
+`usuarios.json` (conjunto inicialmente vazio; mudar outras preferências o
+conserva). A camada Windows usa os aceites do próprio SID, inclusive em RDP.
+Como o DRS é compartilhado pela máquina, **só os aceites do SID da sessão de
+console ativa** entram no plano do driver: o serviço obtém essa identidade
+pela sessão de console do Windows (`identidade_console`). Troca de console
+ou identidade indisponível reavalia o DRS sob o portão; sem SID elegível, o
+conjunto vale vazio. A UI indica quando um aceite de driver fica inativo.
+
+### Diagnósticos
+
+Os diagnósticos de máquina (HAGS, MPO, plano de energia, CPU X3D, MSI da
+GPU, VBS/HVCI/IOMMU, TPM, Secure Boot, build) são lidos por uma thread
+própria (`nvt-diagnosticos`), fora do atendimento do pipe, e guardados em
+cache, renovado a cada 10 min; `obter_estado` devolve o cache. Os de sessão
+(Game Mode, VRR do Windows, FSO por jogo conhecido) chegam pelo agente. A
+interface usada só permite leitura; nada é alterado, nem o BCD.
+
+### Restauração por geração persistida
+
+`servico.json` guarda `geracao_restauracao` junto com a intenção de
+restauração e a pausa da autonomia. Cada pedido efetivo de
+**Restaurar original** (UI ou `restore-original --yes`) incrementa a geração
+uma única vez, antes de confirmar ao cliente; repetir a intenção pendente não
+avança de novo. Um agente que relata geração anterior recebe primeiro a
+tarefa de restaurar seu snapshot, antes de qualquer aplicação, mesmo depois
+de “Aplicar agora” ou no próximo logon. O DRS mantém seu próprio retry sob o
+portão; o estado do agente mostra separadamente a pendência do usuário.
+
 ## Estado e logs
 
 Em `<estado-dir>`:
@@ -308,7 +364,8 @@ Em `<estado-dir>`:
 |---|---|
 | `snapshot-original.json`, `estado.json`, `estado.anterior.json`, `perfis-criados.json` | `nvt-engine` (`docs/engine.md`) |
 | `snapshot-perdido.json` | gravado por `preparar` logo depois de uma quarentena; lido pelo `nvt-engine` |
-| `servico.json` | serviço: `autonomia_pausada`, `pausada_em_unix`, `ultima_aplicacao`, `restauracao_pendente_desde_unix` (restauração adiada a retomar; ausente nos arquivos antigos) |
+| `servico.json` | serviço: `autonomia_pausada`, `pausada_em_unix`, `ultima_aplicacao`, `restauracao_pendente_desde_unix` (restauração adiada a retomar; ausente nos arquivos antigos), `geracao_restauracao` (Fase 2) |
+| `usuarios.json` | coordenador de usuário: preferências por SID (aceites experimentais) e recibos de histórico da camada Windows; ACL restrita a SYSTEM/Administradores, fora dos arquivos legíveis pela UI local |
 | `logs\nvt-service.AAAA-MM-DD.log` | `tracing-appender`, rotação diária, últimos 14 arquivos |
 
 Os logs registram ações (perfil, setting, contagens, erros) e o diretório de

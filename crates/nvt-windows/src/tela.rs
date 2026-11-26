@@ -24,6 +24,9 @@ pub trait Display {
         alvo: &str,
         taxa: RefreshRacional,
     ) -> Result<(RefreshRacional, Self::Configuracao), Erro>;
+    /// Confere que a configuracao ativa ainda e a preparada. Chamado antes do portao.
+    fn conferir(&self, configuracao: &Self::Configuracao) -> Result<(), Erro>;
+    /// Apenas envia os vetores preparados, sem consultas.
     fn gravar(&self, configuracao: Self::Configuracao) -> Result<(), Erro>;
 }
 
@@ -122,12 +125,16 @@ impl Display for DisplayWindows {
         ))
     }
 
-    fn gravar(&self, configuracao: Self::Configuracao) -> Result<(), Erro> {
+    fn conferir(&self, configuracao: &Self::Configuracao) -> Result<(), Erro> {
         let atual = consultar()?;
         atual.identificar(&configuracao.alvo)?;
         if atual.estados()? != configuracao.ativa {
             return Err(Erro::Alterado);
         }
+        Ok(())
+    }
+
+    fn gravar(&self, configuracao: Self::Configuracao) -> Result<(), Erro> {
         configuracao
             .vetores
             .enviar(SDC_APPLY | SDC_SAVE_TO_DATABASE)
@@ -385,6 +392,7 @@ pub(crate) fn escrever(
     if mesma_taxa(atual, depois) {
         return Ok(());
     }
+    display.conferir(&config)?;
     autorizar()?;
     display.gravar(config)?;
     let falha = match confirmar(display, alvo, depois) {
@@ -394,6 +402,7 @@ pub(crate) fn escrever(
     let compensacao = (|| {
         let (atual, config) = display.preparar(alvo, antes)?;
         if !mesma_taxa(atual, antes) {
+            display.conferir(&config)?;
             autorizar()?;
             display.gravar(config)?;
         }
