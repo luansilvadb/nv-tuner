@@ -41,6 +41,9 @@ pub struct AmbienteJogo {
     pub pastas: Box<dyn PastasConhecidas>,
     pub steam: Box<dyn RegistroSteam>,
     pub gravador: Box<dyn GravadorJogo>,
+    /// Segredo do perfil para as instâncias de conta (de `EstadoJogo`; nunca vai ao IPC).
+    /// `None` até o ciclo carregar o estado: contas não resolvem.
+    pub(crate) segredo: Option<[u8; 32]>,
 }
 
 impl AmbienteJogo {
@@ -50,6 +53,7 @@ impl AmbienteJogo {
             pastas: Box::new(nvt_jogocfg::pastas::PastasWindows),
             steam: Box::new(nvt_jogocfg::steam::RegistroSteamWindows),
             gravador: Box::new(GravadorReal),
+            segredo: None,
         }
     }
 
@@ -65,6 +69,7 @@ impl AmbienteJogo {
     /// Resolve a instância de `def` no perfil. `None`: jogo/Steam não instalados.
     pub(crate) fn resolver(&self, base: &BaseJogos, def: &DefArquivoJogo) -> Option<Instancia> {
         let rotulo = rotulo(def)?;
+        let segredo = self.segredo;
         let jogo = def.jogo.as_str();
         let ambigua = || {
             Some(Instancia {
@@ -95,7 +100,7 @@ impl AmbienteJogo {
                         }
                         let pasta = raiz.join(pre.trim_end_matches('\\'));
                         match nvt_jogocfg::ubisoft::escolher_conta(&raiz, &pasta) {
-                            Ok(c) => (raiz, c.arquivo, instancia_conta(jogo, &c.id)),
+                            Ok(c) => (raiz, c.arquivo, instancia_conta(&segredo?, jogo, &c.id)),
                             Err(Erro::ContaAmbigua) => return ambigua(),
                             Err(_) => return None,
                         }
@@ -112,7 +117,8 @@ impl AmbienteJogo {
                         rel = rel.replace("<appid>", &appid.to_string());
                     }
                     let caminho = s.pasta.join("userdata").join(rel);
-                    let instancia = instancia_conta("steam", &s.conta.steamid64.to_string());
+                    let instancia =
+                        instancia_conta(&segredo?, "steam", &s.conta.steamid64.to_string());
                     (s.pasta, caminho, instancia)
                 }
                 Err(Erro::ContaAmbigua) => return ambigua(),
@@ -142,9 +148,83 @@ pub(crate) struct Instancia {
     pub na_nuvem: bool,
 }
 
-/// Hash opaco da conta: o identificador em claro nunca sai do agente.
-pub(crate) fn instancia_conta(escopo: &str, id: &str) -> String {
+/// Instância opaca da conta: HMAC-SHA256 com o segredo do perfil, truncado em 16 hex.
+/// Sem o segredo, a instância não permite enumerar o identificador (o SteamID64 tem
+/// poucos bits livres). O escopo (`steam` ou o jogo Ubisoft) separa os domínios.
+pub(crate) fn instancia_conta(segredo: &[u8; 32], escopo: &str, id: &str) -> String {
+    hmac_sha256(
+        segredo,
+        format!("nv-tuner/conta/v2/{escopo}/{id}").as_bytes(),
+    )
+    .hex()[..16]
+        .to_owned()
+}
+
+/// Forma anterior ao segredo (sem chave); só para migrar a gestão já gravada.
+pub(crate) fn instancia_conta_legada(escopo: &str, id: &str) -> String {
     sha256(format!("nv-tuner/{escopo}/{id}").as_bytes()).hex()[..16].to_owned()
+}
+
+/// HMAC-SHA256 (RFC 2104) sobre `sha256`; a chave de 32 bytes cabe no bloco de 64.
+pub(crate) fn hmac_sha256(chave: &[u8; 32], msg: &[u8]) -> Hash {
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for (i, b) in chave.iter().enumerate() {
+        ipad[i] ^= b;
+        opad[i] ^= b;
+    }
+    let mut interno = ipad.to_vec();
+    interno.extend_from_slice(msg);
+    let mut externo = opad.to_vec();
+    externo.extend_from_slice(&sha256(&interno).0);
+    sha256(&externo)
+}
+
+/// 32 bytes do gerador do sistema (`BCryptGenRandom`, RNG preferido do sistema).
+pub(crate) fn gerar_segredo() -> std::io::Result<[u8; 32]> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+    };
+    let mut buf = [0u8; 32];
+    // Sem handle de algoritmo: a flag escolhe o RNG do sistema; o buffer tem o tamanho dado.
+    let st = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if st != 0 {
+        return Err(std::io::Error::other(format!("BCryptGenRandom: {st:#x}")));
+    }
+    Ok(buf)
+}
+
+impl AmbienteJogo {
+    /// Instância legada (sem segredo) da conta que `resolver` escolheria.
+    pub(crate) fn instancia_legada(&self, def: &DefArquivoJogo) -> Option<String> {
+        match def.raiz {
+            RaizJogo::SteamUserdata => {
+                let s = nvt_jogocfg::steam::resolver(self.steam.as_ref()).ok()?;
+                Some(instancia_conta_legada(
+                    "steam",
+                    &s.conta.steamid64.to_string(),
+                ))
+            }
+            RaizJogo::Documentos | RaizJogo::LocalAppData => {
+                let (pre, _) = def.caminho.split_once("<conta>")?;
+                let raiz = match def.raiz {
+                    RaizJogo::Documentos => self.pastas.documentos(),
+                    _ => self.pastas.local_app_data(),
+                }
+                .ok()?;
+                let pasta = raiz.join(pre.trim_end_matches('\\'));
+                let c = nvt_jogocfg::ubisoft::escolher_conta(&raiz, &pasta).ok()?;
+                Some(instancia_conta_legada(def.jogo.as_str(), &c.id))
+            }
+        }
+    }
 }
 
 /// Steam Cloud (F3-09): existe o par `remote` de um arquivo em `local`.

@@ -258,6 +258,7 @@ impl Cenario {
             }),
             steam: Box::new(SteamPathFixo(Some(self.steam()))),
             gravador: Box::new(self.grav.clone()),
+            segredo: None,
         });
         a
     }
@@ -401,7 +402,11 @@ fn fatos_so_do_catalogo_anonimizados() {
     let mut a = c.agente();
     let fatos = c.fatos(&mut a);
     let r6 = fato(&fatos, "r6-game-settings");
-    assert_eq!(r6.instancia, instancia_conta("r6-siege", CONTA_UBI));
+    let segredo = a.jogo.as_ref().and_then(|j| j.segredo).expect("segredo");
+    assert_eq!(
+        r6.instancia,
+        instancia_conta(&segredo, "r6-siege", CONTA_UBI)
+    );
     assert!(r6.presente && !r6.somente_leitura && !r6.na_nuvem && !r6.conta_ambigua);
     assert_eq!(r6.hash.as_deref(), Some(sha256(R6).hex().as_str()));
     assert_eq!(r6.backup, EstadoBackup::SemBackup);
@@ -1091,4 +1096,128 @@ fn portao_recusando_nao_grava_nem_deixa_intencao() {
     let (_, rs) = c.rodar(&mut a, vec![restaurar(&r6, "r6_fps_limit")]);
     assert_eq!(so(&rs).status, StatusMudanca::Aplicada);
     assert_eq!(ler(&c.r6()), r6_com("90"));
+}
+
+// ── Instância de conta com segredo do perfil ────────────────────────────────
+
+#[test]
+fn instancia_de_conta_depende_do_segredo() {
+    use super::armazem::{hmac_sha256, instancia_conta_legada};
+    let (s1, s2) = ([7u8; 32], [8u8; 32]);
+    let i = instancia_conta(&s1, "steam", STEAMID64);
+    assert_eq!(i, instancia_conta(&s1, "steam", STEAMID64));
+    assert_ne!(i, instancia_conta(&s2, "steam", STEAMID64));
+    assert_ne!(
+        i,
+        instancia_conta(&s1, "r6-siege", STEAMID64),
+        "domínios separados"
+    );
+    assert_ne!(i, instancia_conta_legada("steam", STEAMID64));
+    assert_ne!(
+        i,
+        sha256(format!("nv-tuner/steam/{STEAMID64}").as_bytes()).hex()[..16]
+    );
+    assert!(i.len() == 16 && i.bytes().all(|b| b.is_ascii_hexdigit()));
+    // Vetor do RFC 4231 (caso 2 usa chave curta; aqui a chave é preenchida com zeros).
+    let mut k = [0u8; 32];
+    k[..4].copy_from_slice(b"Jefe");
+    assert_eq!(
+        hmac_sha256(&k, b"what do ya want for nothing?").hex(),
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    );
+    let s = super::armazem::gerar_segredo().unwrap();
+    assert_ne!(s, super::armazem::gerar_segredo().unwrap());
+}
+
+#[test]
+fn segredo_persistido_estavel_e_fora_do_ipc() {
+    let mut c = Cenario::novo();
+    let mut a = c.agente();
+    let f = c.fatos(&mut a);
+    let r6 = fato(&f, "r6-game-settings").clone();
+    let cs2 = fato(&f, "cs2-launch").clone();
+    let (_, rs) = c.rodar(
+        &mut a,
+        vec![aplicar(&r6, "r6_fps_limit", ValorJogoIpc::Inteiro(144))],
+    );
+    assert_eq!(so(&rs).status, StatusMudanca::Aplicada);
+    let hex = c
+        .estado()
+        .jogo
+        .segredo_conta
+        .clone()
+        .expect("segredo persistido");
+    let segredo = c.estado().jogo.segredo().unwrap();
+    assert_eq!(
+        r6.instancia,
+        instancia_conta(&segredo, "r6-siege", CONTA_UBI)
+    );
+    assert_eq!(cs2.instancia, instancia_conta(&segredo, "steam", STEAMID64));
+
+    // Nenhuma mensagem IPC carrega o segredo nem os identificadores em claro.
+    let ipc = serde_json::to_string(&*c.fio.pedidos.borrow()).unwrap();
+    for proibido in [hex.as_str(), CONTA_UBI, STEAMID64] {
+        assert!(!ipc.contains(proibido));
+    }
+
+    // Reinício: o mesmo segredo e as mesmas instâncias.
+    let mut a = c.agente();
+    let f = c.fatos(&mut a);
+    assert_eq!(c.estado().jogo.segredo_conta.as_deref(), Some(hex.as_str()));
+    assert_eq!(fato(&f, "r6-game-settings").instancia, r6.instancia);
+    assert_eq!(fato(&f, "cs2-launch").instancia, cs2.instancia);
+    assert_eq!(fato(&f, "r6-game-settings").gestao.len(), 1);
+}
+
+#[test]
+fn gestao_legada_sem_segredo_migra_e_restaura() {
+    let mut c = Cenario::novo();
+    let mut a = c.agente();
+    let f = c.fatos(&mut a);
+    let r6 = fato(&f, "r6-game-settings").clone();
+    let (_, rs) = c.rodar(
+        &mut a,
+        vec![aplicar(&r6, "r6_fps_limit", ValorJogoIpc::Inteiro(144))],
+    );
+    assert_eq!(so(&rs).status, StatusMudanca::Aplicada);
+    // Estado como gravado antes do segredo: instância sem chave, sem segredo.
+    let mut e = c.estado();
+    e.jogo.segredo_conta = None;
+    let legada = super::armazem::instancia_conta_legada("r6-siege", CONTA_UBI);
+    e.jogo.arquivos[0].instancia = legada.clone();
+    c.mem.salvar(&e).unwrap();
+
+    let mut a = c.agente();
+    let f = c.fatos(&mut a);
+    let r6 = fato(&f, "r6-game-settings").clone();
+    assert_ne!(r6.instancia, legada);
+    assert_eq!(c.estado().jogo.arquivos[0].instancia, r6.instancia);
+    assert_eq!(r6.gestao.len(), 1, "gestão continua mapeada");
+    assert_eq!(
+        r6.backup,
+        EstadoBackup::Integro,
+        "backup antigo segue legível"
+    );
+    let (_, rs) = c.rodar(&mut a, vec![restaurar(&r6, "r6_fps_limit")]);
+    assert_eq!(so(&rs).status, StatusMudanca::Aplicada);
+    assert_eq!(ler(&c.r6()), R6);
+}
+
+#[test]
+fn estado_apagado_gera_segredo_novo_sem_gestao_orfa() {
+    let mut c = Cenario::novo();
+    let mut a = c.agente();
+    let f = c.fatos(&mut a);
+    let antes = fato(&f, "r6-game-settings").instancia.clone();
+    c.mem.0.borrow_mut().clear();
+    let mut a = c.agente();
+    let f = c.fatos(&mut a);
+    let r6 = fato(&f, "r6-game-settings").clone();
+    assert_ne!(r6.instancia, antes);
+    assert!(r6.gestao.is_empty());
+    let (_, rs) = c.rodar(
+        &mut a,
+        vec![aplicar(&r6, "r6_fps_limit", ValorJogoIpc::Inteiro(144))],
+    );
+    assert_eq!(so(&rs).status, StatusMudanca::Aplicada);
 }

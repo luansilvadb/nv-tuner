@@ -811,6 +811,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
 
     /// Recupera intenções interrompidas pelo hash do arquivo, sem dupla aplicação.
     pub(crate) fn recuperar_jogo(&mut self) -> io::Result<()> {
+        self.preparar_segredo()?;
         for i in 0..self.estado.jogo.arquivos.len() {
             let Some(intencao) = self.estado.jogo.arquivos[i].intencao.clone() else {
                 continue;
@@ -834,6 +835,51 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
                 )?;
             }
             limpar_temporarios(&intencao.raiz, &intencao.caminho);
+        }
+        Ok(())
+    }
+
+    /// Carrega (ou gera e persiste na primeira vez) o segredo das instâncias de conta
+    /// e migra a gestão gravada com a instância legada sem segredo.
+    fn preparar_segredo(&mut self) -> io::Result<()> {
+        if self.agente.jogo.is_none() {
+            return Ok(());
+        }
+        let segredo = match self.estado.jogo.segredo() {
+            Some(s) => s,
+            None => {
+                let s = super::armazem::gerar_segredo()?;
+                self.estado.jogo.segredo_conta =
+                    Some(s.iter().map(|b| format!("{b:02x}")).collect());
+                self.salvar()?;
+                s
+            }
+        };
+        if let Some(amb) = self.agente.jogo.as_mut() {
+            amb.segredo = Some(segredo);
+        }
+        let Some(amb) = self.agente.jogo.as_ref() else {
+            return Ok(());
+        };
+        let base = &self.agente.base;
+        let mut mudou = false;
+        for a in &mut self.estado.jogo.arquivos {
+            if a.instancia == super::armazem::INSTANCIA_LOCAL {
+                continue;
+            }
+            let Some(def) = base.config_jogo().arquivo(&a.arquivo) else {
+                continue;
+            };
+            if amb.instancia_legada(def).as_deref() != Some(a.instancia.as_str()) {
+                continue;
+            }
+            if let Some(inst) = amb.resolver(base, def).filter(|i| !i.conta_ambigua) {
+                a.instancia = inst.instancia;
+                mudou = true;
+            }
+        }
+        if mudou {
+            self.salvar()?;
         }
         Ok(())
     }

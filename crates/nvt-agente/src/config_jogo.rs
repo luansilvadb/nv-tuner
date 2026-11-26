@@ -35,11 +35,32 @@ mod testes;
 pub(crate) struct EstadoJogo {
     #[serde(default)]
     pub arquivos: Vec<ArquivoGerido>,
+    /// Segredo do perfil (64 hex) das instâncias de conta. Fica só aqui, no estado do
+    /// agente em `%LOCALAPPDATA%\nv-tuner\usuario` (aberto sem seguir reparse points),
+    /// junto da gestão que o usa: apagar o estado apaga os dois, então nenhuma gestão
+    /// fica com instância órfã; um segredo novo só muda as instâncias relatadas daí em
+    /// diante. Gestão gravada antes do segredo (instância sem chave) é migrada na carga.
+    /// Nunca vai ao IPC: o serviço só recebe as instâncias derivadas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segredo_conta: Option<String>,
 }
 
 impl EstadoJogo {
     pub(crate) fn vazio(&self) -> bool {
-        self.arquivos.is_empty()
+        self.arquivos.is_empty() && self.segredo_conta.is_none()
+    }
+
+    /// Segredo decodificado; `None` se ausente ou malformado.
+    pub(crate) fn segredo(&self) -> Option<[u8; 32]> {
+        let t = self.segredo_conta.as_deref()?;
+        if t.len() != 64 {
+            return None;
+        }
+        let mut s = [0u8; 32];
+        for (i, b) in s.iter_mut().enumerate() {
+            *b = u8::from_str_radix(t.get(2 * i..2 * i + 2)?, 16).ok()?;
+        }
+        Some(s)
     }
 
     /// Há algo que uma restauração precisa devolver.
