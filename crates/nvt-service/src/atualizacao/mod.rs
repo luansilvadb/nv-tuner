@@ -20,8 +20,7 @@ use nvt_atualizacao::politica::{
 use nvt_atualizacao::{
     Contexto, Efeito, ErroVerificacao, EstadoPersistido, Evento, FalhaDownload, Fase,
     LIMITE_ASSINATURA, LIMITE_LOG_MSI, LIMITE_MANIFESTO, MotivoAdiamento, PedidoDownload,
-    PedidoLancamento, SessaoAgente, URL_ASSINATURA, URL_MANIFESTO, UltimoResultado, Versao,
-    log_msi, politica_url, transicao,
+    PedidoLancamento, SessaoAgente, UltimoResultado, Versao, log_msi, politica_url, transicao,
 };
 use nvt_ipc::{
     AtualizacaoConcluida as IpcConcluida, AtualizacaoPendente, ErroVerificacao as IpcErro,
@@ -443,7 +442,7 @@ impl Atualizador {
             let u = politica_url(url).map_err(ErroRede::Url)?;
             self.f.rede.obter(&u, limite as u64).map(|r| r.corpo)
         };
-        let manifesto = match obter(URL_MANIFESTO, LIMITE_MANIFESTO) {
+        let manifesto = match obter(&nvt_atualizacao::url_manifesto(), LIMITE_MANIFESTO) {
             Ok(b) => b,
             Err(ErroRede::NaoEncontrado) => return Evento::ManifestoAusente,
             Err(ErroRede::TamanhoExcedido { .. }) => {
@@ -451,7 +450,7 @@ impl Atualizador {
             }
             Err(e) => return self.falha_rede(&e),
         };
-        let assinatura = match obter(URL_ASSINATURA, LIMITE_ASSINATURA) {
+        let assinatura = match obter(&nvt_atualizacao::url_assinatura(), LIMITE_ASSINATURA) {
             Ok(b) => b,
             Err(ErroRede::NaoEncontrado) => {
                 return Evento::ManifestoRecusado(ErroVerificacao::AssinaturaMalformada);

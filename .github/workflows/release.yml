@@ -9,18 +9,23 @@ name: Release
 # CONFIGURAÇÃO NO GITHUB (mantenedor, uma vez):
 #  1. Settings > Environments > New environment "release"; em "Deployment branches and
 #     tags" escolha "Selected branches and tags" e adicione só a regra de TAG "v*".
-#     Sem aprovação manual (o lançamento continua automático).
+#     Marque "Required reviewers" (o mantenedor aprova cada lançamento).
 #  2. No Environment "release", secret NV_TUNER_MINISIGN_KEY = só a linha base64 (2ª
 #     linha) do .key gerado por `nvt-assinar gerar-chave` (Q11: o GitHub mascara por
 #     linha). NÃO crie o secret no nível do repositório.
 #  3. (Q10) Ruleset de tags v* restrito ao mantenedor e branch protection na main.
 #  4. A chave pública oficial precisa estar embutida (não a provisória); senão o job falha.
 #
-# Fluxo: confere tag, secret, versão > Latest e feature `laboratorio` -> compila ->
-# confere chave embutida -> MSI -> SHA-256 -> assina -> rascunho com os 5 arquivos ->
-# baixa para pasta limpa e verifica com o mesmo verificador do serviço -> espera CI
-# verde do commit na main -> publica como Latest. Falha depois do rascunho deixa a
-# release em rascunho (apague-a antes de reexecutar).
+# Fluxo em dois jobs (o secret nunca chega a código fora da main com CI verde):
+#  - `verificar` (SEM Environment, sem secret): commit da tag é ancestral de (ou igual
+#    a) origin/main -> CI de push desse SHA na main concluiu com sucesso (espera até
+#    30 min) -> tag x Cargo.toml, versão > Latest, feature `laboratorio` desligada,
+#    chave embutida não provisória.
+#  - `msi` (Environment `release`, needs: verificar): checkout no SHA exato verificado
+#    (e confere que a tag ainda aponta para ele) -> secret presente -> compila -> MSI ->
+#    SHA-256 -> assina -> rascunho com os 5 arquivos -> baixa para pasta limpa e
+#    verifica com o mesmo verificador do serviço -> publica como Latest. Falha depois
+#    do rascunho deixa a release em rascunho (apague-a antes de reexecutar).
 #
 # Actions fixadas por SHA de commit (Q10); a versão correspondente fica no comentário.
 
@@ -41,21 +46,55 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: '1'
 
 jobs:
-  msi:
-    name: MSI, assinatura e release
+  verificar:
+    name: Verificar commit, CI e versão (sem secret)
     runs-on: windows-latest
-    environment: release   # o secret NV_TUNER_MINISIGN_KEY existe só aqui (tags v*)
-    timeout-minutes: 120
+    # Sem `environment`: este job não tem acesso a NV_TUNER_MINISIGN_KEY.
+    timeout-minutes: 60
     permissions:
-      contents: write   # criar/editar a release e anexar os arquivos
+      contents: read
       actions: read     # consultar a execução do CI do mesmo commit (U-64)
-    # Sem Swatinem/rust-cache: cache compartilhado entre refs poderia ser envenenado e
-    # entraria no binário assinado (§11.2).
+    outputs:
+      sha: ${{ steps.main.outputs.sha }}
+      versao: ${{ steps.versao.outputs.versao }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0   # tags anteriores (link do changelog) e origin/main (U-64)
+          ref: ${{ github.sha }}
+          fetch-depth: 0   # histórico completo para o merge-base com origin/main
           persist-credentials: false
+
+      - name: Commit da tag está na main (U-64)
+        id: main
+        shell: pwsh
+        run: |
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ($LASTEXITCODE -ne 0) { throw "git fetch da main falhou ($LASTEXITCODE)." }
+          git merge-base --is-ancestor $env:GITHUB_SHA refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) {
+            throw "O commit $($env:GITHUB_SHA) da tag $($env:GITHUB_REF_NAME) não é ancestral de (nem igual a) origin/main; nada é compilado nem assinado."
+          }
+          Write-Host "Commit $($env:GITHUB_SHA) está na main."
+          "sha=$($env:GITHUB_SHA)" >> $env:GITHUB_OUTPUT
+
+      - name: Esperar CI verde do mesmo commit na main (U-64)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Espera a execução do CI (push na main) deste commit aparecer: até 30 min.
+          $id = $null
+          for ($i = 0; $i -lt 60 -and -not $id; $i++) {
+            $id = gh run list --repo $env:GITHUB_REPOSITORY --workflow ci.yml --commit $env:GITHUB_SHA `
+              --event push --branch main --limit 1 --json databaseId --jq '.[0].databaseId'
+            if (-not $id) { Start-Sleep -Seconds 30 }
+          }
+          if (-not $id) { throw "Nenhuma execução do CI (push na main) para $($env:GITHUB_SHA); nada é assinado." }
+          gh run watch $id --repo $env:GITHUB_REPOSITORY --exit-status --interval 30
+          if ($LASTEXITCODE -ne 0) { throw "CI $id não terminou com sucesso; nada é assinado." }
+          $conclusao = gh run view $id --repo $env:GITHUB_REPOSITORY --json conclusion --jq .conclusion
+          if ($conclusao -ne 'success') { throw "CI $id concluiu '$conclusao'; nada é assinado." }
+          Write-Host "CI $id verde para $($env:GITHUB_SHA)."
 
       - name: Conferir tag x versão do Cargo.toml
         id: versao
@@ -69,16 +108,6 @@ jobs:
           if ($tag -ne "v$versao") { throw "A tag '$tag' não bate com a versão '$versao' do Cargo.toml (esperado v$versao)." }
           if ($versao -notmatch '^\d+\.\d+\.\d+$') { throw "Versão '$versao' fora do formato X.Y.Z." }
           "versao=$versao" >> $env:GITHUB_OUTPUT
-
-      - name: Conferir secret de assinatura (U-62)
-        shell: pwsh
-        env:
-          NV_TUNER_MINISIGN_KEY: ${{ secrets.NV_TUNER_MINISIGN_KEY }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:NV_TUNER_MINISIGN_KEY)) {
-            throw 'Secret NV_TUNER_MINISIGN_KEY ausente: a release não é publicada sem assinatura (ver CONTRIBUTING.md)'
-          }
-          Write-Host 'Secret NV_TUNER_MINISIGN_KEY presente.'
 
       - name: Conferir versão maior que a Latest (U-66)
         shell: pwsh
@@ -109,6 +138,64 @@ jobs:
             throw "A feature 'laboratorio' de nvt-atualizacao está ativa no build de release:`n$arvore"
           }
           Write-Host 'Feature laboratorio desligada.'
+
+      - name: Compilar nvt-assinar (só para conferir a chave embutida)
+        run: cargo build --release --locked -p nvt-assinar
+
+      - name: Conferir chave oficial embutida (não provisória)
+        shell: pwsh
+        run: |
+          # `verificar` recusa primeiro se a chave embutida for a provisória; numa pasta
+          # vazia qualquer outra falha é esperada (falta o manifesto).
+          $vazia = Join-Path $env:RUNNER_TEMP 'chave-vazia'
+          New-Item -ItemType Directory -Force $vazia | Out-Null
+          $saida = & ./target/release/nvt-assinar.exe verificar --dir $vazia 2>&1 | Out-String
+          if ($saida -match 'provis') { throw "Chave oficial embutida é a provisória; nenhuma release é publicada.`n$saida" }
+          Write-Host 'Chave oficial embutida não é a provisória.'
+          exit 0
+
+  msi:
+    name: MSI, assinatura e release
+    needs: verificar
+    runs-on: windows-latest
+    environment: release   # o secret NV_TUNER_MINISIGN_KEY existe só aqui (tags v*)
+    timeout-minutes: 120
+    permissions:
+      contents: write   # criar/editar a release e anexar os arquivos
+    # Sem Swatinem/rust-cache: cache compartilhado entre refs poderia ser envenenado e
+    # entraria no binário assinado (§11.2).
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verificar.outputs.sha }}   # o SHA exato verificado
+          fetch-depth: 0   # tags anteriores (link do changelog)
+          persist-credentials: false
+
+      - name: Conferir SHA verificado e tag
+        id: versao
+        shell: pwsh
+        env:
+          SHA: ${{ needs.verificar.outputs.sha }}
+          VERSAO: ${{ needs.verificar.outputs.versao }}
+        run: |
+          if (-not $env:SHA -or -not $env:VERSAO) { throw 'Saídas do job verificar ausentes.' }
+          $cabeca = git rev-parse HEAD
+          if ($cabeca -ne $env:SHA) { throw "Checkout em $cabeca, esperado $($env:SHA)." }
+          $alvo = git rev-parse "refs/tags/$($env:GITHUB_REF_NAME)^{commit}"
+          if ($alvo -ne $env:SHA) { throw "A tag $($env:GITHUB_REF_NAME) aponta para $alvo, não para o SHA verificado $($env:SHA)." }
+          "versao=$($env:VERSAO)" >> $env:GITHUB_OUTPUT
+
+      - name: Conferir secret de assinatura (U-62)
+        shell: pwsh
+        env:
+          NV_TUNER_MINISIGN_KEY: ${{ secrets.NV_TUNER_MINISIGN_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:NV_TUNER_MINISIGN_KEY)) {
+            throw 'Secret NV_TUNER_MINISIGN_KEY ausente: a release não é publicada sem assinatura (ver CONTRIBUTING.md)'
+          }
+          Write-Host 'Secret NV_TUNER_MINISIGN_KEY presente.'
+
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
 
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
@@ -264,26 +351,6 @@ jobs:
           if ($n -ne 5) { throw "Esperados 5 arquivos na release, baixados $n." }
           & ./target/release/nvt-assinar.exe verificar --dir $limpa
           if ($LASTEXITCODE -ne 0) { throw "nvt-assinar verificar falhou ($LASTEXITCODE); a release fica em rascunho." }
-
-      - name: Esperar CI verde do mesmo commit na main (U-64)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
-          if ($LASTEXITCODE -ne 0) { throw "O commit $($env:GITHUB_SHA) não está na main; a release fica em rascunho." }
-          # Espera a execução do CI (push na main) deste commit aparecer: até 30 min.
-          $id = $null
-          for ($i = 0; $i -lt 60 -and -not $id; $i++) {
-            $id = gh run list --repo $env:GITHUB_REPOSITORY --workflow ci.yml --commit $env:GITHUB_SHA `
-              --event push --branch main --limit 1 --json databaseId --jq '.[0].databaseId'
-            if (-not $id) { Start-Sleep -Seconds 30 }
-          }
-          if (-not $id) { throw "Nenhuma execução do CI para $($env:GITHUB_SHA) na main; a release fica em rascunho." }
-          gh run watch $id --repo $env:GITHUB_REPOSITORY --exit-status --interval 30
-          if ($LASTEXITCODE -ne 0) { throw "CI $id não terminou com sucesso; a release fica em rascunho." }
-          $conclusao = gh run view $id --repo $env:GITHUB_REPOSITORY --json conclusion --jq .conclusion
-          if ($conclusao -ne 'success') { throw "CI $id concluiu '$conclusao'; a release fica em rascunho." }
 
       - name: Publicar como Latest (U-65)
         shell: pwsh

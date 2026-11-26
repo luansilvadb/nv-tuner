@@ -4,6 +4,7 @@
 //! (`nvt-service::atualizacao`) e a ferramenta `nvt-assinar` usam o mesmo verificador
 //! (U-16).
 
+// Segunda camada de U-15a; a primeira é o `build.rs` (perfil/opt-level).
 #[cfg(all(feature = "laboratorio", not(debug_assertions)))]
 compile_error!(
     "a feature `laboratorio` (URL e chave de ensaio) não pode entrar em build de release (U-15a)"
@@ -48,6 +49,32 @@ pub const URL_MANIFESTO: &str =
 pub const URL_ASSINATURA: &str =
     "https://github.com/luansilvadb/nv-tuner/releases/latest/download/atualizacao.json.minisig";
 
+/// URL base do repositório em uso: a oficial; com a feature `laboratorio`, a de
+/// ensaio (`NVT_ATUALIZACAO_URL_ENSAIO` em compilação), se definida.
+pub fn url_base() -> &'static str {
+    #[cfg(feature = "laboratorio")]
+    if let Some(u) = laboratorio::URL_BASE_ENSAIO {
+        let u = u.trim().trim_end_matches('/');
+        if !u.is_empty() {
+            return u;
+        }
+    }
+    URL_REPOSITORIO
+}
+
+/// URL do manifesto sobre [`url_base`] (igual a [`URL_MANIFESTO`] sem a feature).
+pub fn url_manifesto() -> String {
+    format!("{}/releases/latest/download/atualizacao.json", url_base())
+}
+
+/// URL da assinatura sobre [`url_base`] (igual a [`URL_ASSINATURA`] sem a feature).
+pub fn url_assinatura() -> String {
+    format!(
+        "{}/releases/latest/download/atualizacao.json.minisig",
+        url_base()
+    )
+}
+
 /// Hosts exatos aceitos, inclusive em redirecionamentos (U-04).
 pub const HOSTS_PERMITIDOS: &[&str] = &[
     "github.com",
@@ -73,4 +100,17 @@ pub mod laboratorio {
     pub const URL_BASE_ENSAIO: Option<&str> = option_env!("NVT_ATUALIZACAO_URL_ENSAIO");
     /// Linha base64 da chave pública de ensaio.
     pub const CHAVE_ENSAIO: Option<&str> = option_env!("NVT_ATUALIZACAO_CHAVE_ENSAIO");
+}
+
+#[cfg(all(test, not(feature = "laboratorio")))]
+mod testes_url {
+    use super::*;
+
+    #[test]
+    fn sem_laboratorio_urls_sao_as_oficiais() {
+        assert_eq!(url_base(), URL_REPOSITORIO);
+        assert_eq!(url_manifesto(), URL_MANIFESTO);
+        assert_eq!(url_assinatura(), URL_ASSINATURA);
+        assert!(url_msi("1.2.3".parse().unwrap()).starts_with(URL_REPOSITORIO));
+    }
 }

@@ -108,6 +108,7 @@ pub(crate) fn versao_instalada() -> Versao {
 /// provisória).
 pub(crate) struct VerificadorOficial;
 
+#[cfg(not(feature = "laboratorio"))]
 impl Verificador for VerificadorOficial {
     fn chave_provisoria(&self) -> bool {
         nvt_atualizacao::chave_oficial_provisoria()
@@ -116,6 +117,28 @@ impl Verificador for VerificadorOficial {
     fn verificar(&self, manifesto: &[u8], assinatura: &[u8]) -> Result<Manifesto, ErroVerificacao> {
         nvt_atualizacao::verificar_manifesto_oficial(manifesto, assinatura)
     }
+}
+
+/// Build de laboratório: verifica com a chave de ensaio (falha fechada sem ela).
+#[cfg(feature = "laboratorio")]
+impl Verificador for VerificadorOficial {
+    fn chave_provisoria(&self) -> bool {
+        nvt_atualizacao::Chave::ensaio().is_err()
+    }
+
+    fn verificar(&self, manifesto: &[u8], assinatura: &[u8]) -> Result<Manifesto, ErroVerificacao> {
+        let chave = nvt_atualizacao::Chave::ensaio()?;
+        nvt_atualizacao::verificar_manifesto(manifesto, assinatura, &chave)
+    }
+}
+
+/// Linha base64 da chave pública com que o atualizador verifica.
+#[cfg(any(test, feature = "laboratorio"))]
+pub(crate) fn chave_em_uso() -> Option<&'static str> {
+    #[cfg(feature = "laboratorio")]
+    return nvt_atualizacao::laboratorio::CHAVE_ENSAIO.map(str::trim);
+    #[cfg(not(feature = "laboratorio"))]
+    Some(nvt_atualizacao::CHAVE_OFICIAL)
 }
 
 /// Relógio do sistema.
@@ -166,6 +189,16 @@ impl Fachadas {
         portao: impl Fn() -> Result<(), MotivoAdiamento> + Send + 'static,
         cancelar: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> io::Result<Fachadas> {
+        #[cfg(feature = "laboratorio")]
+        tracing::warn!(
+            "build de laboratório: URL e chave de ensaio (base {}, chave {})",
+            nvt_atualizacao::url_base(),
+            if chave_em_uso().is_some() {
+                "definida"
+            } else {
+                "AUSENTE: nada será verificado"
+            }
+        );
         let rede = super::http::winhttp::RedeWinHttp::nova(cancelar)
             .map_err(|e| io::Error::other(e.to_string()))?;
         Ok(Fachadas {
@@ -792,5 +825,31 @@ pub(crate) mod falsas {
         ) -> Vec<(u32, Result<u32, super::super::lancador::ErroLancador>)> {
             self.0.relancar_agente(sessoes)
         }
+    }
+}
+
+#[cfg(all(test, not(feature = "laboratorio")))]
+mod testes_origem {
+    /// Sem a feature `laboratorio`, URL e chave são as oficiais (U-15a).
+    #[test]
+    fn sem_laboratorio_url_e_chave_oficiais() {
+        assert_eq!(
+            nvt_atualizacao::url_base(),
+            nvt_atualizacao::URL_REPOSITORIO
+        );
+        assert_eq!(
+            nvt_atualizacao::url_manifesto(),
+            nvt_atualizacao::URL_MANIFESTO
+        );
+        assert_eq!(
+            nvt_atualizacao::url_assinatura(),
+            nvt_atualizacao::URL_ASSINATURA
+        );
+        let pub_arquivo = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../instalador/nv-tuner-minisign.pub"
+        ));
+        let linha = pub_arquivo.lines().nth(1).map(str::trim);
+        assert_eq!(super::chave_em_uso(), linha);
     }
 }

@@ -8,6 +8,10 @@ license.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[features]
+# Só para o laboratório (U-15a): URL base e chave de ensaio; nunca em release.
+laboratorio = ["nvt-atualizacao/laboratorio"]
+
 [dependencies]
 nvt-ipc.workspace = true
 nvt-core = { path = "../nvt-core" }

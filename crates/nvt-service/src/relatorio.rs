@@ -111,8 +111,12 @@ fn ler_estado_atualizacao() -> Result<nvt_atualizacao::EstadoPersistido, String>
     use std::io::Read;
     const LIMITE: u64 = 64 * 1024;
     let pasta = crate::atualizacao::arquivo::pasta_padrao().map_err(|e| e.to_string())?;
+    // Mesma proteção do atualizador: componentes sem reparse point e arquivo aberto
+    // sem seguir link, só leitura.
+    crate::atualizacao::arquivo::componentes_sem_reparse(&pasta).map_err(|e| e.to_string())?;
     let ler = |nome: &str| -> Result<Option<Vec<u8>>, String> {
-        match std::fs::File::open(pasta.join(nome)) {
+        let p = pasta.join(nome);
+        match crate::diretorio::abrir_sem_reparse(&p, std::fs::OpenOptions::new().read(true)) {
             Ok(f) => {
                 let mut v = Vec::new();
                 f.take(LIMITE)

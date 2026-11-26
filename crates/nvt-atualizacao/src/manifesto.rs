@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use crate::chave::Chave;
 use crate::estado::UltimoResultado;
 use crate::versao::Versao;
-use crate::{LIMITE_ASSINATURA, LIMITE_MANIFESTO, LIMITE_MSI, PRODUTO, URL_REPOSITORIO};
+use crate::{LIMITE_ASSINATURA, LIMITE_MANIFESTO, LIMITE_MSI, PRODUTO};
 
 /// Único `formato` aceito.
 pub const FORMATO: u64 = 1;
@@ -142,7 +142,8 @@ pub fn nome_log(versao: Versao) -> String {
 /// URL do MSI derivada da versão.
 pub fn url_msi(versao: Versao) -> String {
     format!(
-        "{URL_REPOSITORIO}/releases/download/v{versao}/{}",
+        "{}/releases/download/v{versao}/{}",
+        crate::url_base(),
         nome_msi(versao)
     )
 }

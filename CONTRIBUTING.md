@@ -85,8 +85,9 @@ gh secret list --env release --repo luansilvadb/nv-tuner   # mostra só nome e d
 
 1. **Environment `release`**: *Settings → Environments → New environment* →
    `release`; em *Deployment branches and tags*, escolha *Selected branches and
-   tags* e adicione só a regra de **tag** `v*`. Sem revisores obrigatórios (o
-   lançamento continua automático). Pela CLI:
+   tags* e adicione só a regra de **tag** `v*`. Marque **Required reviewers** com
+   o próprio mantenedor: cada lançamento espera a aprovação dele antes de o job
+   `msi` (o único que lê o secret) começar. Pela CLI (revisores pela interface):
 
    ```powershell
    gh api -X PUT repos/luansilvadb/nv-tuner/environments/release -F "deployment_branch_policy[protected_branches]=false" -F "deployment_branch_policy[custom_branch_policies]=true"
@@ -101,6 +102,16 @@ gh secret list --env release --repo luansilvadb/nv-tuner   # mostra só nome e d
    alvo `main`, exigindo pull request e o status do workflow `CI` e bloqueando
    *force push* e exclusão. O release só publica commit que está na `main` com CI
    verde.
+
+Por que os três juntos: o `release.yml` já roda num job **sem secret**
+(`verificar`) a exigência de que o commit da tag seja ancestral da `origin/main` e
+tenha CI de push verde, e só então o job `msi` (Environment `release`) compila e
+assina aquele SHA exato. Isso impede que uma tag sobre um commit não revisado
+chegue à chave. O que sobra é quem consegue pôr código na `main` ou empurrar uma
+tag `v*` (conta comprometida, token vazado): a proteção da `main` obriga PR com
+CI, o ruleset de tags restringe quem cria `v*`, e os revisores obrigatórios do
+Environment fazem o mantenedor aprovar cada lançamento antes de o secret ser
+entregue. Sem eles, o workflow sozinho não fecha esse risco.
 
 ### Publicar a chave pública
 
@@ -153,10 +164,15 @@ arquivos>` usa o mesmo verificador do serviço.
 ## Como lançar uma versão
 
 A release é criada pelo workflow [`release.yml`](.github/workflows/release.yml)
-quando uma tag `vX.Y.Z` chega ao GitHub. O job roda no Environment `release` e,
-em ordem: confere tag × `Cargo.toml`, a presença do secret, versão **maior** que a
-Latest atual e a feature `laboratorio` desligada; compila em release (`--locked`,
-sem cache); confere que a chave embutida **não** é a provisória; gera o MSI e o
+quando uma tag `vX.Y.Z` chega ao GitHub. Primeiro o job `verificar`, **sem**
+acesso ao secret, exige que o commit da tag seja ancestral de (ou igual a)
+`origin/main` e que o CI de push desse mesmo SHA na `main` tenha terminado com
+sucesso (espera até 30 min), e confere tag × `Cargo.toml`, versão **maior** que a
+Latest atual, a feature `laboratorio` desligada e que a chave embutida **não** é a
+provisória. Só então o job `msi` roda no Environment `release` (após a aprovação
+do revisor), faz checkout do SHA exato verificado (e confere que a tag ainda
+aponta para ele) e, em ordem: confere a presença do secret; compila em release
+(`--locked`, sem cache); gera o MSI e o
 `.sha256`; roda `nvt-assinar assinar --versao X.Y.Z --msi <msi>` (gera
 `atualizacao.json`, `atualizacao.json.minisig` e `<msi>.minisig`); cria a release
 em **rascunho** com os cinco arquivos; baixa os cinco para uma pasta limpa e roda

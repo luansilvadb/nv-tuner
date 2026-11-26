@@ -4,16 +4,22 @@ Roteiro da tarefa 6.1 de [`atualizacao.md`](atualizacao.md) (§12, §13; decisã
 Nenhum lançamento com atualizador sai antes de L-01..L-11 aprovados e registrados aqui.
 Os campos **Resultado** ficam em branco até a execução.
 
-> **Pré-requisito de código (pendente).** O crate `nvt-atualizacao` já define a feature
-> `laboratorio` (`laboratorio::URL_BASE_ENSAIO`, `laboratorio::CHAVE_ENSAIO` e
-> `Chave::ensaio()`, lidas de `NVT_ATUALIZACAO_URL_ENSAIO` e
-> `NVT_ATUALIZACAO_CHAVE_ENSAIO` **em compilação**), mas o serviço ainda usa só
-> `URL_MANIFESTO`/`URL_ASSINATURA`, `url_msi` sobre o repositório oficial e
-> `Chave::oficial()`, e `nvt-service` não repassa a feature. Antes do laboratório, uma
-> tarefa de código precisa: (1) acrescentar `laboratorio = ["nvt-atualizacao/laboratorio"]`
-> ao `nvt-service`; (2) com a feature, montar as três URLs sobre `URL_BASE_ENSAIO` e
-> verificar com `Chave::ensaio()`; (3) manter U-15a (sem a feature, nada muda). Sem isso,
-> os passos “build de laboratório” abaixo compilam mas falam com o repositório oficial.
+> **Pré-requisito de código (atendido).** `nvt-service` tem a feature
+> `laboratorio = ["nvt-atualizacao/laboratorio"]`: com ela, manifesto, assinatura e MSI
+> são buscados sobre `NVT_ATUALIZACAO_URL_ENSAIO` e verificados com
+> `NVT_ATUALIZACAO_CHAVE_ENSAIO` (ambas lidas **em compilação**), e o serviço registra
+> ao iniciar `build de laboratório: URL e chave de ensaio`. Sem a feature nada muda
+> (U-15a). Build otimizado com a feature falha (`build.rs` + `compile_error!`). Build da
+> VM (debug), na raiz da árvore de laboratório:
+>
+> ```powershell
+> $env:NVT_ATUALIZACAO_URL_ENSAIO = 'https://github.com/<conta-de-ensaio>/nv-tuner-ensaio'
+> $env:NVT_ATUALIZACAO_CHAVE_ENSAIO = $chaveEnsaio   # 2ª linha de C:\lab\ensaio.pub
+> cargo build -p nvt-service -p nvt-ui -p nvt-agente --features nvt-service/laboratorio
+> ```
+>
+> Confira no log do serviço, após instalar, a linha de aviso acima; sem ela o build não
+> é de laboratório.
 
 ## Ambiente
 
