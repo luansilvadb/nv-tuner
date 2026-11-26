@@ -13,7 +13,7 @@ cada jogo instalado e as suas preferências.
 
 ## Status
 
-**Pré-alfa (v0.1).** Serviço, interface, motor de regras e instalador já
+**Pré-alfa (v0.1.0).** Serviço, interface, motor de regras e instalador já
 funcionam, mas o projeto foi testado em pouquíssimas máquinas (uma GPU Turing,
 um driver). Espere bugs, mudanças de formato entre versões e regras ainda
 `experimental`. Use por sua conta e risco, de preferência sabendo restaurar o
@@ -22,8 +22,8 @@ perfil do driver.
 - O MSI **não é assinado** digitalmente (veja o aviso do SmartScreen abaixo).
 - Os lançamentos são publicados como release normal (Latest), assinados com
   Minisign.
-- A partir da primeira versão com atualizador, o nv-tuner **se atualiza
-  sozinho** (veja [Atualização automática](#atualização-automática)).
+- A partir da v0.1.0 (primeira versão com atualizador, instalada à mão uma
+  vez), o nv-tuner **se atualiza sozinho** (veja [Atualização automática](#atualização-automática)).
 
 ## Atualização automática
 

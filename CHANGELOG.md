@@ -9,11 +9,15 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
-*Fase competitiva 2: camada Windows*
+## [0.1.0] - 2026-11-26
 
-> Pendência de lançamento: os executáveis e o MSI desta fase precisam ser
-> **assinados digitalmente** (Authenticode) antes da publicação. Builds de
-> desenvolvimento continuam sem assinatura.
+*Competitivo, ajustes do Windows e atualização automática*
+
+> **Instale esta versão à mão uma vez.** A v0.1.0 é a primeira com atualização automática: quem tem a v0.0.2 (ou anterior) baixa o MSI desta release e instala por cima. A partir dela, as próximas versões chegam sozinhas.
+
+> O MSI e os executáveis ainda **não** têm assinatura digital Authenticode (o SmartScreen pode avisar); as atualizações são verificadas com Minisign.
+
+*Fase competitiva 2: camada Windows*
 
 ### Adicionado
 
@@ -32,8 +36,6 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - Instalador: inclui `nvt-agente.exe` e a entrada de inicialização no logon (removida na desinstalação); o Restart Manager fecha o agente de forma cooperativa na atualização e na remoção.
 
 *Atualização automática*
-
-> Pendência de lançamento: `instalador/nv-tuner-minisign.pub` ainda tem a chave **provisória**; enquanto o mantenedor não gravar a oficial (CONTRIBUTING.md, “Chave de assinatura”), todo release falha e todo serviço recusa atualização. A primeira versão com atualizador é instalada à mão (bootstrap).
 
 ### Adicionado
 
@@ -101,6 +103,7 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - **Interface em GPUI** com 6 telas em português e restauração do estado original.
 - Instalador MSI.
 
-[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.0.2...HEAD
+[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.0.2...v0.1.0
 [0.0.2]: https://github.com/luansilvadb/nv-tuner/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/luansilvadb/nv-tuner/releases/tag/v0.0.1

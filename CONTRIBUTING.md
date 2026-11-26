@@ -85,9 +85,15 @@ gh secret list --env release --repo luansilvadb/nv-tuner   # mostra só nome e d
 
 1. **Environment `release`**: *Settings → Environments → New environment* →
    `release`; em *Deployment branches and tags*, escolha *Selected branches and
-   tags* e adicione só a regra de **tag** `v*`. Marque **Required reviewers** com
-   o próprio mantenedor: cada lançamento espera a aprovação dele antes de o job
-   `msi` (o único que lê o secret) começar. Pela CLI (revisores pela interface):
+   tags* e adicione só a regra de **tag** `v*`. Recomendado: marcar **Required
+   reviewers** com o próprio mantenedor, para cada lançamento esperar a aprovação
+   dele antes de o job `msi` (o único que lê o secret) começar. **Decisão do
+   mantenedor (2026-11-26):** o Environment foi criado **sem** revisores
+   obrigatórios, por praticidade, com a regra de tag `v*` e o secret só nele.
+   Risco residual: quem puder criar uma tag `v*` num commit da `main` com CI
+   verde publica uma release assinada sem aprovação; o que protege é a conta do
+   mantenedor, a proteção da `main` e o ruleset de tags (itens 2 e 3, que
+   continuam recomendados). Pela CLI (revisores, se adotados, pela interface):
 
    ```powershell
    gh api -X PUT repos/luansilvadb/nv-tuner/environments/release -F "deployment_branch_policy[protected_branches]=false" -F "deployment_branch_policy[custom_branch_policies]=true"
@@ -110,7 +116,8 @@ assina aquele SHA exato. Isso impede que uma tag sobre um commit não revisado
 chegue à chave. O que sobra é quem consegue pôr código na `main` ou empurrar uma
 tag `v*` (conta comprometida, token vazado): a proteção da `main` obriga PR com
 CI, o ruleset de tags restringe quem cria `v*`, e os revisores obrigatórios do
-Environment fazem o mantenedor aprovar cada lançamento antes de o secret ser
+Environment (recomendados; hoje desligados por decisão do mantenedor, item 1)
+fariam o mantenedor aprovar cada lançamento antes de o secret ser
 entregue. Sem eles, o workflow sozinho não fecha esse risco.
 
 ### Publicar a chave pública
@@ -170,7 +177,7 @@ acesso ao secret, exige que o commit da tag seja ancestral de (ou igual a)
 sucesso (espera até 30 min), e confere tag × `Cargo.toml`, versão **maior** que a
 Latest atual, a feature `laboratorio` desligada e que a chave embutida **não** é a
 provisória. Só então o job `msi` roda no Environment `release` (após a aprovação
-do revisor), faz checkout do SHA exato verificado (e confere que a tag ainda
+do revisor, se houver revisores obrigatórios), faz checkout do SHA exato verificado (e confere que a tag ainda
 aponta para ele) e, em ordem: confere a presença do secret; compila em release
 (`--locked`, sem cache); gera o MSI e o
 `.sha256`; roda `nvt-assinar assinar --versao X.Y.Z --msi <msi>` (gera

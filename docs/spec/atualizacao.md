@@ -99,7 +99,7 @@ O texto dos requisitos abaixo já foi alinhado; esta tabela guarda o que mudou e
 | D-07 | `minisign` 0.11 com `-G -W` para gerar a chave | `nvt-assinar gerar-chave`, que usa `minisign` **0.7.9** com `KeyPair::generate_encrypted_keypair(Some(""))` | `generate_unencrypted_keypair` do 0.7.9 não grava a soma de conferência da chave secreta (bug do modo sem senha); com senha vazia o resultado é equivalente a `-W` e carrega em `SecretKey` sem interação |
 | D-08 | §7: transições no laço principal, rede/hash numa thread de trabalho devolvendo `Evento::Atualizacao(..)` | O `Atualizador` inteiro roda numa **thread própria** (`nvt-atualizacao`, `ThreadAtualizacao` em `laco.rs`); `tick` é síncrono; a exclusão com o ciclo DRS é a `Exclusao` (o portão do atualizador reserva a instalação esperando o ciclo DRS em curso; reservada, nenhum ciclo DRS começa até o fim do `tick`); o laço só lê a última projeção e repassa as sessões com agente | Mantém o laço DRS livre de downloads de minutos e de estado de atualização; a garantia que importava (“nenhuma instalação começa durante uma gravação DRS”) fica explícita num único ponto testável |
 | D-09 | §11.1: recuperação do SCM inalterada (Q12) | `ThirdFailureActionType="restart"` e `REBOOT=ReallySuppress` no WiX | Sem serviço não há atualizador (Q12); nunca reiniciar o Windows também em instalação interativa |
-| D-10 | U-64: “commit na `main`” e “CI verde” conferidos **depois** da assinatura, antes de publicar; Environment `release` sem revisores | `release.yml` em dois jobs: `verificar` (sem Environment/secret) faz fetch explícito da `main`, exige `merge-base --is-ancestor` com `origin/main`, espera o CI de push do mesmo SHA na `main` (até 30 min; falha sem run ou com conclusão ≠ `success`) e só então confere tag × versão, versão > Latest, feature `laboratorio` e chave não provisória; `msi` (Environment `release`, `needs: verificar`) faz checkout do SHA exato verificado, confere que a tag ainda aponta para ele e só depois compila, assina, cria o rascunho, verifica e publica. Environment `release` com **revisores obrigatórios** (o mantenedor) | Achado ALTO de revisão: uma tag `v*` sobre commit fora da `main` entregava `NV_TUNER_MINISIGN_KEY` ao `nvt-assinar` compilado desse commit não revisado. O resto do risco (conta comprometida, push de tag) fica com a proteção da `main`, o ruleset de tags `v*` e a aprovação manual do Environment (CONTRIBUTING.md) |
+| D-10 | U-64: “commit na `main`” e “CI verde” conferidos **depois** da assinatura, antes de publicar; Environment `release` sem revisores | `release.yml` em dois jobs: `verificar` (sem Environment/secret) faz fetch explícito da `main`, exige `merge-base --is-ancestor` com `origin/main`, espera o CI de push do mesmo SHA na `main` (até 30 min; falha sem run ou com conclusão ≠ `success`) e só então confere tag × versão, versão > Latest, feature `laboratorio` e chave não provisória; `msi` (Environment `release`, `needs: verificar`) faz checkout do SHA exato verificado, confere que a tag ainda aponta para ele e só depois compila, assina, cria o rascunho, verifica e publica. Environment `release` com **revisores obrigatórios** (o mantenedor) recomendado; **decisão do mantenedor (2026-11-26)**: criado **sem** revisores, por praticidade, com regra de implantação só para tags `v*` e o secret só nele | Achado ALTO de revisão: uma tag `v*` sobre commit fora da `main` entregava `NV_TUNER_MINISIGN_KEY` ao `nvt-assinar` compilado desse commit não revisado. O resto do risco (conta comprometida, push de tag) fica com a proteção da `main`, o ruleset de tags `v*` e a aprovação manual do Environment (CONTRIBUTING.md). Sem revisores, risco residual aceito pelo mantenedor: quem puder criar tag `v*` em commit da `main` com CI verde publica uma release assinada; restam a conta do mantenedor, a proteção da `main` e o ruleset de tags (continuam recomendados) |
 
 ---
 
@@ -664,8 +664,10 @@ pasta nova + `nvt-assinar verificar`; (16) `gh release edit --draft=false --late
 secret entra só nos passos 8 e 12, via `env:`. `concurrency` mantido.
 
 Endurecimento obrigatório: `NV_TUNER_MINISIGN_KEY` é secret de **Environment** `release`
-com **revisores obrigatórios** (o mantenedor aprova cada lançamento) e regra de
-implantação só para tags `v*`, somados à `main` protegida e às tags `v*` restritas por
+com regra de implantação só para tags `v*` e **revisores obrigatórios** recomendados (o
+mantenedor aprovaria cada lançamento; por **decisão do mantenedor** em 2026-11-26 o
+Environment foi criado sem revisores, aceitando o risco residual de que quem puder criar
+tag `v*` em commit da `main` com CI verde publica release assinada), somados à `main` protegida e às tags `v*` restritas por
 ruleset (D-10, CONTRIBUTING.md); sem isso qualquer workflow alterado num branch com
 permissão de push leria o secret. O job de release não usa `Swatinem/rust-cache` (cache
 compartilhado pode ser envenenado por outro ref e entraria no binário assinado). Passo
@@ -810,8 +812,11 @@ detalhado, com campos de resultado: [`atualizacao-laboratorio.md`](atualizacao-l
    release nova (máquinas ficariam presas: considerar aceitar `*.githubusercontent.com`
    com TLS válido?).
 4. **Q4 — chave sem senha (`-W`) protegida só pelo secret**: aceita por A9; avaliar
-   Environment `release` com aprovação manual (P§4): **resolvido** por D-10, com revisores
-   obrigatórios no Environment (o mantenedor aprova cada lançamento).
+   Environment `release` com aprovação manual (P§4): **resolvido** por D-10 com o secret só no
+   Environment (regra de tag `v*`); revisores obrigatórios continuam recomendados, mas o
+   mantenedor decidiu (2026-11-26) criá-lo sem eles. Risco residual aceito: quem puder
+   criar tag `v*` em commit da `main` com CI verde publica release assinada; restam a conta
+   do mantenedor, a proteção da `main` e o ruleset de tags.
 5. **Q5 — CI do commit da tag**: o `ci.yml` só roda em `push` na `main` e em PR; tag
    feita em commit que não passou pela `main` falha no job `verificar`, antes de compilar ou de acessar o secret (U-64, D-10). Aceitar ou acrescentar
    `push: tags` ao CI?
