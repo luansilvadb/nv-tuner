@@ -587,7 +587,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
         }))
     }
 
-    /// Portão duplo → backup (1ª vez) → intenção → gravação com hash → releitura.
+    /// Backup (1ª vez) → intenção → portão duplo → gravação com hash → releitura.
     fn escrever_jogo(
         &mut self,
         def: &DefArquivoJogo,
@@ -612,16 +612,8 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
         };
         let jogo = def.jogo.as_str();
         let processos = janela::processos(&self.agente.base, def);
-        if let Err(b) = janela::verificar(
-            &self.agente.portao,
-            &self.agente.base,
-            self.vigiados.as_ref(),
-            &processos,
-        ) {
-            marcar(&mut resultados, Pendente, b.motivo());
-            return Ok(resultados);
-        }
         let amb = self.agente.jogo.as_ref().expect("ambiente");
+        let mut backup_novo: Option<std::path::PathBuf> = None;
         let i = match indice {
             Some(i) => {
                 if ler_backup(amb, jogo, &self.estado.jogo.arquivos[i]).is_err() {
@@ -643,6 +635,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
                         return Ok(resultados);
                     }
                 };
+                backup_novo = b.criado_agora.then(|| b.caminho.clone());
                 self.estado.jogo.arquivos.push(ArquivoGerido {
                     arquivo: def.id.clone(),
                     instancia: inst.instancia.clone(),
@@ -683,6 +676,44 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             caminho: inst.caminho.clone(),
         });
         self.salvar()?;
+        // Portão duplo imediatamente antes da gravação (competitivo §3): nenhuma E/S
+        // entre a consulta e o `gravar`.
+        let portao = janela::verificar(
+            &self.agente.portao,
+            &self.agente.base,
+            self.vigiados.as_ref(),
+            &processos,
+        );
+        if let Err(b) = portao {
+            // Recusa: a intenção nunca foi executada; some do estado para a recuperação
+            // não a tomar por gravação interrompida. Gestão recém-criada também some, com
+            // o backup criado agora (órfão, divergiria do arquivo na próxima tentativa).
+            if indice.is_none() {
+                self.estado.jogo.arquivos.pop();
+            } else {
+                self.estado.jogo.arquivos[i].intencao = None;
+            }
+            self.salvar()?;
+            if let Some(orig) = backup_novo {
+                let mut h = orig.clone().into_os_string();
+                h.push(".sha256");
+                let _ = std::fs::remove_file(h);
+                let _ = std::fs::remove_file(&orig);
+                // Pastas vazias criadas para o backup (jogo e base), se vazias.
+                let base = self.agente.jogo.as_ref().and_then(|a| a.dir_backups().ok());
+                let mut pasta = orig.parent().map(Path::to_path_buf);
+                while let Some(p) = pasta {
+                    if base.as_deref().is_none_or(|b| !p.starts_with(b))
+                        || std::fs::remove_dir(&p).is_err()
+                    {
+                        break;
+                    }
+                    pasta = p.parent().map(Path::to_path_buf);
+                }
+            }
+            marcar(&mut resultados, Pendente, b.motivo());
+            return Ok(resultados);
+        }
         let amb = self.agente.jogo.as_ref().expect("ambiente");
         let gravado = amb
             .gravador

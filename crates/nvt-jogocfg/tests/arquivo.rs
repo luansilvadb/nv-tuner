@@ -219,3 +219,25 @@ fn replacefilew_preserva_atributos_acl_e_criacao() {
     assert!(depois.starts_with("D:P"), "{depois}");
     assert!(acl_antes.starts_with("D:P"), "{acl_antes}");
 }
+
+#[test]
+fn escritor_externo_aberto_impede_a_gravacao() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let t = Temp::novo("trava");
+    let p = t.0.join("a.ini");
+    fs::write(&p, b"[s]\nA=1\n").unwrap();
+    let lido = ler(&t.0, &p).unwrap();
+    // Escritor externo com compartilhamento total: a trava sem FILE_SHARE_WRITE não abre.
+    let w = fs::OpenOptions::new()
+        .write(true)
+        .share_mode(7)
+        .open(&p)
+        .unwrap();
+    assert!(gravar(&t.0, &p, b"x", &lido.hash).is_err());
+    drop(w);
+    assert_eq!(fs::read(&p).unwrap(), b"[s]\nA=1\n");
+    // Sem o escritor, a gravação passa (ReplaceFileW convive com a trava).
+    gravar(&t.0, &p, b"x", &lido.hash).unwrap();
+    assert_eq!(fs::read(&p).unwrap(), b"x");
+    assert_eq!(fs::read_dir(&t.0).unwrap().count(), 1);
+}

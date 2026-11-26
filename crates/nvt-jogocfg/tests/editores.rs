@@ -277,3 +277,31 @@ fn ini_preserva_espacos_ao_redor_do_valor() {
     let s = String::from_utf8(depois).unwrap();
     assert!(s.contains("OneFrameThreadLag\t=\tFalse  \r\n"), "{s:?}");
 }
+
+#[test]
+fn launch_options_com_barras_e_aspas_so_muda_o_valor_alterado() {
+    use nvt_jogocfg::vdf::{definir, ler};
+    let c = ["r", "LaunchOptions"];
+    for bruto in [
+        r#"-x \"C:\\Program Files\\Jogo\\a.cfg\" +fps_max 120"#,
+        r#"-exec C:\\Users\\eu\\cfg.cfg +fps_max 120 -novid"#,
+        r#"+fps_max 120 -path \"D:\\Jogos\\\" \\\\servidor\\pasta"#,
+    ] {
+        let t = format!("\"r\"\n{{\n\t\"LaunchOptions\"\t\t\"{bruto}\"\n}}\n");
+        let v = ler(&t, &c).unwrap();
+        let novo = definir(&t, &c, &v.replace("120", "240")).expect(bruto);
+        assert_eq!(novo, t.replace("120", "240"), "{bruto}");
+    }
+}
+
+#[test]
+fn launch_options_com_escape_desconhecido_e_recusada() {
+    use nvt_jogocfg::vdf::{definir, ler};
+    let c = ["r", "LaunchOptions"];
+    for bruto in [r"-x C:\q +fps_max 120", r"-x C:\Jogo\cfg +fps_max 120"] {
+        let t = format!("\"r\"\n{{\n\t\"LaunchOptions\"\t\t\"{bruto}\"\n}}\n");
+        let v = ler(&t, &c).unwrap();
+        let e = definir(&t, &c, &v.replace("120", "240")).unwrap_err();
+        assert!(matches!(e, Erro::FormatoInesperado(_)), "{bruto}: {e:?}");
+    }
+}

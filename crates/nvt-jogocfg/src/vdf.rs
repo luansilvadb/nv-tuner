@@ -192,6 +192,14 @@ pub fn ler(texto: &str, caminho: &[&str]) -> Resultado<String> {
 pub fn definir(texto: &str, caminho: &[&str], novo: &str) -> Resultado<String> {
     let f = localizar(texto, caminho)?;
     let bruto = if f.aspas {
+        // O escape é local a cada caractere: se o valor atual reescapado reproduz o bruto
+        // byte a byte, só os caracteres alterados mudam na regravação. Escape fora de
+        // `\\ \" \n \t` (ex.: `C:\q`) ou tab/quebra crus não reproduzem: recusa.
+        if com_escape(&f.valor) != texto[f.faixa.clone()] {
+            return Err(Erro::formato(
+                "cadeia com escape não suportado; regravar mudaria o resto",
+            ));
+        }
         com_escape(novo)
     } else {
         let simples = !novo.is_empty()

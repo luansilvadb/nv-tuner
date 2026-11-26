@@ -51,6 +51,7 @@ impl FonteProcessos for Procs {
     }
 
     fn ler(&self) -> Result<Vec<Processo>, ListaIndisponivel> {
+        registrar("portao");
         match &*self.0.lock().unwrap() {
             Some(v) => Ok(v
                 .iter()
@@ -78,6 +79,7 @@ impl Persistencia for Memoria {
     }
 
     fn salvar(&self, estado: &Estado) -> io::Result<()> {
+        registrar("salvar");
         *self.0.borrow_mut() = serde_json::to_vec(estado)?;
         Ok(())
     }
@@ -147,6 +149,7 @@ impl GravadorJogo for Grav {
             fs::write(caminho.with_file_name(format!("{nome}.nvt-9-9.tmp")), novo).unwrap();
             panic!("queda antes do ReplaceFileW");
         }
+        registrar("gravar");
         let h = GravadorReal.gravar(raiz, caminho, novo, hash)?;
         self.gravacoes.set(self.gravacoes.get() + 1);
         assert!(
@@ -958,4 +961,134 @@ fn estado_v6_carrega_sem_familia_jogo() {
     assert!(e.jogo.vazio());
     let json = serde_json::to_string(&e).unwrap();
     assert!(!json.contains("jogo"), "{json}");
+}
+
+// ── Ordem do portão (competitivo §3) ────────────────────────────────────────
+
+thread_local! {
+    /// Sequência de chamadas às fachadas: "portao", "salvar", "gravar".
+    static LOG: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+}
+
+fn registrar(e: &'static str) {
+    LOG.with(|l| l.borrow_mut().push(e));
+}
+
+fn log_limpar() {
+    LOG.with(|l| l.borrow_mut().clear());
+}
+
+/// Cada gravação vem depois de um `salvar` (intenção) seguido só de consultas ao portão.
+fn conferir_ordem(gravacoes_esperadas: usize) {
+    let log = LOG.with(|l| l.borrow().clone());
+    let posicoes: Vec<usize> = (0..log.len()).filter(|&i| log[i] == "gravar").collect();
+    assert_eq!(posicoes.len(), gravacoes_esperadas, "{log:?}");
+    for g in posicoes {
+        let antes = &log[..g];
+        let ultimo_salvar = antes
+            .iter()
+            .rposition(|e| *e == "salvar")
+            .expect("intenção");
+        let meio = &antes[ultimo_salvar + 1..];
+        assert!(!meio.is_empty(), "portão antes da gravação: {log:?}");
+        assert!(meio.iter().all(|e| *e == "portao"), "{log:?}");
+    }
+}
+
+#[test]
+fn portao_imediatamente_antes_de_cada_gravacao() {
+    let mut c = Cenario::novo();
+    let mut a = c.agente();
+    let fatos = c.fatos(&mut a);
+    let r6 = fato(&fatos, "r6-game-settings").clone();
+    let cs2 = fato(&fatos, "cs2-launch").clone();
+    log_limpar();
+    let (_, rs) = c.rodar(
+        &mut a,
+        vec![
+            aplicar(&r6, "r6_fps_limit", ValorJogoIpc::Inteiro(144)),
+            aplicar(
+                &cs2,
+                "cs2_fps_max",
+                ValorJogoIpc::TokenLancamento(Some(144)),
+            ),
+        ],
+    );
+    assert!(rs.iter().all(|r| r.status == StatusMudanca::Aplicada));
+    conferir_ordem(2);
+    assert!(
+        c.backups().join("r6-siege").exists(),
+        "backup antes da gravação"
+    );
+
+    let f = c.fatos(&mut a);
+    let r6 = fato(&f, "r6-game-settings").clone();
+    log_limpar();
+    let (_, rs) = c.rodar(&mut a, vec![restaurar(&r6, "r6_fps_limit")]);
+    assert_eq!(so(&rs).status, StatusMudanca::Aplicada);
+    conferir_ordem(1);
+
+    log_limpar();
+    let plano = c.plano(Vec::new(), OperacaoUsuario::Restaurar);
+    let (r, _, _) = c.passo_com(&mut a, plano, true);
+    assert_eq!(r.unwrap(), Controle::Restaurado);
+    conferir_ordem(1);
+    assert_eq!(ler(&c.localconfig()), LOCALCONFIG.as_bytes());
+}
+
+#[test]
+fn portao_recusando_nao_grava_nem_deixa_intencao() {
+    let mut c = Cenario::novo();
+    let mut a = c.agente();
+    let fatos = c.fatos(&mut a);
+    let r6 = fato(&fatos, "r6-game-settings").clone();
+
+    // Primeira vez: nem gestão nem backup ficam.
+    c.procs.definir(Some(&["RainbowSix.exe"]));
+    log_limpar();
+    let (_, rs) = c.rodar(
+        &mut a,
+        vec![aplicar(&r6, "r6_fps_limit", ValorJogoIpc::Inteiro(144))],
+    );
+    assert_eq!(so(&rs).status, StatusMudanca::Pendente);
+    conferir_ordem(0);
+    assert_eq!(c.grav.gravacoes.get(), 0);
+    assert!(c.estado().jogo.arquivos.is_empty());
+    assert!(!c.backups().exists());
+
+    // O jogo mudou o arquivo enquanto aberto: o backup novo não diverge depois.
+    escrever(&c.r6(), &r6_com("90"));
+    c.procs.definir(Some(&[]));
+    let f = c.fatos(&mut a);
+    let r6 = fato(&f, "r6-game-settings").clone();
+    let (_, rs) = c.rodar(
+        &mut a,
+        vec![aplicar(&r6, "r6_fps_limit", ValorJogoIpc::Inteiro(144))],
+    );
+    assert_eq!(so(&rs).status, StatusMudanca::Aplicada);
+    assert_eq!(c.grav.gravacoes.get(), 1);
+
+    // Restaurar com o jogo aberto: pendente, sem gravação e sem intenção persistida.
+    c.procs.definir(Some(&["RainbowSix.exe"]));
+    let f = c.fatos(&mut a);
+    let r6 = fato(&f, "r6-game-settings").clone();
+    let (_, rs) = c.rodar(&mut a, vec![restaurar(&r6, "r6_fps_limit")]);
+    assert_eq!(so(&rs).status, StatusMudanca::Pendente);
+    assert_eq!(c.grav.gravacoes.get(), 1);
+    assert!(
+        c.estado()
+            .jogo
+            .arquivos
+            .iter()
+            .all(|g| g.intencao.is_none())
+    );
+    assert_eq!(ler(&c.r6()), r6_com("144"));
+
+    // Fechado: a restauração segue normalmente.
+    c.procs.definir(Some(&[]));
+    let f = c.fatos(&mut a);
+    let r6 = fato(&f, "r6-game-settings").clone();
+    let (_, rs) = c.rodar(&mut a, vec![restaurar(&r6, "r6_fps_limit")]);
+    assert_eq!(so(&rs).status, StatusMudanca::Aplicada);
+    assert_eq!(ler(&c.r6()), r6_com("90"));
 }

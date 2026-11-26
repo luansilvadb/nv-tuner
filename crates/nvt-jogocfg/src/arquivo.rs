@@ -70,10 +70,10 @@ pub fn existe(raiz: &Path, caminho: &Path) -> Resultado<bool> {
     }
 }
 
-fn abrir(caminho: &Path) -> Resultado<(File, u32)> {
+fn abrir(caminho: &Path, compartilhamento: u32) -> Resultado<(File, u32)> {
     let f = OpenOptions::new()
         .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .share_mode(compartilhamento)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(caminho)
         .map_err(|e| match e.kind() {
@@ -96,8 +96,18 @@ fn abrir(caminho: &Path) -> Resultado<(File, u32)> {
 
 /// Lê o arquivo inteiro (compartilhamento total; o handle é fechado ao retornar).
 pub fn ler(raiz: &Path, caminho: &Path) -> Resultado<Lido> {
+    ler_com(
+        raiz,
+        caminho,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    )
+    .map(|(l, _)| l)
+}
+
+/// Lê pelo handle aberto com `compartilhamento` e devolve o handle ainda aberto.
+fn ler_com(raiz: &Path, caminho: &Path, compartilhamento: u32) -> Resultado<(Lido, File)> {
     verificar_componentes(raiz, caminho)?;
-    let (mut f, atributos) = abrir(caminho)?;
+    let (mut f, atributos) = abrir(caminho, compartilhamento)?;
     let mut bytes = Vec::new();
     Read::by_ref(&mut f)
         .take(TAMANHO_MAXIMO + 1)
@@ -105,19 +115,30 @@ pub fn ler(raiz: &Path, caminho: &Path) -> Resultado<Lido> {
     if bytes.len() as u64 > TAMANHO_MAXIMO {
         return Err(Erro::formato("arquivo grande demais"));
     }
-    Ok(Lido {
-        hash: sha256(&bytes),
-        somente_leitura: atributos & FILE_ATTRIBUTE_READONLY != 0,
-        bytes,
-    })
+    Ok((
+        Lido {
+            hash: sha256(&bytes),
+            somente_leitura: atributos & FILE_ATTRIBUTE_READONLY != 0,
+            bytes,
+        },
+        f,
+    ))
 }
 
 static SEQUENCIA: AtomicU32 = AtomicU32::new(0);
 
 /// Grava `novo` em `caminho` de forma atômica se o conteúdo atual tiver `hash_esperado`.
 /// Devolve o hash do conteúdo relido após a troca.
+///
+/// O hash é conferido por um handle aberto sem `FILE_SHARE_WRITE`, mantido até o fim do
+/// `ReplaceFileW`: nenhuma escrita externa entra entre a conferência e a troca (quem
+/// abrir para escrita recebe violação de compartilhamento; quem já tinha o arquivo
+/// aberto para escrita impede este handle: violação de compartilhamento, erro de E/S).
+/// O handle precisa de `FILE_SHARE_DELETE`, pois o `ReplaceFileW` abre o original com
+/// acesso `DELETE` e o renomeia. Janela residual: outro processo pode renomear ou apagar
+/// o arquivo nesse intervalo; aí a troca falha ou a releitura final acusa a divergência.
 pub fn gravar(raiz: &Path, caminho: &Path, novo: &[u8], hash_esperado: &Hash) -> Resultado<Hash> {
-    let atual = ler(raiz, caminho)?;
+    let (atual, trava) = ler_com(raiz, caminho, FILE_SHARE_READ | FILE_SHARE_DELETE)?;
     if atual.somente_leitura {
         return Err(Erro::ArquivoSomenteLeitura(caminho.into()));
     }
@@ -137,6 +158,7 @@ pub fn gravar(raiz: &Path, caminho: &Path, novo: &[u8], hash_esperado: &Hash) ->
         SEQUENCIA.fetch_add(1, Ordering::Relaxed)
     ));
     let r = escrever_e_trocar(caminho, &temp, novo);
+    drop(trava);
     if r.is_err() {
         let _ = fs::remove_file(&temp);
     }
