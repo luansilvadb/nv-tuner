@@ -13,7 +13,7 @@
   Versão MSI (major.minor.build). Padrão: [workspace.package].version do Cargo.toml.
 
 .PARAMETER SemCompilar
-  Não roda o cargo; usa os .exe já presentes em target\release.
+  Não roda o cargo; usa os .exe já presentes em -OrigemBin (padrão target\release).
 
 .PARAMETER SemValidar
   Pula a validação ICE ('wix msi validate').
@@ -22,6 +22,11 @@
   Só para o build de teste (scripts\build-teste.ps1): acrescenta '-<sufixo>' ao nome do
   MSI e grava em target\dist-<sufixo>\, separado dos MSIs normais. Vazio (padrão): MSI
   normal em target\dist\, comportamento inalterado.
+
+.PARAMETER OrigemBin
+  Pasta dos .exe a empacotar (relativa à raiz do repositório ou absoluta). Padrão:
+  target\release. O build de teste usa target\teste\release. Sem -SufixoTeste, recusa
+  binários de teste ('--version' com '+teste'); com -SufixoTeste, exige-os.
 
 .PARAMETER Dotnet
   Caminho do dotnet.exe. Padrão: $env:NVT_DOTNET ou o 'dotnet' do PATH.
@@ -36,6 +41,7 @@ param(
     [switch]$SemValidar,
     [ValidatePattern('^[a-z0-9]*$')]
     [string]$SufixoTeste = '',
+    [string]$OrigemBin = 'target\release',
     [string]$Dotnet
 )
 
@@ -55,7 +61,7 @@ function Invoke-Nativo {
 
 $Instalador = $PSScriptRoot
 $Raiz = Split-Path -Parent $Instalador
-$BinDir = Join-Path $Raiz 'target\release'
+if ([System.IO.Path]::IsPathRooted($OrigemBin)) { $BinDir = $OrigemBin } else { $BinDir = Join-Path $Raiz $OrigemBin }
 $Dist = Join-Path $Raiz 'target\dist'
 $Obj = Join-Path $Raiz 'target\wix'
 $SufixoNome = ''
@@ -76,6 +82,31 @@ if (-not $Versao) {
 $VersaoMsi = ($Versao -split '[-+]')[0]
 if ($VersaoMsi -notmatch '^\d+\.\d+\.\d+$') { throw "Versão inválida para MSI: '$Versao'." }
 
+# 1. Compilação release (só na origem padrão; outra origem exige -SemCompilar).
+if (-not $SemCompilar) {
+    if ($BinDir.TrimEnd('\') -ne (Join-Path $Raiz 'target\release')) {
+        throw "-OrigemBin diferente de target\release exige -SemCompilar."
+    }
+    Write-Host '==> cargo build --release -p nvt-service -p nvt-ui -p nvt-agente'
+    Push-Location $Raiz
+    try { Invoke-Nativo 'cargo' @('build', '--release', '-p', 'nvt-service', '-p', 'nvt-ui', '-p', 'nvt-agente') }
+    finally { Pop-Location }
+}
+foreach ($exe in 'nvt-service.exe', 'nvt-ui.exe', 'nvt-agente.exe') {
+    if (-not (Test-Path (Join-Path $BinDir $exe))) { throw "Binário ausente: $BinDir\$exe" }
+}
+
+# Trava contra misturar builds: o binário de teste se identifica como 'X.Y.Z+teste'.
+$saidaVersao = (& (Join-Path $BinDir 'nvt-service.exe') --version | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) { throw "nvt-service.exe --version falhou ($LASTEXITCODE): $saidaVersao" }
+$ehTeste = $saidaVersao -match '\+teste'
+if ($SufixoTeste -and -not $ehTeste) {
+    throw "Build de teste recusado: $BinDir\nvt-service.exe não é binário de teste ('$saidaVersao')."
+}
+if (-not $SufixoTeste -and $ehTeste) {
+    throw "MSI normal recusado: $BinDir\nvt-service.exe é binário de teste ('$saidaVersao'). Recompile sem a feature medicao-partidas."
+}
+
 # dotnet
 if (-not $Dotnet) { $Dotnet = $env:NVT_DOTNET }
 if (-not $Dotnet) {
@@ -84,17 +115,6 @@ if (-not $Dotnet) {
 }
 if (-not $Dotnet -or -not (Test-Path $Dotnet)) {
     throw '.NET SDK não encontrado. Instale o .NET SDK 8+ (ou passe -Dotnet / defina NVT_DOTNET).'
-}
-
-# 1. Compilação release.
-if (-not $SemCompilar) {
-    Write-Host '==> cargo build --release -p nvt-service -p nvt-ui -p nvt-agente'
-    Push-Location $Raiz
-    try { Invoke-Nativo 'cargo' @('build', '--release', '-p', 'nvt-service', '-p', 'nvt-ui', '-p', 'nvt-agente') }
-    finally { Pop-Location }
-}
-foreach ($exe in 'nvt-service.exe', 'nvt-ui.exe', 'nvt-agente.exe') {
-    if (-not (Test-Path (Join-Path $BinDir $exe))) { throw "Binário ausente: $BinDir\$exe" }
 }
 
 New-Item -ItemType Directory -Force $Dist, $Obj | Out-Null

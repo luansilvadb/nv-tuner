@@ -55,6 +55,31 @@ Entregas:
 | D8 | Q10: a v0.3.0 já sai com IPC v8; `ObterSaude` e afins respondem `Erro { RecursoAusente }` até o L4. | O MSI instala UI e serviço juntos; não há segunda troca de protocolo depois. |
 | D9 | Q11: um único build de teste (`medicao-partidas` + `NVT_BUILD_DE_TESTE=1`) liga a gravação de partidas e o dry-run da limpeza. | As travas não se separam; o Lab-L usa o mesmo binário do Lab-M. |
 
+**Desvios registrados na implementação (L3 a L5).**
+
+- **Partidas da máquina, visíveis só ao usuário do console** (§7.4). As partidas ficam
+  num armazém único em `%ProgramData%\nv-tuner\partidas\` (DACL SYSTEM/Administradores),
+  sem pasta por usuário com HMAC e sem atribuição por `ProcessIdToSessionId`. Só o SID da
+  sessão de console lista, abre e apaga; outro SID recebe lista vazia, "partida não
+  encontrada" e recusa ao apagar. Motivo: menos superfície (nenhuma chamada nova por PID)
+  num recurso que só existe no build de teste; Q2 deixa de bloquear. A retenção (30 dias
+  ou 200 partidas) vale para o armazém.
+- **`+teste` só no `--version` e no log** (§8.4 item 4, R-B-03). O `versao_servico` do
+  `Estado` continua `X.Y.Z`, porque a UI o compara para detectar atualização; a UI sabe que
+  é build de teste pelo campo `build_de_teste` e mostra "Build de teste".
+- **Linha de base e política diária no estado do agente** (§7.1, §7.2). Em vez de
+  `inicializacao.json` e `manutencao.json` próprios em `%LOCALAPPDATA%\nv-tuner\usuario\`,
+  a linha de base da inicialização (nomes e SHA-256 do comando), os itens fora da base, a
+  data da última passada por alvo e o último resultado da limpeza ficam em `EstadoSaude`,
+  dentro do estado já existente do agente, com a mesma trava e gravação atômica. O
+  serviço mantém `manutencao.json` no seu diretório de estado.
+- **Build de teste em pasta própria** (R-B-03). `scripts\build-teste.ps1` compila com
+  `CARGO_TARGET_DIR=target\teste` (binários em `target\teste\release`, nunca em
+  `target\release`) e o MSI de teste sai em
+  `target\dist-teste\nv-tuner-X.Y.Z-teste-x64.msi`, separado de `target\dist\`.
+  `instalador\build-msi.ps1` confere o `--version`: recusa binário `+teste` num MSI normal
+  e exige-o no MSI de teste.
+
 **Justificativa de D3.** O texto "Configurações > Aplicativos > Inicialização" é seguro mas
 falha o critério de sucesso (o leigo não acha a página). `ShellExecuteW` com um URI
 `ms-settings:` documentado é o mesmo que clicar num link: quem cria o processo é o shell,

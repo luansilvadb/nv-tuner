@@ -56,7 +56,59 @@ mudanças relevantes devem ser registradas aqui.
    (`src/config_jogo/`; ver "Camada de configuração de jogo").
 9. **`nvt-jogocfg`** — editores de arquivos de configuração de jogo, sem
    lógica de decisão (ver "Camada de configuração de jogo").
-10. **`nvt-ui`** — interface sem privilégios de administrador.
+10. **`nvt-ui`** — interface sem privilégios de administrador. Telas em
+    `src/ui/` (Início, Jogos, Avançado, boas-vindas e, só no build de teste,
+    Partidas); `modelo.rs` tem as funções puras `veredito`, `linha_estado` e
+    `status_jogo`; `demonstracao.rs` dá o modo `--demonstracao` (dados
+    fictícios, sem serviço); `abrir.rs` é a exceção auditada de
+    `ShellExecuteW` (ver "Segurança do serviço").
+11. **`nvt-manutencao`** — limpeza segura de temporários
+    (`docs/spec/interface-e-saude.md` §4.4). A passada é pura e genérica sobre
+    `trait Excluidor`; sistema de arquivos, relógio, portão de jogo, detecção de
+    instalação (mutex `Global\_MSIExecute`) e política diária são injetados, e o
+    chamador sempre passa alvo e raiz. O modo é a constante de compilação
+    `MODO_LIMPEZA`: `Desligada` no build normal (não percorre nada) e
+    `Simulacao` com a feature `build-de-teste` (usa `ExcluidorNulo`, sem acesso
+    a handle de exclusão). Só `src/windows.rs` abre arquivo com `DELETE`.
+12. **`nvt-medicao`** — gravação de partidas, **só no build de teste** (feature
+    `medicao-partidas`). Sem a feature, o crate traz só o núcleo puro
+    (agregação de Presents, engasgo, 1% low, histograma, resumo e formato de
+    arquivo); com ela, `etw.rs` (sessão ETW em tempo real `nv-tuner-partidas`,
+    só provedores de Present DXGI e D3D9), `nvml.rs` (uso e temperatura da GPU a
+    1 Hz, `nvml.dll` por caminho absoluto) e `processos.rs`
+    (`TH32CS_SNAPPROCESS`, nenhum handle para o jogo).
+
+### Saúde do PC
+
+Leituras **somente leitura** em `nvt-windows/src/saude/` (inicialização e
+sinais), por traits sem métodos de escrita:
+
+- **Agente** (`nvt-agente/src/saude.rs`): fontes de inicialização do usuário,
+  Storage Sense (HKCU) e limpeza de `%TEMP%`. A linha de base da inicialização
+  (só nomes e o SHA-256 do comando, que nunca sai do agente) e a política
+  diária da limpeza ficam no estado do agente (`EstadoSaude`). Relata em
+  `AgenteRelatar.saude`.
+- **Serviço** (`nvt-service/src/saude.rs`): thread própria que lê os sinais de
+  máquina (espaço, memória, CPU em repouso, driver, plano de energia) a cada
+  10 min e a inicialização da máquina a cada 6 h, fora do atendimento do pipe;
+  e a limpeza de `C:\Windows\Temp` (portão de jogo antes e durante, mutex MSI,
+  política diária em `manutencao.json`, exclusão com o ciclo DRS e com a
+  atualização). `ObterSaude` junta a máquina e o relato da sessão do chamador.
+- Programas de inicialização são só detectados e mostrados; nunca
+  desativados, editados ou removidos.
+- "Aplicar melhorias recomendadas" fica em `nvt-service/src/recomendadas.rs`.
+
+### Build de teste
+
+A feature `medicao-partidas` (em `nvt-service`, `nvt-agente` e `nvt-ui`) liga
+`nvt-medicao` e a feature `build-de-teste` de `nvt-manutencao` (limpeza em
+`Simulacao`). Trava tripla: os `build.rs` de `nvt-medicao` e `nvt-manutencao`
+exigem `NVT_BUILD_DE_TESTE=1` e recusam `CI`/`GITHUB_ACTIONS`, o `release.yml`
+falha se a feature aparecer em `cargo tree -e features`, e o binário mostra
+"Build de teste". Só nesse build o serviço abre a sessão ETW, e só enquanto há
+partida ativa; ela é parada ao fim da partida, no stop do serviço e num
+pânico. Gerado por `scripts\build-teste.ps1`; ver
+`docs/spec/interface-e-saude-laboratorio.md`.
 
 O serviço não grava no Windows: o HKCU e as APIs de modo de vídeo e de
 parâmetros do sistema são da sessão interativa, e o serviço roda na sessão
@@ -211,6 +263,21 @@ explicitamente.
     `WTSQueryUserToken` + `CreateEnvironmentBlock` + `CreateProcessAsUserW`, só o
     executável fixo da pasta de instalação (filha de `%ProgramFiles%`, sem
     reparse), só nas sessões gravadas antes do upgrade e com o mesmo SID, uma vez.
+
+- **Exceção auditada (abrir inicialização).** `crates/nvt-ui/src/abrir.rs` tem
+  o único `ShellExecuteW` do workspace, com o URI literal
+  `ms-settings:startupapps` (nenhum argumento vem de dados). Só o tratador de
+  clique o chama, e ele recusa com jogo ou anticheat aberto ou com o estado do
+  serviço desconhecido. Quem cria o processo é o shell, na sessão e com o token
+  do usuário; serviço e agente continuam sem nenhuma ocorrência.
+- **Sessão ETW** (só no build de teste): `StartTraceW`, `EnableTraceEx2`,
+  `OpenTraceW`, `ProcessTrace` e `ControlTraceW` só em
+  `crates/nvt-medicao/src/etw.rs`; `SystemTraceControlGuid`,
+  `KERNEL_LOGGER_NAME` e `EtwMaxLoggers` proibidos em todo lugar.
+- **Exclusão de arquivos** fora do estado só na limpeza de temporários
+  (desligada no build normal): o serviço só em `C:\Windows\Temp`, o agente só
+  no `%TEMP%` do usuário; `DeleteFileW`, `RemoveDirectoryW` e
+  `FileDispositionInfoEx` são vigiados com contagem.
 
   `crates/nvt-core/tests/proibicoes.rs` proíbe `CreateProcess*`, `ShellExecute*`,
   `WinExec` e `Command::new` em todo o código e permite exatamente uma ocorrência

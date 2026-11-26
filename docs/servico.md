@@ -386,6 +386,54 @@ tarefa de restaurar seu snapshot, antes de qualquer aplicação, mesmo depois
 de “Aplicar agora” ou no próximo logon. O DRS mantém seu próprio retry sob o
 portão; o estado do agente mostra separadamente a pendência do usuário.
 
+## Interface para leigos e saúde (protocolo v8)
+
+Especificação: `docs/spec/interface-e-saude.md`. Requisições novas, todas
+vinculadas à identidade do token do cliente e sem caminhos, linhas de comando,
+SID ou identificador de conta no corpo:
+
+| Requisição | Ação |
+|---|---|
+| `aplicar_recomendadas` | `recomendadas.rs`: aceita, para o SID chamador, todas as experimentais aplicáveis agora (DRS só se o chamador for o SID da sessão de console; Windows e arquivo de jogo do próprio SID) numa única gravação de `usuarios.json` (tudo ou nada) e aplica pelo caminho de `aplicar_agora`. Resposta `recomendadas { aceitas, adiada }`; com jogo aberto, os aceites ficam gravados e a aplicação, adiada. Idempotente |
+| `obter_saude` | `saude.rs`: sinais e inicialização da máquina (cache da thread de saúde) mais o que o agente da sessão do chamador relatou, com as marcas "visto" do próprio SID, e o resultado da última limpeza |
+| `marcar_inicio_visto` | registra a marca; o agente a recebe na próxima consulta e a incorpora à linha de base |
+| `listar_partidas`, `obter_partida`, `apagar_partidas` | só no build de teste (`partidas.rs`); no build normal, `erro { recurso_ausente }` |
+
+`agente_relatar` ganha o campo opcional `saude` (sinais de sessão,
+inicialização, no máximo 256 programas, e limpeza de `%TEMP%`). O estado ganha
+`build_de_teste` e `modo_limpeza`.
+
+### Thread de saúde
+
+Uma thread própria (`ThreadSaude`) lê os sinais de máquina a cada 10 min e a
+inicialização da máquina a cada 6 h, fora do atendimento do pipe; o pipe só lê
+o cache. Tudo **somente leitura**: nenhum programa de inicialização é
+desativado. O `Portao` é consultado antes de cada passo, e a amostra de CPU
+feita durante um jogo é descartada.
+
+A limpeza de `C:\Windows\Temp` usa `nvt_manutencao::limpar` no modo fixo
+`MODO_LIMPEZA`: `Desligada` no build normal (não resolve a raiz nem percorre
+nada), `Simulacao` no build de teste. Portões: jogo antes e durante (a cada 200
+entradas), mutex `Global\_MSIExecute`, política diária persistida em
+`manutencao.json` no diretório de estado e exclusão com o ciclo DRS e com a
+instalação de atualização (`Exclusao::tentar_limpeza`). O log registra só
+contagens e bytes. Nenhum processo é criado. A linha de base da inicialização
+do usuário e a política diária da limpeza de `%TEMP%` ficam no estado do
+agente, não no serviço.
+
+### Partidas (só build de teste)
+
+Com a feature `medicao-partidas`, `partidas.rs` liga `nvt-medicao` ao laço:
+uma thread observa a lista de processos (`TH32CS_SNAPPROCESS`, nenhum handle
+para o jogo), detecta início e fim de partida dos jogos da base curada e dos
+detectados pelo portão e abre a sessão ETW `nv-tuner-partidas` **só enquanto
+há partida ativa**. A sessão é parada ao fim da partida, no stop do serviço e
+no desempilhamento de um pânico; uma sessão órfã com o mesmo nome é parada ao
+iniciar. As partidas ficam em `<estado-dir>\partidas` (DACL
+SYSTEM/Administradores), são da máquina e só o SID da sessão de console as
+lista, abre e apaga; outro SID recebe lista vazia. `--version` e o log mostram
+`X.Y.Z+teste`; o `versao_servico` do IPC continua `X.Y.Z`.
+
 ## Atualização automática
 
 Especificação: [`docs/spec/atualizacao.md`](spec/atualizacao.md). Código:
@@ -480,6 +528,8 @@ Em `<estado-dir>`:
 | `snapshot-perdido.json` | gravado por `preparar` logo depois de uma quarentena; lido pelo `nvt-engine` |
 | `servico.json` | serviço: `autonomia_pausada`, `pausada_em_unix`, `ultima_aplicacao`, `restauracao_pendente_desde_unix` (restauração adiada a retomar; ausente nos arquivos antigos), `geracao_restauracao` (Fase 2) |
 | `usuarios.json` | coordenador de usuário: preferências por SID (aceites experimentais) e recibos de histórico da camada Windows; ACL restrita a SYSTEM/Administradores, fora dos arquivos legíveis pela UI local |
+| `manutencao.json` | thread de saúde: política diária e última passada da limpeza de `C:\Windows\Temp` (sem nomes de arquivo) |
+| `partidas\` | só no build de teste: `<id>.bin` e `indice.json` das partidas, DACL SYSTEM/Administradores |
 | `logs\nvt-service.AAAA-MM-DD.log` | `tracing-appender`, rotação diária, últimos 14 arquivos |
 
 Os logs registram ações (perfil, setting, contagens, erros) e o diretório de

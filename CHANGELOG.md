@@ -9,6 +9,28 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
+*Interface para leigos e saúde do PC*
+
+### Adicionado
+
+- **Nova interface**, com três itens na lateral: **Início**, **Jogos** e **Avançado**. O Início mostra um único veredito sobre o PC e no máximo uma linha de estado no topo (serviço ausente, jogo aberto, atualização, agente ausente). Tema escuro, destaque ciano do logo, fonte Segoe UI Variable e nenhuma sigla técnica nas telas principais.
+- **Boas-vindas** curta na primeira abertura, com um único botão **Começar**.
+- **Aplicar melhorias recomendadas** no Início: aceita de uma vez todas as regras experimentais aplicáveis neste PC (driver, Windows e arquivo de jogo), numa única gravação de preferências (tudo ou nada), e aplica pelo mesmo caminho de "Aplicar agora". Com jogo aberto, os aceites ficam gravados e a aplicação espera o jogo fechar. Experimentais do driver só entram quando quem pede é o usuário da sessão de console.
+- **Desfazer tudo** no Início, com confirmação (é o **Restaurar original**); depois dele, **Voltar a ajustar** reaplica, mantendo os aceites.
+- **Saúde do PC** no Início, somente leitura: espaço livre, memória e processador em repouso, driver NVIDIA desatualizado (lista embutida, sem rede), plano de energia trocado, Sensor de Armazenamento desligado e programas de inicialização novos ou alterados desde a última vez, com **Marcar como visto**.
+- **Abrir inicialização**: abre a página Inicialização das Configurações do Windows, só por clique e bloqueado com jogo aberto. Os programas de inicialização são apenas detectados, nunca desativados.
+- Grupos **Inicialização** e **Manutenção** no Avançado.
+- Crate **`nvt-manutencao`**: limpeza segura de temporários (`%TEMP%` pelo agente, `C:\Windows\Temp` pelo serviço), só arquivos com 7 dias ou mais, sem seguir links, sem jogo aberto nem instalação em andamento, no máximo uma passada por dia. **Desligada nesta versão**; quando ligada, só libera espaço em disco.
+- Crate **`nvt-medicao`** e tela **Partidas**: gravação do desempenho das partidas (ETW Present e NVML, sem tocar no processo do jogo). **Só no build de teste do mantenedor** (`scripts\build-teste.ps1`); não entra nas releases, travada no `build.rs` e no `release.yml`.
+- Modo de demonstração da interface (`nvt-ui --demonstracao <cenário>`), com dados fictícios, usado nas capturas de `docs/ui-capturas/`.
+
+### Alterado
+
+- Tudo o que a v0.2.0 fazia continua acessível, agora no **Avançado** (visão técnica, mudanças por perfil, Windows, arquivo do jogo, preferências, histórico, Restaurar original, reescanear e verificar atualização).
+- A tela **Jogos** mostra por jogo um status simples e o detalhe ao clicar, com link para o Avançado.
+- Sem serviço, o Início diz "O nv-tuner não está ativo neste PC" e orienta a reinstalar.
+- Protocolo **v8**: requisições novas `AplicarRecomendadas`, `ObterSaude` e `MarcarInicioVisto`, campo `saude` no relato do agente e `build_de_teste` e `modo_limpeza` no estado, sem caminhos, linhas de comando nem identificadores de conta. As requisições de partidas respondem `RecursoAusente` nas releases. Interface, serviço e agente precisam ser da mesma versão; o MSI instala tudo junto, e a interface antiga pede para ser fechada e aberta de novo.
+
 ## [0.2.0] - 2026-11-26
 
 *Configuração de jogos*

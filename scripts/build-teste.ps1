@@ -70,8 +70,11 @@ $Versao = $m.Groups[1].Value
 
 Write-Aviso "BUILD DE TESTE $Versao+teste - NÃO É PARA USUÁRIOS, NÃO PUBLIQUE"
 
+# Destino próprio (target\teste): nunca mistura binários de teste com target\release.
 $anterior = $env:NVT_BUILD_DE_TESTE
+$anteriorTarget = $env:CARGO_TARGET_DIR
 $env:NVT_BUILD_DE_TESTE = '1'
+$env:CARGO_TARGET_DIR = Join-Path $Raiz 'target\teste'
 try {
     $argsCargo = @('build', '--release', '--locked') + @(foreach ($p in $Pacotes) { '-p'; $p }) + @('--features', ($Features -join ','))
     Write-Host "==> cargo $($argsCargo -join ' ')"
@@ -82,14 +85,15 @@ try {
     }
     finally { Pop-Location }
 
-    $argsMsi = @{ Versao = $Versao; SemCompilar = $true; SufixoTeste = 'teste' }
+    $argsMsi = @{ Versao = $Versao; SemCompilar = $true; SufixoTeste = 'teste'; OrigemBin = 'target\teste\release' }
     if ($SemValidar) { $argsMsi.SemValidar = $true }
     if ($Dotnet) { $argsMsi.Dotnet = $Dotnet }
     & (Join-Path $Raiz 'instalador\build-msi.ps1') @argsMsi
 }
 finally {
     $env:NVT_BUILD_DE_TESTE = $anterior
+    $env:CARGO_TARGET_DIR = $anteriorTarget
 }
 
 Write-Aviso 'MSI de BUILD DE TESTE (target\dist-teste\). NÃO É PARA USUÁRIOS; só VM do mantenedor.'
-Write-Host 'Os binários em target\release agora são de teste: rode instalador\build-msi.ps1 (sem -SemCompilar) antes de um MSI normal.' -ForegroundColor Yellow
+Write-Host 'Binários de teste em target\teste\release; target\release não foi tocado.' -ForegroundColor Yellow

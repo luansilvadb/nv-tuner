@@ -25,6 +25,87 @@ perfil do driver.
 - A partir da v0.1.0 (primeira versão com atualizador, instalada à mão uma
   vez), o nv-tuner **se atualiza sozinho** (veja [Atualização automática](#atualização-automática)).
 
+## Interface
+
+A interface foi refeita para quem não entende de placa de vídeo: três itens na
+lateral (**Início**, **Jogos** e **Avançado**), tema escuro, linguagem simples e
+nenhuma sigla técnica nas telas principais.
+
+- **Boas-vindas:** na primeira abertura, uma tela curta explica o que o app faz
+  e tem um único botão, **Começar**. Ela não volta a aparecer.
+- **Início:** mostra um único veredito sobre o PC (por exemplo, “Seu PC está
+  otimizado”, “Há melhorias disponíveis”, “Há mudanças esperando o jogo
+  fechar” ou “Os ajustes estão desligados”) e, no topo, no máximo uma linha de
+  estado (serviço ausente, jogo aberto, atualização, agente ausente).
+- **Aplicar melhorias recomendadas:** aparece quando há regras experimentais
+  aplicáveis neste PC. Um clique aceita todas de uma vez (driver, Windows e
+  arquivos de jogo) e aplica; com jogo aberto, a aplicação espera o jogo
+  fechar. É reversível, sem diálogo de confirmação.
+- **Desfazer tudo:** pede confirmação e volta tudo ao original (o mesmo
+  **Restaurar original** de antes). Os ajustes ficam desligados até você
+  clicar em **Voltar a ajustar**.
+- **Jogos:** cada jogo com um status simples (“Otimizado”, “Faça 2 ajustes no
+  jogo”, “Aguardando o jogo fechar”) e o detalhe ao clicar.
+- **Avançado:** tudo o que a v0.2.0 já fazia, com os termos técnicos: visão
+  técnica, mudanças por perfil com Aceitar/Retirar, Windows, arquivo do jogo,
+  preferências, histórico, Restaurar original, reescanear jogos e verificar
+  atualização, além dos grupos novos **Inicialização** e **Manutenção**.
+- **Modo de demonstração:** `nvt-ui --demonstracao <cenário>` abre a interface
+  com dados fictícios fixos, sem serviço e sem ler a máquina (cenários
+  `otimizado`, `melhorias`, `piorou`, `jogo-aberto`, `desligado`, `atualizado`,
+  `sem-servico`, `primeira-vez` e `saude`). É o que gera as capturas abaixo.
+
+<p align="center">
+  <img src="docs/ui-capturas/inicio-otimizado.png" width="720" alt="Início com o PC otimizado">
+</p>
+
+<p align="center">
+  <img src="docs/ui-capturas/inicio-melhorias.png" width="720" alt="Início com melhorias recomendadas">
+</p>
+
+<p align="center">
+  <img src="docs/ui-capturas/jogos.png" width="720" alt="Tela Jogos">
+</p>
+
+Outras capturas (boas-vindas, jogo aberto, ajustes desligados, Avançado) ficam
+em [`docs/ui-capturas/`](docs/ui-capturas/).
+
+## Saúde do PC
+
+O Início ganhou a seção **Saúde do PC**, que **só mostra** o estado do
+computador, em frases simples, com o caminho do Windows quando houver algo a
+fazer à mão:
+
+- espaço livre no disco do sistema;
+- memória e processador em repouso (sem jogo aberto);
+- driver NVIDIA mais antigo que a última versão conhecida pelo app (lista
+  embutida, sem consulta à internet);
+- plano de energia diferente do esperado;
+- Sensor de Armazenamento do Windows desligado;
+- programas que iniciam com o Windows, com destaque para os **novos ou
+  alterados** desde a última vez.
+
+Tudo isso é **somente leitura**. Os programas de inicialização são **apenas
+detectados, nunca desativados, editados ou removidos**: o botão **Abrir
+inicialização** abre a página do próprio Windows (Configurações > Aplicativos >
+Inicialização), e fica bloqueado com jogo aberto. O app não grava caminhos
+completos nem linhas de comando desses programas.
+
+<p align="center">
+  <img src="docs/ui-capturas/inicio-saude.png" width="720" alt="Seção Saúde do PC no Início">
+</p>
+
+**Limpeza de temporários:** já existe no código, mas está **desligada nesta
+versão**. Quando for ligada, depois de validada em laboratório, ela vai apagar
+só arquivos antigos (7 dias ou mais) das pastas temporárias do usuário e do
+Windows, nunca com jogo aberto ou instalação em andamento, no máximo uma vez
+por dia. O objetivo é **só liberar espaço em disco**: ela não deixa os jogos
+mais rápidos e o app não promete ganho de FPS por ela.
+
+**Gravação de partidas:** a medição do desempenho de cada partida existe
+**só num build de teste do mantenedor**, compilado à parte. Ela **não está nas
+releases** nem no MSI publicado, e não há opção para ligá-la.
+
 ## Atualização automática
 
 O serviço do nv-tuner mantém o app na última versão estável publicada aqui no
@@ -44,11 +125,11 @@ GitHub, **sem você fazer nada** e sem opção de desligar:
 - **Preserva seus ajustes:** a atualização não restaura nem apaga o perfil do
   driver, os ajustes do Windows, os aceites nem o histórico.
 - O agente é reaberto sozinho nas sessões em que estava aberto; a interface, se
-  estava aberta, pede para ser fechada e aberta de novo. Depois, a **Visão geral**
+  estava aberta, pede para ser fechada e aberta de novo. Depois, o **Início**
   mostra “Atualizado para a vX.Y.Z” uma vez e, sempre, a versão, a última
   verificação e qualquer pendência.
 - **Sem internet**, nada é bloqueado: o app continua funcionando normalmente, a
-  Visão geral mostra “sem conexão com o GitHub” e a próxima tentativa é feita com
+  linha de estado do Início mostra “sem conexão com o GitHub” e a próxima tentativa é feita com
   espera crescente (30 min, 1 h, 2 h… até 6 h).
 - Uma versão que falhar ao instalar 3 vezes é deixada de lado até sair outra maior.
 
@@ -125,7 +206,7 @@ Abra uma [issue](../../issues) com:
 
 - versão do nv-tuner, modelo da GPU, versão do driver e do Windows;
 - o que você fez, o que esperava e o que aconteceu;
-- os avisos da tela **Visão geral** e, se for o caso, o log do instalador
+- a linha de estado do **Início** e os avisos do **Avançado** e, se for o caso, o log do instalador
   (`/l*v`).
 
 Revise o que for anexar: **não inclua dados pessoais** (nome de usuário,
@@ -181,7 +262,7 @@ caminhos da sua máquina, números de série). Vulnerabilidades de segurança
   última varredura), e as orientações aparecem na seção **Faça no jogo** ao
   expandir a linha.
 - **Taxa de atualização e VRR (G-SYNC)** do monitor principal lidos pela
-  NVAPI e mostrados na **Visão geral**, com aviso quando o modo G-SYNC é escolhido sem VRR ativo.
+  NVAPI e mostrados no **Avançado**, com aviso quando o modo G-SYNC é escolhido sem VRR ativo.
 - **Limite de FPS para G-SYNC** um pouco abaixo da taxa do monitor (por
   exemplo, 224 FPS a 240 Hz). Por ora a regra é *experimental*: aparece como
   sugestão e só passa a valer depois de validada em laboratório.
@@ -262,6 +343,8 @@ Plataforma: somente Windows com GPU NVIDIA. Licença: [MIT](LICENSE).
 | Windows | `nvt-windows` | Ajustes do usuário e diagnósticos somente leitura |
 | Config de jogo | `nvt-jogocfg` | Editores INI/VDF que preservam bytes, gravação atômica, backup e contas Steam/Ubisoft |
 | Agente | `nvt-agente` | Processo do usuário, sem privilégios, que grava a camada Windows e os arquivos de jogo |
+| Manutenção | `nvt-manutencao` | Limpeza segura de temporários (modo fixo por compilação: desligada nas releases, simulação no build de teste) |
+| Medição | `nvt-medicao` | Gravação de partidas (ETW Present e NVML), só no build de teste; fora das releases |
 | Interface | `nvt-ui` | Aplicativo do usuário, sem privilégios |
 
 Detalhes em [`docs/arquitetura.md`](docs/arquitetura.md).
