@@ -44,18 +44,6 @@ impl Tela {
         Tela::Restaurar,
     ];
 
-    pub fn titulo(self) -> &'static str {
-        match self {
-            Tela::VisaoGeral => textos::TELA_VISAO_GERAL,
-            Tela::Jogos => textos::TELA_JOGOS,
-            Tela::Mudancas => textos::TELA_MUDANCAS,
-            Tela::Windows => textos::TELA_WINDOWS,
-            Tela::Preferencias => textos::TELA_PREFERENCIAS,
-            Tela::Historico => textos::TELA_HISTORICO,
-            Tela::Restaurar => textos::TELA_RESTAURAR,
-        }
-    }
-
     /// Identificador usado na linha de comando (`--tela`) e nas capturas.
     pub fn chave(self) -> &'static str {
         match self {
@@ -821,6 +809,7 @@ mod testes {
             avisos: vec![],
             adiamento: None,
             atualizacao: Default::default(),
+            autonomia_pausada: false,
         }
     }
 
@@ -828,10 +817,8 @@ mod testes {
     fn telas_por_chave() {
         for t in Tela::TODAS {
             assert_eq!(Tela::de_chave(t.chave()), Some(t));
-            assert!(!t.titulo().is_empty());
         }
         assert_eq!(Tela::de_chave("inexistente"), None);
-        assert_eq!(Tela::Mudancas.titulo(), "Mudanças");
     }
 
     #[test]

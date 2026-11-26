@@ -55,10 +55,10 @@ pub struct Fatos {
 }
 
 impl Fatos {
-    /// Monta os fatos do estado atual da UI (IPC v7). `ajustes_desligados`
-    /// vem da UI até o protocolo trazê-lo; `atualizacao_concluida` também,
-    /// porque o aviso some ao trocar de tela.
-    pub fn de_ui(ui: &EstadoUi, ajustes_desligados: bool, atualizacao_concluida: bool) -> Self {
+    /// Monta os fatos do estado atual da UI (IPC v8). `ajustes_desligados`
+    /// vem do serviço (`Estado::autonomia_pausada`); `atualizacao_concluida`
+    /// vem da UI, porque o aviso some ao trocar de tela.
+    pub fn de_ui(ui: &EstadoUi, atualizacao_concluida: bool) -> Self {
         let estado = ui.dados.estado.as_ref();
         let servico = ui.conexao == Conexao::Servico;
         let adiamento = estado.and_then(|e| e.adiamento.as_ref());
@@ -76,7 +76,7 @@ impl Fatos {
             servico_ausente: ui.conexao == Conexao::Visualizacao,
             conectando: ui.conexao == Conexao::Conectando,
             placa_nvidia: estado.map(|e| e.gpu.is_some()),
-            ajustes_desligados,
+            ajustes_desligados: servico && estado.is_some_and(|e| e.autonomia_pausada),
             esperando_jogo: adiamento.is_some(),
             jogo_aberto,
             melhorias: itens()
@@ -535,16 +535,41 @@ mod testes {
         let mut ui = EstadoUi::new(Tela::VisaoGeral);
         ui.conexao = Conexao::Conectando;
         assert_eq!(
-            veredito(&Fatos::de_ui(&ui, false, false), None),
+            veredito(&Fatos::de_ui(&ui, false), None),
             Veredito::Verificando
         );
         ui.conexao = Conexao::Visualizacao;
-        let f = Fatos::de_ui(&ui, false, true);
+        let f = Fatos::de_ui(&ui, true);
         assert!(f.servico_ausente && !f.atualizacao_concluida && !f.agente_ausente);
         ui.incompativel = Some("x".into());
         assert_eq!(
-            linha_estado(&Fatos::de_ui(&ui, false, false)),
+            linha_estado(&Fatos::de_ui(&ui, false)),
             Some(LinhaEstado::ProtocoloIncompativel)
         );
+        // A pausa vem do serviço e sobrevive a reabrir a UI.
+        ui.incompativel = None;
+        ui.conexao = Conexao::Servico;
+        ui.dados.estado = Some(nvt_ipc::Estado {
+            agente: Default::default(),
+            diagnosticos: Vec::new(),
+            versao_servico: String::new(),
+            driver: None,
+            gpu: None,
+            preferencias: nvt_ipc::Preferencias {
+                sincronismo: nvt_ipc::Sincronismo::Desligado,
+                qualidade: nvt_ipc::Qualidade::Equilibrado,
+                limite_fps: None,
+            },
+            jogos: 0,
+            ultima_aplicacao: None,
+            alertas_deriva: Vec::new(),
+            avisos: Vec::new(),
+            adiamento: None,
+            atualizacao: Default::default(),
+            autonomia_pausada: true,
+        });
+        assert!(Fatos::de_ui(&ui, false).ajustes_desligados);
+        ui.conexao = Conexao::Visualizacao;
+        assert!(!Fatos::de_ui(&ui, false).ajustes_desligados);
     }
 }

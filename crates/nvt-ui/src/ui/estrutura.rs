@@ -1,21 +1,28 @@
 //! Estrutura comum da janela (spec `interface-e-saude.md` §5.1): navegação
 //! lateral mínima, linha de estado única no topo e título da página.
 //!
-//! Até o L2, cada seção mostra as telas legadas ([`super::legado`]); o
-//! Avançado agrupa as que não têm seção própria.
+//! Também guarda a [`Janela`] (estado, envio de comandos e desenho comum) e
+//! as peças visuais compartilhadas pelas seções.
+
+use std::collections::BTreeSet;
+use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::Theme;
+use gpui_kit::component::alert::Alert;
 use gpui_kit::component::sidebar::{
     Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
-use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{ActiveTheme, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::legado::Janela;
-use crate::modelo::Tela;
+use crate::modelo::{Comando, Conexao, EstadoUi, Evento, Tela, TipoMensagem};
+use crate::servico::Canal;
 use crate::tema;
+use crate::textos as t;
 
 const NAV_INICIO: &str = "Início";
 const NAV_JOGOS: &str = "Jogos";
@@ -143,19 +150,6 @@ impl Destino {
     }
 }
 
-/// Ícone de cada tela legada na subnavegação do Avançado (todos distintos).
-pub fn icone_legado(tela: Tela) -> IconName {
-    match tela {
-        Tela::VisaoGeral => IconName::LayoutDashboard,
-        Tela::Jogos => IconName::Gamepad2,
-        Tela::Mudancas => IconName::Replace,
-        Tela::Windows => IconName::Monitor,
-        Tela::Preferencias => IconName::Settings2,
-        Tela::Historico => IconName::Calendar,
-        Tela::Restaurar => IconName::Undo2,
-    }
-}
-
 impl Janela {
     pub(super) fn ir_secao(&mut self, secao: Secao, cx: &mut Context<Self>) {
         self.secao = secao;
@@ -240,37 +234,11 @@ impl Janela {
 
     /// Título da página (28 px).
     pub(super) fn titulo_pagina(&self) -> impl IntoElement {
-        let titulo = if self.secao == Secao::Avancado {
-            format!("{} · {}", NAV_AVANCADO, self.ui.tela.titulo())
-        } else {
-            self.secao.titulo().to_owned()
-        };
+        let titulo = self.secao.titulo();
         div()
             .text_size(px(tema::TAM_TITULO_PAGINA))
             .font_semibold()
             .child(titulo)
-    }
-
-    /// Subnavegação do Avançado entre as telas legadas.
-    pub(super) fn subnavegacao_avancado(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .flex_wrap()
-            .gap(px(tema::ESP_2))
-            .children(TELAS_AVANCADO.map(|tela| {
-                let b = Button::new(SharedString::from(format!("avancado-{}", tela.chave())))
-                    .small()
-                    .icon(icone_legado(tela))
-                    .label(tela.titulo())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.ui.tela = tela;
-                        cx.notify();
-                    }));
-                if self.ui.tela == tela {
-                    b.primary()
-                } else {
-                    b.ghost()
-                }
-            }))
     }
 
     /// Conteúdo da seção ativa.
@@ -288,11 +256,246 @@ impl Janela {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Janela
+// ---------------------------------------------------------------------------
+
+/// Janela principal. Só lê [`EstadoUi`] e envia [`Comando`]s para a thread
+/// de comunicação; a thread da janela nunca bloqueia em E/S.
+pub struct Janela {
+    pub(super) ui: EstadoUi,
+    /// Item ativo da navegação lateral.
+    pub(super) secao: Secao,
+    comandos: Sender<Comando>,
+    /// Perfis dos jogos com a linha expandida na tela Jogos.
+    pub(super) expandidos: BTreeSet<String>,
+}
+
+impl Janela {
+    pub fn new(
+        destino: Destino,
+        expandidos: Vec<String>,
+        canal: Canal,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let eventos = canal.eventos;
+        super::jogos::instalar_envio(cx, canal.comandos.clone());
+        // Consome os eventos da thread de comunicação sem bloquear a janela.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let lote: Vec<Evento> = eventos.try_iter().collect();
+                if lote.is_empty() {
+                    continue;
+                }
+                let vivo = this.update(cx, |j, cx| {
+                    for e in lote {
+                        j.ui.aplicar(e);
+                    }
+                    cx.notify();
+                });
+                if vivo.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        Self {
+            ui: EstadoUi::new(destino.tela),
+            secao: destino.secao,
+            comandos: canal.comandos,
+            expandidos: expandidos.into_iter().collect(),
+        }
+    }
+
+    pub(super) fn enviar(&mut self, c: Comando, cx: &mut Context<Self>) {
+        if !self.ui.pode_executar(&c) {
+            return;
+        }
+        self.ui.aplicar(Evento::Ocupado(c.clone()));
+        let _ = self.comandos.send(c);
+        cx.notify();
+    }
+
+    pub(super) fn selo_conexao(&self) -> impl IntoElement {
+        match self.ui.conexao {
+            Conexao::Conectando => Tag::secondary().child(t::CONEXAO_CONECTANDO),
+            Conexao::Servico => Tag::success().child(t::CONEXAO_SERVICO),
+            Conexao::Visualizacao => Tag::warning().child(t::CONEXAO_VISUALIZACAO),
+        }
+    }
+
+    fn avisos(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut v = v_flex().gap_2();
+        if self.ui.atualizado {
+            v = v.child(
+                Alert::info("atualizado-reabra", t::ATUALIZADO_REABRA)
+                    .title(t::ATUALIZADO_REABRA_TITULO),
+            );
+        }
+        if let Some(m) = &self.ui.incompativel {
+            v = v.child(
+                Alert::error("versao-incompativel", m.clone()).title(t::INCOMPATIVEL_TITULO),
+            );
+        }
+        if self.ui.conexao == Conexao::Visualizacao && !self.ui.atualizado {
+            v = v.child(
+                Alert::warning("aviso-visualizacao", t::AVISO_VISUALIZACAO)
+                    .title(t::AVISO_VISUALIZACAO_TITULO),
+            );
+        }
+        if let Some(e) = &self.ui.erro_local {
+            v = v.child(Alert::error("erro-local", e.clone()));
+        }
+        if let Some(faixa) = self.ui.faixa_adiamento() {
+            let titulo = t::titulo_adiamento(&faixa);
+            v = v.child(Alert::info("faixa-adiamento", faixa).title(titulo));
+        }
+        if let Some((tipo, texto)) = self.ui.mensagem_visivel() {
+            let a = match tipo {
+                TipoMensagem::Sucesso => Alert::success("mensagem", texto.clone()),
+                TipoMensagem::Adiada => {
+                    Alert::info("mensagem", texto.clone()).title(t::titulo_adiamento(texto))
+                }
+                TipoMensagem::Erro => Alert::error("mensagem", texto.clone()),
+            };
+            v = v.child(a.on_close(cx.listener(|this, _, _, cx| {
+                this.ui.mensagem = None;
+                cx.notify();
+            })));
+        }
+        if self.ui.ocupado.is_some() {
+            v = v.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t::EM_ANDAMENTO),
+            );
+        }
+        v
+    }
+}
+
+impl Render for Janela {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let tema = cx.theme().clone();
+        let agente = self
+            .ui
+            .dados
+            .estado
+            .as_ref()
+            .filter(|_| self.ui.conexao == Conexao::Servico)
+            .map_or(t::AGENTE_INDISPONIVEL, |e| {
+                if e.agente.presente {
+                    t::AGENTE_ATIVO
+                } else {
+                    t::AGENTE_AUSENTE
+                }
+            });
+        let rodape = v_flex().gap_1().child(self.selo_conexao()).child(
+            div()
+                .text_xs()
+                .text_color(tema.muted_foreground)
+                .child(agente),
+        );
+        let base = || {
+            div()
+                .size_full()
+                .bg(tema.background)
+                .text_color(tema.foreground)
+                .font_family(tema.font_family.clone())
+                .text_size(px(tema::TAM_CORPO))
+        };
+        // Primeiro uso: as boas-vindas ocupam a janela inteira (R-UI-09).
+        if self.secao == Secao::Inicio && super::inicio::boas_vindas_pendente(cx) {
+            return base()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(super::boas_vindas::render(self, cx))
+                .into_any_element();
+        }
+        base()
+            .flex()
+            .flex_row()
+            .child(self.barra_lateral(rodape, cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .h_full()
+                    .min_w_0()
+                    // O texto da linha de estado virá do modelo (`linha_estado`).
+                    .child(self.linha_estado(None, cx))
+                    .child(
+                        div()
+                            .id("conteudo")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(
+                                v_flex()
+                                    .px(px(tema::ESP_8))
+                                    .py(px(tema::ESP_6))
+                                    .gap(px(tema::ESP_4))
+                                    .child(self.titulo_pagina())
+                                    .when(self.ui.restauracao_usuario_pendente(), |v| {
+                                        v.child(explicacao(t::RESTAURACAO_USUARIO_PENDENTE, &tema))
+                                    })
+                                    .child(self.avisos(cx))
+                                    .child(self.conteudo_secao(cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Peças
+// ---------------------------------------------------------------------------
+
+pub(super) fn cartao(titulo: &'static str, corpo: impl IntoElement, tema: &Theme) -> Div {
+    v_flex()
+        .gap_3()
+        .p_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(tema.border)
+        .bg(tema.group_box)
+        .child(div().text_sm().font_semibold().child(titulo))
+        .child(corpo)
+}
+
+pub(super) fn linha(rotulo: &'static str, valor: String, tema: &Theme) -> Div {
+    h_flex()
+        .gap_4()
+        .justify_between()
+        .text_sm()
+        .child(div().text_color(tema.muted_foreground).child(rotulo))
+        .child(div().text_right().child(valor))
+}
+
+pub(super) fn explicacao(texto: &'static str, tema: &Theme) -> Div {
+    div()
+        .text_sm()
+        .text_color(tema.muted_foreground)
+        .child(texto)
+}
+
+/// Instante atual (Unix, segundos) para os tempos relativos da atualização.
+pub(super) fn agora_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 #[cfg(test)]
 mod testes {
     use std::collections::HashSet;
 
-    use super::{Destino, Secao, TELAS_AVANCADO, Tela, icone_legado};
+    use super::{Destino, Secao, TELAS_AVANCADO, Tela};
 
     #[cfg(not(feature = "medicao-partidas"))]
     #[test]
@@ -320,11 +523,6 @@ mod testes {
             .map(|s| format!("{:?}", s.icone()))
             .collect();
         assert_eq!(icones.len(), Secao::visiveis().len());
-        let legados: HashSet<_> = Tela::TODAS
-            .iter()
-            .map(|&t| format!("{:?}", icone_legado(t)))
-            .collect();
-        assert_eq!(legados.len(), Tela::TODAS.len());
     }
 
     #[test]

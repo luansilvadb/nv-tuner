@@ -103,9 +103,13 @@ as bibliotecas localmente.
 
 ## Telas
 
-Capturas em `docs/ui-capturas/` (modo de visualização nesta máquina).
+Capturas em `docs/ui-capturas/` (L2, R-UI-13; modo de visualização nesta
+máquina, `--pipe` para um pipe inexistente, só a área da janela):
+`boas-vindas.png` (primeiro uso, janela inteira), `inicio.png`, `jogos.png` e
+`avancado.png` (`--tela inicio|jogos|avancado`). As telas técnicas abaixo
+(v0.2.0) hoje são grupos da seção Avançado.
 
-### Visão geral (`visao-geral.png`)
+### Visão geral (hoje no Avançado, “Sistema e recursos”)
 
 Cartão **Avisos** logo abaixo dos botões: cada aviso com selo e barra
 lateral na cor do nível (vermelho = erro, amarelo = atenção, azul =
@@ -174,7 +178,7 @@ mostram essa mesma mensagem (tipo `TipoMensagem::Adiada`, em azul, com o
 mesmo título da faixa), **não** erro nem “Preferências salvas.”/“Plano
 aplicado”. Se a faixa do estado já diz o mesmo, a mensagem não é repetida.
 
-### Jogos (`jogos.png`)
+### Jogos (técnico, no Avançado)
 
 Tabela com jogo, perfil do driver usado (e a origem: perfil da NVIDIA,
 existente, criado pelo app ou a criar), launcher, API gráfica, versão do
@@ -226,10 +230,7 @@ serviço). Abaixo da tabela, se houver, **Ignorados
 pelo plano**: jogos deixados de fora por um problema só deles, com executável
 e motivo.
 
-Capturas: `jogos.png` (esta máquina, Turing: WARDOGS com preset E expandido;
-LoL e TFT “jogo sem DLSS”) e `jogos-ada.png` (mesma máquina com
-`NVT_UI_SIMULAR_GPU=ada`). Ambas no modo de visualização (`--pipe` para um
-pipe inexistente, `--tela jogos --expandir WARDOGS`), sem gravar nada.
+As capturas da v0.2.0 desta tela saíram no L2 (ver as capturas novas acima).
 
 #### Arquivo do jogo (Fase 3)
 
@@ -264,7 +265,7 @@ de config do jogo (campo próprio `config_jogo.experimentais`, com regra,
 destinos e estado `aceitavel`/`aceita`) aparecem na mesma seção com **Aceitar**/**Retirar** (`DefinirAceiteExperimental`, o
 fluxo da Fase 2). A UI continua sem gravar nada.
 
-### Mudanças (`mudancas.png`)
+### Mudanças
 
 O plano do driver é agrupado por perfil (global primeiro). Os ajustes do
 usuário ficam em um cartão Windows. Cada item apresenta o nome legível da
@@ -304,7 +305,7 @@ a restauração dos ajustes do usuário está pendente. Ao concluir a
 restauração do driver, a interface indica separadamente a pendência do
 usuário, quando houver.
 
-### Preferências (`preferencias.png`)
+### Preferências
 
 - **Sincronismo**: Sem sincronização / G-SYNC / V-Sync, com explicação. Com
   G-SYNC no rascunho, um alerta amarelo ao lado da escolha
@@ -322,13 +323,13 @@ As escolhas ficam num rascunho; **Salvar preferências** envia
 valor em vigor. Uma atualização vinda do serviço não apaga um rascunho
 alterado.
 
-### Histórico (`historico.png`)
+### Histórico
 
 Lista (mais recentes primeiro) com data no fuso local, ação (aplicação,
 restauração, rollback, travamento, destravamento, preferências, deriva
 detectada), camada (Driver ou Windows), perfil e setting, antes → depois e motivo.
 
-### Restaurar original (`restaurar.png`)
+### Restaurar original
 
 Explica o que será desfeito e oferece **Restaurar original…**, que abre um
 diálogo de confirmação; só ao confirmar a UI envia `RestaurarOriginal` ao

@@ -113,7 +113,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | 5 | Fase 2 (camada Windows, decisão D6): identidade do cliente pelo token; requisições `agente_consultar`, `agente_relatar`, `definir_aceite_experimental` e `reverter_ajuste_usuario`; respostas `plano_agente` e `encerrar`; `estado.agente` e `estado.diagnosticos`; `plano.sistema` (`ResumoSistema`) e `plano.sugestoes_driver`; erro `identidade_indisponivel`. Mensagens v4 são recusadas antes de desserializar o corpo |
 | 6 | Atualização automática (`docs/spec/atualizacao.md` §8.6 e §10): `estado.atualizacao` (`EstadoAtualizacao`); requisição `marcar_atualizacao_vista`; erro `entrada_invalida`. Mensagens v5 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
 | 7 | Fase 3, arquivo de configuração de jogo (`docs/spec/fase3-plano.md`, L1-c): `fatos.config_jogo` em `agente_consultar`; `plano_agente.tarefa_jogo`; `agente_relatar.resultados_jogo`; requisição `reverter_config_jogo`; `jogo.config_jogo` no plano; motivos da Fase 3. Detalhes em “Arquivo de configuração de jogo (v7)”. Mensagens v6 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
-| 8 | Interface e saúde (`docs/spec/interface-e-saude.md` §7.6): requisições `aplicar_recomendadas`, `obter_saude`, `marcar_inicio_visto`, `listar_partidas`, `obter_partida`, `apagar_partidas`; respostas `recomendadas`, `saude`, `partidas`, `partida`; `agente_relatar.saude` (opcional); erro `recurso_ausente`. Detalhes em “Saúde do PC e partidas (v8)”. Mensagens v7 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
+| 8 | Interface e saúde (`docs/spec/interface-e-saude.md` §7.6): requisições `aplicar_recomendadas`, `obter_saude`, `marcar_inicio_visto`, `listar_partidas`, `obter_partida`, `apagar_partidas`; respostas `recomendadas`, `saude`, `partidas`, `partida`; `agente_relatar.saude` (opcional); erro `recurso_ausente`; `estado.autonomia_pausada`. Detalhes em “Saúde do PC e partidas (v8)”. Mensagens v7 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
 
 ## Requisições (`corpo.tipo`)
 
@@ -162,7 +162,7 @@ Exemplo:
 
 | Tipo        | Conteúdo                                                        |
 |-------------|-----------------------------------------------------------------|
-| `estado`    | `versao_servico`, `driver`, `gpu` (com `capacidades`), `preferencias`, `jogos`, `ultima_aplicacao`, `alertas_deriva`, `avisos`, `adiamento`, `atualizacao` (v6) |
+| `estado`    | `versao_servico`, `driver`, `gpu` (com `capacidades`), `preferencias`, `jogos`, `ultima_aplicacao`, `alertas_deriva`, `avisos`, `adiamento`, `atualizacao` (v6), `autonomia_pausada` (v8: ajustes desligados por "Desfazer tudo" até "Voltar a ajustar"; ausente = `false`) |
 | `plano`     | `gerado_unix`, `perfis[]` → `perfil`, `nome_legivel`, `mudancas[]`; `reversoes[]`; `ignorados[]`; `jogos[]`; `adiada` |
 | `historico` | `entradas[]`                                                    |
 | `restauracao` | `adiada` (resposta de `restaurar_original`)                   |

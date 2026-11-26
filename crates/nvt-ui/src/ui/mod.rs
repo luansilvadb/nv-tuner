@@ -1,12 +1,10 @@
-//! Janela principal: estrutura nova ([`estrutura`]) sobre as telas legadas
-//! ([`legado`]).
+//! Janela principal: estrutura comum ([`estrutura`]) e as seções Início,
+//! Jogos e Avançado.
 
 mod avancado;
 mod boas_vindas;
 mod estrutura;
 mod inicio;
 mod jogos;
-mod legado;
 
-pub use estrutura::Destino;
-pub use legado::Janela;
+pub use estrutura::{Destino, Janela};

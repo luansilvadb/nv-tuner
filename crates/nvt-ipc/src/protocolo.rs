@@ -406,6 +406,10 @@ pub struct Estado {
     pub adiamento: Option<Adiamento>,
     /// Atualização automática do próprio nv-tuner (v6).
     pub atualizacao: EstadoAtualizacao,
+    /// Ajustes automáticos desligados pelo usuário ("Desfazer tudo") até
+    /// "Voltar a ajustar" (v8). Persistido pelo serviço.
+    #[serde(default)]
+    pub autonomia_pausada: bool,
 }
 
 /// Estado da atualização automática (v6, `docs/spec/atualizacao.md` §10).
@@ -1436,6 +1440,7 @@ mod testes {
                 ],
                 adiamento: Some(adiamento(AcaoAdiada::TratarDeriva)),
                 atualizacao: atualizacao_exemplo(),
+                autonomia_pausada: false,
             }),
             Resposta::Estado(Estado {
                 agente: EstadoAgente::default(),
@@ -1450,6 +1455,7 @@ mod testes {
                 avisos: vec![],
                 adiamento: None,
                 atualizacao: EstadoAtualizacao::default(),
+                autonomia_pausada: false,
             }),
             Resposta::Plano(Plano {
                 sistema: ResumoSistema::default(),

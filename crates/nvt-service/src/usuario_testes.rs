@@ -158,6 +158,7 @@ fn estado(c: &Coordenador, id: &IdentidadeCliente, agora: Instant) -> EstadoAgen
         avisos: vec![],
         adiamento: None,
         atualizacao: Default::default(),
+        autonomia_pausada: false,
     });
     c.projetar(id, &mut r, 0, agora);
     let Resposta::Estado(e) = r else {
@@ -688,6 +689,7 @@ fn nao_vista_projetada(
         avisos: Vec::new(),
         adiamento: None,
         atualizacao: e.clone(),
+        autonomia_pausada: false,
     });
     c.projetar(id, &mut r, 0, Instant::now());
     let Resposta::Estado(estado) = r else {

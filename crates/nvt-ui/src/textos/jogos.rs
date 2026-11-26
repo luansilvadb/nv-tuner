@@ -60,3 +60,8 @@ pub fn status(s: StatusJogo) -> String {
 pub fn passo(numero: usize, texto: &str) -> String {
     format!("{numero}. {}", texto.trim())
 }
+
+pub const BOTAO_OCULTAR_TECNICOS: &str = "Ocultar detalhes técnicos";
+pub const AJUSTOU_ARQUIVO: &str = "Ajustou o arquivo de configuração do jogo.";
+pub const DICA_CLIQUE: &str = "Clique em um jogo para ver o que foi feito.";
+pub const ROTULO_PERFIL: &str = "Perfil do driver";

@@ -235,6 +235,21 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
     ) -> Resposta {
         let exclusao = self.integracao.exclusao.clone();
         let _drs = exclusao.ciclo_drs();
+        if matches!(req, Requisicao::AplicarRecomendadas)
+            && let Some(usuario) = &mut self.integracao.usuario
+        {
+            // R-AR: depende da identidade e da sessão de console.
+            let resposta = crate::recomendadas::aplicar(
+                self.nucleo,
+                usuario,
+                &identidade,
+                self.integracao.console.as_ref(),
+                agora,
+            );
+            self.integracao
+                .definir_preferencias(&self.nucleo.preferencias());
+            return resposta;
+        }
         if let Some(usuario) = &mut self.integracao.usuario
             && matches!(req, Requisicao::AgenteConsultar { .. })
         {
@@ -594,7 +609,7 @@ pub(crate) struct Integracao {
     sessoes_agente: Option<Vec<nvt_atualizacao::SessaoAgente>>,
     diagnosticos: Arc<Mutex<Vec<nvt_ipc::Diagnostico>>>,
     regras_drs: Option<nvt_core::ConjuntoRegras>,
-    console: Option<IdentidadeCliente>,
+    pub(crate) console: Option<IdentidadeCliente>,
     aceites_drs: std::collections::BTreeSet<String>,
     /// F3-13 do SID da sessão de console (ver `Coordenador::limites_no_jogo_efetivos`).
     limites_jogo: std::collections::BTreeMap<nvt_core::IdJogo, String>,
@@ -875,6 +890,7 @@ pub(crate) fn tratar_sem_driver(
             avisos: Vec::new(),
             adiamento: None,
             atualizacao: Default::default(),
+            autonomia_pausada: false,
         }),
         Requisicao::ObterPlano => plano_sem_driver(),
         Requisicao::ListarHistorico { .. } => Resposta::Historico {

@@ -1977,3 +1977,334 @@ mod atualizacao {
         assert!(inicio.elapsed() < Duration::from_secs(5));
     }
 }
+
+/// R-AR-01 a R-AR-06: "Aplicar melhorias recomendadas" com driver,
+/// processos e armazenamento de usuários falsos.
+mod recomendadas {
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeSet;
+    use std::io;
+    use std::rc::Rc;
+
+    use nvt_drs::{FonteFalsa, VrrBruto};
+    use nvt_ipc::pipe::IdentidadeCliente;
+
+    use super::*;
+    use crate::usuario::{Armazenamento, Coordenador, DadosUsuarios};
+
+    const DRS: &str = "sincronismo-gsync-limite";
+    const CAPTURA: &str = "windows-captura-historica-off";
+    const ID_LIMITE: u32 = 0x1083_5002;
+
+    /// `usuarios.json` em memória, com contagem de gravações e falha forçada.
+    #[derive(Clone, Default)]
+    struct Memoria {
+        dados: Rc<RefCell<DadosUsuarios>>,
+        gravacoes: Rc<Cell<u32>>,
+        falhar: Rc<Cell<bool>>,
+    }
+
+    impl Armazenamento for Memoria {
+        fn carregar(&self) -> io::Result<DadosUsuarios> {
+            Ok(self.dados.borrow().clone())
+        }
+        fn salvar(&self, dados: &DadosUsuarios) -> io::Result<()> {
+            if self.falhar.get() {
+                return Err(io::Error::other("disco cheio"));
+            }
+            self.gravacoes.set(self.gravacoes.get() + 1);
+            *self.dados.borrow_mut() = dados.clone();
+            Ok(())
+        }
+    }
+
+    impl Memoria {
+        fn json(&self) -> String {
+            serde_json::to_string(&*self.dados.borrow()).unwrap()
+        }
+        fn contem(&self, regra: &str) -> bool {
+            self.json().contains(&format!("\"{regra}\""))
+        }
+    }
+
+    fn id(sid: &str) -> IdentidadeCliente {
+        IdentidadeCliente {
+            sid: sid.into(),
+            sessao: 1,
+        }
+    }
+
+    fn coordenador(m: &Memoria) -> Coordenador {
+        Coordenador::abrir(
+            m.clone(),
+            &nvt_core::ConjuntoRegras::embutido().unwrap(),
+            Some(22631),
+            0,
+        )
+        .unwrap()
+    }
+
+    /// Agente presente com a captura histórica ligada (CAPTURA aplicável).
+    fn agente(c: &mut Coordenador, quem: &IdentidadeCliente, t: Instant) {
+        let req = Requisicao::AgenteConsultar {
+            fatos: nvt_ipc::FatosUsuario {
+                config_jogo: vec![],
+                tela: nvt_ipc::Fato::Desconhecido,
+                mouse: nvt_ipc::Fato::Desconhecido,
+                swap_effect_upgrade: nvt_ipc::Fato::Desconhecido,
+                captura_historica: nvt_ipc::Fato::Conhecido(1),
+                diagnosticos: vec![],
+                gestao: vec![],
+            },
+            ultima_tarefa: None,
+            geracao_restaurada: 0,
+        };
+        assert!(matches!(
+            c.tratar(quem, &req, t, 12),
+            Some(Resposta::PlanoAgente(_))
+        ));
+    }
+
+    /// Monitor de 240 Hz com VRR ativo; com `gsync`, a experimental DRS
+    /// casa, sem ele a condição não casa.
+    fn preparar(d: &DriverFalso, n: &mut Nucleo<'_, DriverFalso>, gsync: bool, t: Instant) {
+        d.definir_exibicao(FonteFalsa::monitor(
+            7,
+            240_000,
+            Some(VrrBruto {
+                possivel: true,
+                ativo: true,
+            }),
+        ));
+        n.iniciar(t);
+        let sincronismo = if gsync {
+            nvt_ipc::Sincronismo::GSync
+        } else {
+            nvt_ipc::Sincronismo::Desligado
+        };
+        let req = Requisicao::DefinirPreferencias {
+            sincronismo,
+            qualidade: nvt_ipc::Qualidade::Equilibrado,
+            limite_fps: None,
+        };
+        assert_eq!(n.tratar(req, t), Resposta::Ok);
+    }
+
+    fn pedir(
+        n: &mut Nucleo<'_, DriverFalso>,
+        c: &mut Coordenador,
+        quem: &IdentidadeCliente,
+        console: &IdentidadeCliente,
+        t: Instant,
+    ) -> (Vec<String>, bool) {
+        match crate::recomendadas::aplicar(n, c, quem, Some(console), t) {
+            Resposta::Recomendadas { aceitas, adiada } => (aceitas, adiada),
+            outra => panic!("esperava recomendadas, veio {outra:?}"),
+        }
+    }
+
+    struct Cenario {
+        d: DriverFalso,
+        dir: DirTemp,
+        s: Sinal,
+        p: Processos,
+        t: Instant,
+    }
+
+    fn cenario() -> Cenario {
+        Cenario {
+            d: driver(),
+            dir: DirTemp::novo(),
+            s: sinal(),
+            p: Processos::default(),
+            t: Instant::now(),
+        }
+    }
+
+    impl Cenario {
+        fn nucleo<'a>(&self, gsync: bool) -> Nucleo<'a, DriverFalso> {
+            let mut n = nucleo_com_processos(&self.d, &self.dir, &self.s, &self.p, self.t);
+            preparar(&self.d, &mut n, gsync, self.t);
+            n
+        }
+        fn limite(&self) -> Option<u32> {
+            self.d.valor(&ProfileRef::Base, ID_LIMITE)
+        }
+    }
+
+    #[test]
+    fn r_ar_01_aceita_as_camadas_numa_gravacao_e_aplica() {
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        let m = Memoria::default();
+        let mut c = coordenador(&m);
+        let console = id("S-1-5-21-console");
+        agente(&mut c, &console, k.t);
+        let (aceitas, adiada) = pedir(&mut n, &mut c, &console, &console, k.t);
+        assert_eq!(aceitas, vec![DRS.to_owned(), CAPTURA.to_owned()]);
+        assert!(!adiada);
+        assert_eq!(m.gravacoes.get(), 1);
+        assert!(m.contem(DRS) && m.contem(CAPTURA));
+        assert_eq!(k.limite(), Some(224));
+    }
+
+    #[test]
+    fn r_ar_02_jogo_aberto_grava_aceites_e_adia_a_aplicacao() {
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        let m = Memoria::default();
+        let mut c = coordenador(&m);
+        let console = id("S-1-5-21-console");
+        k.p.abrir(EXE_WARDOGS);
+        let (aceitas, adiada) = pedir(&mut n, &mut c, &console, &console, k.t);
+        assert_eq!(aceitas, vec![DRS.to_owned()]);
+        assert!(adiada);
+        assert!(m.contem(DRS));
+        assert_eq!(k.limite(), None);
+        k.p.fechar_todos();
+        n.tick(k.t + Duration::from_secs(60));
+        assert_eq!(k.limite(), Some(224));
+    }
+
+    #[test]
+    fn r_ar_03_repetir_e_idempotente() {
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        let m = Memoria::default();
+        let mut c = coordenador(&m);
+        let console = id("S-1-5-21-console");
+        agente(&mut c, &console, k.t);
+        assert_eq!(pedir(&mut n, &mut c, &console, &console, k.t).0.len(), 2);
+        let antes = (escritas(&k.d), m.gravacoes.get(), m.json());
+        let (aceitas, adiada) = pedir(&mut n, &mut c, &console, &console, k.t);
+        assert!(aceitas.is_empty() && !adiada);
+        assert_eq!((escritas(&k.d), m.gravacoes.get(), m.json()), antes);
+    }
+
+    #[test]
+    fn r_ar_04_driver_so_do_console_e_windows_so_do_chamador() {
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        let m = Memoria::default();
+        let mut c = coordenador(&m);
+        let (console, outro) = (id("S-1-5-21-console"), id("S-1-5-21-outro"));
+        agente(&mut c, &outro, k.t);
+        let (aceitas, _) = pedir(&mut n, &mut c, &outro, &console, k.t);
+        assert_eq!(aceitas, vec![CAPTURA.to_owned()]);
+        assert!(!m.contem(DRS));
+        assert!(c.aceites_drs(Some(&console.sid)).is_empty());
+        assert_eq!(k.limite(), None);
+        // O console recebe só o DRS: o aceite Windows do outro SID não vale aqui.
+        let (aceitas, _) = pedir(&mut n, &mut c, &console, &console, k.t);
+        assert_eq!(aceitas, vec![DRS.to_owned()]);
+        assert_eq!(k.limite(), Some(224));
+    }
+
+    #[test]
+    fn r_ar_05_so_aplicaveis_e_tudo_ou_nada() {
+        let m = Memoria::default();
+        let mut c = coordenador(&m);
+        let console = id("S-1-5-21-console");
+
+        // Condição não casada (sem G-SYNC): a experimental DRS não entra.
+        let k = cenario();
+        let mut n = k.nucleo(false);
+        assert!(pedir(&mut n, &mut c, &console, &console, k.t).0.is_empty());
+        assert_eq!(m.gravacoes.get(), 0);
+
+        // Travada pelo usuário: não entra.
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        let travar = Requisicao::TravarSetting {
+            perfil: crate::nucleo::PERFIL_GLOBAL.into(),
+            setting: "limite_fps".into(),
+        };
+        assert_eq!(n.tratar(travar, k.t), Resposta::Ok);
+        assert!(pedir(&mut n, &mut c, &console, &console, k.t).0.is_empty());
+        assert_eq!(m.gravacoes.get(), 0);
+
+        // Não experimental: o lote inteiro é recusado e nada é gravado.
+        let lote: BTreeSet<String> = ["vsync-off".to_owned(), CAPTURA.to_owned()].into();
+        assert!(c.aceitar_todas(&console, &lote).is_err());
+        assert_eq!(m.gravacoes.get(), 0);
+
+        // Falha na gravação: nenhum aceite e nenhuma aplicação.
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        agente(&mut c, &console, k.t);
+        m.falhar.set(true);
+        let antes = escritas(&k.d);
+        let r = crate::recomendadas::aplicar(&mut n, &mut c, &console, Some(&console), k.t);
+        assert!(matches!(r, Resposta::Erro { .. }), "{r:?}");
+        assert!(!m.contem(DRS) && !m.contem(CAPTURA));
+        assert!(c.aceites_drs(Some(&console.sid)).is_empty());
+        assert_eq!(escritas(&k.d), antes);
+        assert_eq!(k.limite(), None);
+    }
+
+    #[test]
+    fn r_ar_aplicar_recomendadas_pelo_atendimento() {
+        use crate::laco::{Atendente, Atendimento, Integracao};
+
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        let m = Memoria::default();
+        let console = id("S-1-5-21-console");
+        let mut integracao = Integracao::default();
+        integracao.usuario = Some(coordenador(&m));
+        integracao.console = Some(console.clone());
+        let mut at = Atendimento {
+            nucleo: &mut n,
+            integracao: &mut integracao,
+        };
+        let r = at.tratar(console.clone(), Requisicao::AplicarRecomendadas, k.t);
+        assert_eq!(
+            r,
+            Resposta::Recomendadas {
+                aceitas: vec![DRS.to_owned()],
+                adiada: false,
+            }
+        );
+        assert_eq!(k.limite(), Some(224));
+        assert!(m.contem(DRS));
+
+        // Sem coordenador de usuário: recusado, nada aplicado.
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        let mut integracao = Integracao::default();
+        let mut at = Atendimento {
+            nucleo: &mut n,
+            integracao: &mut integracao,
+        };
+        let r = at.tratar(console, Requisicao::AplicarRecomendadas, k.t);
+        assert!(matches!(r, Resposta::Erro { .. }), "{r:?}");
+        assert_eq!(k.limite(), None);
+    }
+
+    #[test]
+    fn r_ar_06_desfazer_mantem_aceites_e_voltar_a_ajustar_reaplica() {
+        let k = cenario();
+        let mut n = k.nucleo(true);
+        let m = Memoria::default();
+        let mut c = coordenador(&m);
+        let console = id("S-1-5-21-console");
+        let (aceitas, _) = pedir(&mut n, &mut c, &console, &console, k.t);
+        assert_eq!(aceitas, vec![DRS.to_owned()]);
+        assert_eq!(k.limite(), Some(224));
+
+        // "Desfazer tudo": volta ao original, pausa e mantém o aceite.
+        let r = n.tratar(Requisicao::RestaurarOriginal, k.t);
+        assert_eq!(r, Resposta::Restauracao { adiada: None });
+        assert!(n.servico().autonomia_pausada);
+        assert_eq!(k.limite(), None);
+        assert!(m.contem(DRS));
+        n.ciclo(k.t, "pausado não reaplica");
+        assert_eq!(k.limite(), None);
+
+        // "Voltar a ajustar" é `AplicarAgora`: retoma e reaplica o aceite.
+        let r = n.tratar(Requisicao::AplicarAgora, k.t);
+        assert!(matches!(r, Resposta::Plano(_)), "{r:?}");
+        assert!(!n.servico().autonomia_pausada);
+        assert_eq!(k.limite(), Some(224));
+    }
+}

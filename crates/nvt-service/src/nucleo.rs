@@ -1168,6 +1168,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             Requisicao::AgenteConsultar { .. }
             | Requisicao::AgenteRelatar { .. }
             | Requisicao::DefinirAceiteExperimental { .. }
+            // R-AR: depende da identidade; ver `crate::recomendadas::aplicar`.
+            | Requisicao::AplicarRecomendadas
             | Requisicao::ReverterAjusteUsuario { .. }
             | Requisicao::ReverterConfigJogo { .. }
             | Requisicao::MarcarAtualizacaoVista { .. } => {
@@ -1177,8 +1179,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                 );
             }
             // v8: respostas provisórias até as tarefas de L2/L3/L5.
-            Requisicao::AplicarRecomendadas
-            | Requisicao::ObterSaude
+            Requisicao::ObterSaude
             | Requisicao::MarcarInicioVisto { .. }
             | Requisicao::ListarPartidas { .. }
             | Requisicao::ObterPartida { .. }
@@ -1264,6 +1265,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             avisos: self.avisos(),
             adiamento: self.adiamento_ipc(),
             atualizacao: nvt_ipc::EstadoAtualizacao::default(),
+            autonomia_pausada: self.servico.autonomia_pausada,
         }))
     }
 
@@ -1312,6 +1314,22 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             }
             None => self.plano_adiado(),
         }
+    }
+
+    /// R-AR: experimentais DRS aplicáveis agora (condição casada, ao menos um
+    /// setting fora de trava) e ainda não aceitas pela sessão de console.
+    pub(crate) fn experimentais_drs_aplicaveis(&mut self) -> Resultado<BTreeSet<String>> {
+        self.renovar()?;
+        let diff = self.planejar()?;
+        Ok(diff
+            .plano
+            .estado_experimental
+            .iter()
+            .filter(|(id, e)| {
+                **e == nvt_core::EstadoExperimental::Aceitavel && !self.aceites_drs.contains(*id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect())
     }
 
     fn restaurar_original(&mut self, agora: Instant) -> Resultado<Resposta> {

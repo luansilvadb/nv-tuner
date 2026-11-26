@@ -31,6 +31,7 @@ pub struct Canal {
 pub fn iniciar(pipe: String) -> Canal {
     let (tx_cmd, rx_cmd) = mpsc::channel();
     let (tx_ev, rx_ev) = mpsc::channel();
+    registrar(&pipe, &tx_cmd);
     thread::Builder::new()
         .name("nvt-ui-ipc".into())
         .spawn(move || Trabalhador::new(pipe, tx_ev).executar(&rx_cmd))
@@ -295,5 +296,156 @@ impl Trabalhador {
 
     fn concluir(&self, comando: Comando, resultado: Result<Desfecho, String>) {
         self.enviar(Evento::Concluido { comando, resultado });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ações do Início (spec interface-e-saude.md §5.3): chamadas diretas
+// ---------------------------------------------------------------------------
+
+/// Pipe e fila de comandos da thread de comunicação, para as ações do Início
+/// pedirem uma atualização dos dados depois de concluídas.
+static PIPE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static COMANDOS: std::sync::OnceLock<std::sync::Mutex<Sender<Comando>>> =
+    std::sync::OnceLock::new();
+
+fn registrar(pipe: &str, comandos: &Sender<Comando>) {
+    let _ = PIPE.set(pipe.to_owned());
+    let _ = COMANDOS.set(std::sync::Mutex::new(comandos.clone()));
+}
+
+/// Ação do Início.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcaoInicio {
+    /// `AplicarRecomendadas` (R-UI-06).
+    AplicarRecomendadas,
+    /// `RestaurarOriginal`, depois da confirmação (R-UI-07).
+    DesfazerTudo,
+    /// "Voltar a ajustar": `AplicarAgora` (R-UI-02).
+    VoltarAAjustar,
+}
+
+impl AcaoInicio {
+    pub fn requisicao(self) -> Requisicao {
+        match self {
+            AcaoInicio::AplicarRecomendadas => Requisicao::AplicarRecomendadas,
+            AcaoInicio::DesfazerTudo => Requisicao::RestaurarOriginal,
+            AcaoInicio::VoltarAAjustar => Requisicao::AplicarAgora,
+        }
+    }
+}
+
+/// Resultado de uma ação do Início, já resumido para a tela.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RespostaInicio {
+    /// `adiada` = há jogo aberto; acontece quando ele fechar.
+    Feito { aceitas: usize, adiada: bool },
+}
+
+/// Por que a ação não aconteceu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FalhaInicio {
+    /// Serviço ausente: modo de visualização, nada é gravado.
+    SemServico,
+    /// O serviço não conhece a requisição (`RecursoAusente`).
+    RecursoAusente,
+    /// Outra falha, já em texto para o usuário.
+    Outra(String),
+}
+
+/// Resume a resposta do serviço para a ação.
+pub fn resposta_inicio(r: &Resposta) -> Result<RespostaInicio, FalhaInicio> {
+    match r {
+        Resposta::Erro {
+            codigo: nvt_ipc::CodigoErro::RecursoAusente,
+            ..
+        } => Err(FalhaInicio::RecursoAusente),
+        Resposta::Erro { codigo, mensagem } => {
+            Err(FalhaInicio::Outra(textos::erro_servico(*codigo, mensagem)))
+        }
+        Resposta::Recomendadas { aceitas, adiada } => Ok(RespostaInicio::Feito {
+            aceitas: aceitas.len(),
+            adiada: *adiada,
+        }),
+        outra => Ok(RespostaInicio::Feito {
+            aceitas: 0,
+            adiada: matches!(Desfecho::da_resposta(outra), Desfecho::Adiado(_)),
+        }),
+    }
+}
+
+/// Executa a ação numa conexão própria (bloqueante; chamar fora da thread
+/// da janela) e pede à thread de comunicação que atualize os dados.
+pub fn executar_inicio(acao: AcaoInicio) -> Result<RespostaInicio, FalhaInicio> {
+    let pipe = PIPE.get().ok_or(FalhaInicio::SemServico)?;
+    let cfg = nvt_ipc::pipe::ConfigCliente::default();
+    let req = acao.requisicao();
+    let resultado = match nvt_ipc::pipe::Cliente::conectar(pipe, &cfg) {
+        Ok(mut c) => match c.requisitar(&req) {
+            Ok(r) => resposta_inicio(&r),
+            Err(e) => Err(falha_inicio(e)),
+        },
+        Err(e) => Err(falha_inicio(e)),
+    };
+    if let Some(Ok(tx)) = COMANDOS.get().map(|m| m.lock()) {
+        let _ = tx.send(Comando::Atualizar);
+    }
+    resultado
+}
+
+fn falha_inicio(e: ErroIpc) -> FalhaInicio {
+    match falha_de(e) {
+        Falha::Ausente(None) => FalhaInicio::SemServico,
+        Falha::Ausente(Some(m)) | Falha::Comunicacao(m) | Falha::Recusa(m) => FalhaInicio::Outra(m),
+    }
+}
+
+#[cfg(test)]
+mod testes_inicio {
+    use super::*;
+    use nvt_ipc::CodigoErro;
+
+    #[test]
+    fn requisicoes_das_acoes() {
+        assert_eq!(
+            AcaoInicio::AplicarRecomendadas.requisicao(),
+            Requisicao::AplicarRecomendadas
+        );
+        assert_eq!(
+            AcaoInicio::DesfazerTudo.requisicao(),
+            Requisicao::RestaurarOriginal
+        );
+        assert_eq!(
+            AcaoInicio::VoltarAAjustar.requisicao(),
+            Requisicao::AplicarAgora
+        );
+    }
+
+    #[test]
+    fn recomendadas_e_recurso_ausente() {
+        let r = Resposta::Recomendadas {
+            aceitas: vec!["a".into(), "b".into()],
+            adiada: true,
+        };
+        assert_eq!(
+            resposta_inicio(&r),
+            Ok(RespostaInicio::Feito {
+                aceitas: 2,
+                adiada: true
+            })
+        );
+        let e = Resposta::erro(CodigoErro::RecursoAusente, "ainda não implementado");
+        assert_eq!(resposta_inicio(&e), Err(FalhaInicio::RecursoAusente));
+        assert!(matches!(
+            resposta_inicio(&Resposta::erro(CodigoErro::Interno, "x")),
+            Err(FalhaInicio::Outra(_))
+        ));
+        assert_eq!(
+            resposta_inicio(&Resposta::Restauracao { adiada: None }),
+            Ok(RespostaInicio::Feito {
+                aceitas: 0,
+                adiada: false
+            })
+        );
     }
 }

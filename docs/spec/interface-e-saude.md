@@ -114,6 +114,8 @@ roteiro de §10.
 | R-AR-05 | Só entram regras marcadas experimentais no catálogo e aplicáveis agora; regra não experimental, de condição não casada, de camada indisponível ou travada pelo usuário nunca é aceita. Falha na gravação das preferências = nenhum aceite e nenhuma aplicação (tudo ou nada). | Teste com catálogo falso contendo cada caso. |
 | R-AR-06 | "Desfazer tudo" depois de `AplicarRecomendadas` volta tudo ao original e pausa a autonomia (`autonomia_pausada`), como hoje; os aceites continuam gravados e voltam a valer com "Voltar a ajustar" (ver Q9). | Teste de sequência Aplicar -> Restaurar -> AplicarAgora. |
 
+Desvio registrado (L2, R-AR-04): na implementação, `AplicarRecomendadas` vindo de um SID que não é o da sessão de console não aceita a experimental DRS (ela não entra no lote), em vez de aceitá-la como inativa. Motivo: é mais simples e não deixa efeito escondido; um aceite inativo passaria a valer sozinho quando aquele usuário viesse a ser o do console, sem novo pedido. Os aceites Windows e de arquivo de jogo continuam valendo só para o SID chamador. O aceite individual pelo Avançado (`DefinirAceiteExperimental`) mantém a regra da fase 2.
+
 ### 4.3 Saúde: sinais e inicialização (R-S)
 
 | ID | Requisito | Teste |

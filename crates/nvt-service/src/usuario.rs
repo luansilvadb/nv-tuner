@@ -613,14 +613,63 @@ impl Coordenador {
         Some(resultado.unwrap_or_else(|(codigo, mensagem)| Resposta::erro(codigo, mensagem)))
     }
 
-    fn definir_aceite(
+    /// R-AR: experimentais Windows e de config de jogo aplicáveis agora à
+    /// identidade (plano da própria sessão, com agente presente) e ainda não
+    /// aceitas pelo SID. O avaliador só marca `Aceitavel` regra cuja condição
+    /// casou e com destino fora de trava ou de ajuste do usuário.
+    pub(crate) fn experimentais_aplicaveis(
+        &self,
+        identidade: &IdentidadeCliente,
+        agora: Instant,
+    ) -> BTreeSet<String> {
+        let sessao = self.sessoes.get(identidade).filter(|s| s.presente(agora));
+        self.resumo(identidade, sessao)
+            .sugestoes
+            .into_iter()
+            .filter(|s| s.estado == EstadoExperimental::Aceitavel)
+            .map(|s| s.regra)
+            .collect()
+    }
+
+    /// R-AR: aceita todas as `regras` do SID numa única gravação (tudo ou
+    /// nada). Devolve só as que ainda não estavam aceitas; sem novidade, não
+    /// grava nada (idempotente).
+    pub(crate) fn aceitar_todas(
         &mut self,
         identidade: &IdentidadeCliente,
-        regra: &str,
-        aceito: bool,
-    ) -> Result<Resposta, Erro> {
-        // A lista DRS usa o mesmo filtro exposto para a sessão de console.
-        let experimental = self.drs.contains(regra)
+        regras: &BTreeSet<String>,
+    ) -> Result<Vec<String>, Erro> {
+        if let Some(r) = regras.iter().find(|r| !self.experimental(r)) {
+            return Err(invalida(format!("regra experimental desconhecida: {r}")));
+        }
+        let mut dados = self.dados.clone();
+        let aceites = &mut dados
+            .por_sid
+            .entry(identidade.sid.clone())
+            .or_default()
+            .aceites;
+        let novas: Vec<String> = regras
+            .iter()
+            .filter(|r| aceites.insert((*r).clone()))
+            .cloned()
+            .collect();
+        if novas.is_empty() {
+            return Ok(novas);
+        }
+        self.armazenamento
+            .salvar(&dados)
+            .map_err(erro_armazenamento)?;
+        self.dados = dados;
+        for (id, sessao) in &mut self.sessoes {
+            if id.sid == identidade.sid {
+                sessao.invalidar();
+            }
+        }
+        Ok(novas)
+    }
+
+    fn experimental(&self, regra: &str) -> bool {
+        self.drs.contains(regra)
             || self
                 .metadados
                 .get(regra)
@@ -629,8 +678,17 @@ impl Coordenador {
                 .catalogo_jogo
                 .regras()
                 .iter()
-                .any(|r| r.id == regra && r.status == Status::Experimental);
-        if !experimental {
+                .any(|r| r.id == regra && r.status == Status::Experimental)
+    }
+
+    fn definir_aceite(
+        &mut self,
+        identidade: &IdentidadeCliente,
+        regra: &str,
+        aceito: bool,
+    ) -> Result<Resposta, Erro> {
+        // A lista DRS usa o mesmo filtro exposto para a sessão de console.
+        if !self.experimental(regra) {
             return Err(invalida("regra experimental desconhecida"));
         }
         let mut dados = self.dados.clone();

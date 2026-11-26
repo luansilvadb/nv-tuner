@@ -84,6 +84,8 @@ fn main() {
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     app.run(move |cx| {
         gpui_kit::init(cx);
+        // Textos internos do gpui-component (busca, diálogos) em português.
+        gpui_kit::component::set_locale("pt-BR");
         tema::aplicar(cx);
         let opcoes_janela = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(

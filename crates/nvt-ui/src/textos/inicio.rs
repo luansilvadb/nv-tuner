@@ -211,3 +211,30 @@ pub fn inicializacao_novos(n: usize) -> String {
         n => format!("{n} programas novos começam junto com o Windows."),
     }
 }
+
+// Resultados das ações do Início (L2) --------------------------------------
+pub const PARA_VOLTAR_ATRAS: &str = "Para voltar atrás, use Desfazer tudo.";
+pub const NENHUMA_APLICADA: &str = "Não havia melhorias para aplicar agora.";
+pub const RECOMENDADAS_AUSENTE: &str =
+    "Esta versão ainda não aplica tudo de uma vez. Escolha uma a uma no Avançado.";
+pub const RECURSO_AUSENTE: &str = "Esta versão do nv-tuner ainda não faz isso.";
+pub const VOLTAR_ADIADO: &str = "Os ajustes voltam quando o jogo fechar.";
+pub const AGUARDE: &str = "Só um instante…";
+
+/// Frases fixas acrescentadas no L2, para os testes de linguagem.
+pub const TODOS_L2: &[&str] = &[
+    PARA_VOLTAR_ATRAS,
+    NENHUMA_APLICADA,
+    RECOMENDADAS_AUSENTE,
+    RECURSO_AUSENTE,
+    VOLTAR_ADIADO,
+    AGUARDE,
+];
+
+/// "e mais 3 jogos" no resumo de Seus jogos.
+pub fn mais_jogos(n: usize) -> String {
+    match n {
+        1 => "e mais 1 jogo".to_owned(),
+        n => format!("e mais {n} jogos"),
+    }
+}

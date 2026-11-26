@@ -84,4 +84,48 @@ pub const TODOS: &[&str] = &[
     EXPLICA_DESTRAVAR,
     EXPLICA_REBAR,
     EXPLICA_NVAPI,
+    GRUPO_ATUALIZACAO_DESC,
+    TERMOS,
+    DETALHES_TECNICOS,
+    ROTULO_AGENTE,
+    EXPLICA_AGENTE,
+    EXPLICA_VRAM,
+    EXPLICA_DLSS,
+    EXPLICA_REFLEX,
+    EXPLICA_VRR,
+    EXPLICA_PERFIL,
+    EXPLICA_EXPERIMENTAL,
+    EXPLICA_DIAGNOSTICO,
+    EXPLICA_IMPACTO,
 ];
+
+// Acréscimos do L2 (Avançado) ----------------------------------------------
+pub const GRUPO_ATUALIZACAO_DESC: &str =
+    "Versão do serviço, estado do agente e busca por versão nova do nv-tuner.";
+pub const TERMOS: &str = "O que significam estes termos";
+pub const DETALHES_TECNICOS: &str = "Detalhes técnicos (regra, impacto e motivo)";
+pub const ROTULO_AGENTE: &str = "Agente";
+pub const EXPLICA_AGENTE: &str =
+    "Agente: a parte do nv-tuner que roda na sua sessão e mexe nos ajustes do seu usuário.";
+pub const EXPLICA_VRAM: &str = "VRAM: a memória de vídeo, própria da placa.";
+pub const EXPLICA_DLSS: &str =
+    "DLSS: a placa desenha a imagem menor e a amplia com IA, para ganhar quadros.";
+pub const EXPLICA_REFLEX: &str = "Reflex: reduz o atraso entre o clique e a imagem na tela.";
+pub const EXPLICA_VRR: &str =
+    "VRR (sincronismo adaptável): o monitor acompanha o ritmo da placa, sem cortes na imagem.";
+pub const EXPLICA_PERFIL: &str =
+    "Perfil: o conjunto de ajustes que o driver usa para um jogo. Só aparece o que muda.";
+pub const EXPLICA_EXPERIMENTAL: &str =
+    "Experimental: ajuste ainda em teste. Aceite um por vez; Retirar volta ao anterior.";
+pub const EXPLICA_DIAGNOSTICO: &str =
+    "Diagnóstico: verificações do Windows que o nv-tuner só lê e explica, sem mudar nada.";
+pub const EXPLICA_IMPACTO: &str = "Impacto visual: quanto o ajuste pode mudar a aparência do jogo.";
+
+/// Contagem dos ajustes do perfil que já estavam no valor certo.
+pub fn ja_no_valor(n: usize) -> String {
+    if n == 1 {
+        "1 ajuste já estava no valor certo.".to_owned()
+    } else {
+        format!("{n} ajustes já estavam no valor certo.")
+    }
+}

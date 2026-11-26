@@ -60,6 +60,7 @@ fn tratador_falso(_identidade: IdentidadeCliente, req: Requisicao) -> Resposta {
             avisos: vec![],
             adiamento: None,
             atualizacao: Default::default(),
+            autonomia_pausada: false,
         }),
         Requisicao::ListarHistorico { limite } => Resposta::Historico {
             entradas: (0..u64::from(limite))
