@@ -98,8 +98,11 @@ fn sim(b: bool) -> &'static str {
 }
 
 /// `status`: somente leitura.
-pub fn status(dir: &Path) -> ExitCode {
+pub fn status(dir: &Path, pipe: &str) -> ExitCode {
     for linha in linhas_atualizacao(&ler_estado_atualizacao()) {
+        println!("{linha}");
+    }
+    for linha in linhas_config_jogo(&config_jogo_do_servico(pipe)) {
         println!("{linha}");
     }
     sair(status_interno(dir))
@@ -191,6 +194,77 @@ pub(crate) fn linhas_atualizacao(
             f.codigo,
             e.falhas.get(&f.versao).copied().unwrap_or(0)
         ));
+    }
+    v
+}
+
+/// Projeção “Arquivo do jogo” pedida ao serviço em execução (`ObterPlano`).
+/// O serviço só projeta a config de jogo da própria identidade com agente
+/// presente; o `status` nunca lê arquivos do perfil do usuário.
+fn config_jogo_do_servico(pipe: &str) -> Result<Vec<nvt_ipc::Jogo>, String> {
+    let cfg = ConfigCliente {
+        timeout_leitura: crate::ESPERA_CLIENTE,
+        ..ConfigCliente::default()
+    };
+    let mut c = match Cliente::conectar(pipe, &cfg) {
+        Ok(c) => c,
+        Err(ErroIpc::ServicoIndisponivel) => return Err("serviço fora do ar".into()),
+        Err(e) => return Err(e.to_string()),
+    };
+    match c.requisitar(&Requisicao::ObterPlano) {
+        Ok(Resposta::Plano(p)) => Ok(p.jogos),
+        Ok(Resposta::Erro { mensagem, .. }) => Err(mensagem),
+        Ok(_) => Err("resposta inesperada".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Linhas do `status` sobre a config de arquivo de jogo: arquivos geridos e
+/// pendências por jogo (Steam/jogo aberto), sem caminhos nem contas.
+pub(crate) fn linhas_config_jogo(r: &Result<Vec<nvt_ipc::Jogo>, String>) -> Vec<String> {
+    use nvt_ipc::OrientacaoConfigJogo as O;
+    let jogos = match r {
+        Ok(j) => j,
+        Err(m) => return vec![format!("Config de jogo: indisponível ({m})")],
+    };
+    let com_config: Vec<_> = jogos
+        .iter()
+        .filter_map(|j| j.config_jogo.as_ref().map(|c| (j, c)))
+        .collect();
+    let geridos: usize = com_config
+        .iter()
+        .map(|(_, c)| c.arquivos.iter().filter(|a| a.reversivel).count())
+        .sum();
+    let mut v = vec![format!(
+        "Config de jogo: {geridos} arquivo(s) gerido(s) em {} jogo(s) com agente presente",
+        com_config.len()
+    )];
+    for (j, c) in com_config {
+        let pendentes = c
+            .arquivos
+            .iter()
+            .flat_map(|a| &a.mudancas)
+            .filter(|m| m.status == StatusMudanca::Pendente)
+            .count();
+        if pendentes == 0 {
+            continue;
+        }
+        let mut motivos = Vec::new();
+        if c.orientacoes.contains(&O::FecharSteam) {
+            motivos.push("Steam aberta");
+        }
+        if c.orientacoes
+            .iter()
+            .any(|o| matches!(o, O::FecharJogo { .. }))
+        {
+            motivos.push("jogo aberto");
+        }
+        let motivo = if motivos.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", motivos.join(", "))
+        };
+        v.push(format!("  {}: {pendentes} pendente(s){motivo}", j.nome));
     }
     v
 }
@@ -723,5 +797,83 @@ mod testes_atualizacao {
         assert!(l.contains("v1.0.0 → v1.1.0"), "{l}");
         let l = linhas_atualizacao(&Err("negado".into())).join("\n");
         assert!(l.contains("indisponível (negado)"), "{l}");
+    }
+}
+
+#[cfg(test)]
+mod testes_config_jogo {
+    use super::linhas_config_jogo;
+    use nvt_ipc::{
+        AlvoIpc, ArquivoJogoUi, ConfigJogoUi, EstadoBackup, Jogo, MudancaArquivoJogo,
+        OrientacaoConfigJogo, OrigemPerfil, ResumoJogo, RotuloCaminho, StatusMudanca, ValorJogoIpc,
+    };
+
+    fn jogo(nome: &str, config: Option<ConfigJogoUi>) -> Jogo {
+        Jogo {
+            nome: nome.into(),
+            perfil: nome.into(),
+            origem_perfil: OrigemPerfil::Driver,
+            launcher: "Steam".into(),
+            api: "dx11".into(),
+            dlss: None,
+            reflex: None,
+            anticheat_kernel: None,
+            competitivo: None,
+            em_execucao: false,
+            orientacoes: vec![],
+            resumo: ResumoJogo::default(),
+            config_jogo: config,
+        }
+    }
+
+    fn arquivo(reversivel: bool, status: StatusMudanca) -> ArquivoJogoUi {
+        ArquivoJogoUi {
+            alvo: AlvoIpc::ConfigJogo {
+                jogo: "cs2".into(),
+                arquivo: "cs2-launch".into(),
+            },
+            rotulo: RotuloCaminho("%STEAM%\\userdata\\<conta>\\config\\localconfig.vdf".into()),
+            instancia: "3f9a0c1b2d4e5f60".into(),
+            conta: Some("3f9a0c1b2d4e5f60".into()),
+            backup: EstadoBackup::Integro,
+            mudancas: vec![MudancaArquivoJogo {
+                setting: "cs2_fps_max".into(),
+                antes: ValorJogoIpc::TokenLancamento(None),
+                depois: ValorJogoIpc::TokenLancamento(Some(141)),
+                status,
+                motivo: None,
+            }],
+            reversivel,
+        }
+    }
+
+    #[test]
+    fn status_resume_config_de_jogo_sem_caminhos_nem_contas() {
+        let jogos = vec![
+            jogo(
+                "Counter-Strike 2",
+                Some(ConfigJogoUi {
+                    arquivos: vec![
+                        arquivo(true, StatusMudanca::Aplicada),
+                        arquivo(false, StatusMudanca::Pendente),
+                    ],
+                    orientacoes: vec![OrientacaoConfigJogo::FecharSteam],
+                    experimentais: vec![],
+                }),
+            ),
+            jogo("Sem base", None),
+        ];
+        let l = linhas_config_jogo(&Ok(jogos)).join("\n");
+        assert!(l.contains("1 arquivo(s) gerido(s) em 1 jogo(s)"), "{l}");
+        assert!(
+            l.contains("Counter-Strike 2: 1 pendente(s) (Steam aberta)"),
+            "{l}"
+        );
+        assert!(
+            !l.contains('%') && !l.contains("userdata") && !l.contains("3f9a"),
+            "{l}"
+        );
+        let l = linhas_config_jogo(&Err("serviço fora do ar".into())).join("\n");
+        assert!(l.contains("indisponível (serviço fora do ar)"), "{l}");
     }
 }

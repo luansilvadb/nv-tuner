@@ -147,6 +147,7 @@ fn projecao() -> ConfigJogoUi {
         arquivos: vec![ArquivoJogoUi {
             alvo: destino().alvo,
             rotulo: rotulo(),
+            instancia: destino().instancia,
             conta: Some("conta 1 de 2".into()),
             backup: EstadoBackup::Integro,
             mudancas: vec![MudancaArquivoJogo {
@@ -169,6 +170,13 @@ fn projecao() -> ConfigJogoUi {
             OrientacaoConfigJogo::AjustarNoJogo,
             OrientacaoConfigJogo::EscolherConta,
         ],
+        experimentais: vec![SugestaoConfigJogo {
+            regra: "jogo-limite-no-jogo-r6".into(),
+            descricao: "d".into(),
+            impacto_visual: crate::protocolo::ImpactoVisual::Nenhum,
+            destinos: vec![destino()],
+            estado: EstadoExperimental::Aceitavel,
+        }],
     }
 }
 
@@ -486,4 +494,27 @@ fn mensagem_v6_com_campos_de_jogo_recusada_pelo_envelope() {
             esperada: 7
         })
     ));
+}
+
+#[test]
+fn projecao_valida_instancia_e_sugestoes_experimentais() {
+    assert!(projecao().validar().is_ok());
+    let mut p = projecao();
+    p.arquivos[0].instancia = "Fulano de Tal".into();
+    assert!(p.validar().is_err());
+    let mut p = projecao();
+    p.experimentais[0].estado = EstadoExperimental::Estavel;
+    assert!(p.validar().is_err());
+    let mut p = projecao();
+    p.experimentais[0].destinos[0].instancia = "C:\\Users".into();
+    assert!(p.validar().is_err());
+    // Campo novo com default: projeção sem `experimentais` ainda decodifica.
+    let mut v = serde_json::to_value(projecao()).unwrap();
+    v.as_object_mut().unwrap().remove("experimentais");
+    assert!(serde_json::from_value::<ConfigJogoUi>(v).is_ok());
+    let mut s = serde_json::to_value(&projecao().experimentais[0]).unwrap();
+    s.as_object_mut()
+        .unwrap()
+        .insert("caminho".into(), json!("x"));
+    assert!(serde_json::from_value::<SugestaoConfigJogo>(s).is_err());
 }

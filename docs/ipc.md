@@ -410,7 +410,7 @@ anonimizado.
 | `AcaoJogo` (`plano_agente.tarefa_jogo.acoes`, até 64) | `aplicar { destino, valor, hash_esperado }`, `restaurar { destino, hash_esperado }`, `reverter { destino, hash_esperado }`; arquivo com hash diferente de `hash_esperado` não é escrito |
 | `ResultadoJogo` (`agente_relatar.resultados_jogo`, até 64) | `destino`, `status`, `motivo` (só motivos da Fase 3), `antes`, `depois`, `hash_antes`, `hash_depois`, `chaves_alteradas` (até 32) |
 | `reverter_config_jogo` | `{ destino }`: reversão individual pedida pela UI |
-| `jogo.config_jogo` (`ConfigJogoUi`) | `arquivos` (`{alvo, rotulo, conta, backup, mudancas: [{setting, antes, depois, status, motivo}], reversivel}`) e `orientacoes`: `fechar_steam`, `fechar_jogo { processos }`, `desmarcar_somente_leitura`, `ajustar_no_jogo`, `escolher_conta` |
+| `jogo.config_jogo` (`ConfigJogoUi`) | `arquivos` (`{alvo, rotulo, instancia, conta, backup, mudancas: [{setting, antes, depois, status, motivo}], reversivel}`; `instancia` é a mesma de `DestinoJogoIpc.instancia` (hash da conta, `local` ou `ambigua`) e é o que a UI envia em `reverter_config_jogo`; `conta` vem vazia quando a conta é ambígua), `orientacoes` (`fechar_steam`, `fechar_jogo { processos }`, `desmarcar_somente_leitura`, `ajustar_no_jogo`, `escolher_conta`) e `experimentais` (`SugestaoConfigJogo`: `{regra, descricao, impacto_visual, destinos, estado}`, `estado` só `aceitavel` ou `aceita`; até 64) |
 
 Motivos novos em `MotivoNaoAplicada`: `config_politica { politica }`,
 `janela_fechada_exigida { processos }` (nomes de executável, 1 a 32, sem
@@ -419,7 +419,7 @@ caminho), `arquivo_na_nuvem`, `arquivo_somente_leitura`, `formato_inesperado`,
 `reparse_recusado`.
 
 Campos novos opcionais (`config_jogo`, `tarefa_jogo`, `resultados_jogo`,
-`gestao`, `jogo.config_jogo`) têm padrão vazio e são omitidos quando vazios.
+`gestao`, `jogo.config_jogo`, `config_jogo.experimentais`) têm padrão vazio e são omitidos quando vazios.
 Todos os DTOs usam `deny_unknown_fields`; destino ou instância repetidos,
 hash fora do formato, rótulo não anonimizado e listas acima do limite são
 recusados por `Requisicao::validar`, `PlanoAgente::validar` e

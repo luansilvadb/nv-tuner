@@ -266,8 +266,6 @@ impl Coordenador {
 
     /// Preferências vigentes (o lote 3 chama a cada mudança). Só `limite_fps`
     /// afeta a família jogo; mudança invalida as tarefas em voo.
-    // Ligado ao laço na integração (L3-a).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn definir_preferencias(&mut self, prefs: &Preferences) {
         if self.prefs.limite_fps != prefs.limite_fps {
             for sessao in self.sessoes.values_mut() {
@@ -283,7 +281,6 @@ impl Coordenador {
     /// nenhuma sessão desse SID. Id do jogo → regra, pronto para
     /// [`nvt_core::config_jogo::desligar_limite_drs`]. Sem SID de console,
     /// vazio: o driver mantém o limite.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn limites_no_jogo_efetivos(
         &self,
         sid_console: Option<&str>,
@@ -336,7 +333,8 @@ impl Coordenador {
             let mut arquivo_ui = ArquivoJogoUi {
                 alvo: f.alvo.clone(),
                 rotulo: f.rotulo.clone(),
-                conta: Some(f.instancia.clone()),
+                instancia: f.instancia.clone(),
+                conta: (!f.conta_ambigua).then(|| f.instancia.clone()),
                 backup: f.backup,
                 mudancas: Vec::new(),
                 reversivel: false,
@@ -398,6 +396,49 @@ impl Coordenador {
             }
             if ui.arquivos.len() < nvt_ipc::ARQUIVOS_JOGO_MAX {
                 ui.arquivos.push(arquivo_ui);
+            }
+        }
+        let vazio = BTreeSet::new();
+        let aceites = self
+            .dados
+            .por_sid
+            .get(&identidade.sid)
+            .map_or(&vazio, |d| &d.aceites);
+        for regra in self
+            .catalogo_jogo
+            .regras()
+            .iter()
+            .filter(|r| r.status == Status::Experimental)
+        {
+            let estado = if aceites.contains(&regra.id) {
+                EstadoExperimental::Aceita
+            } else if plano.estado_experimental.contains_key(&regra.id) {
+                EstadoExperimental::Aceitavel
+            } else {
+                continue;
+            };
+            let Some(jogo) = regra.aplicar.keys().next().map(|s| s.jogo()) else {
+                continue;
+            };
+            let destinos: Vec<DestinoJogoIpc> = plano
+                .experimentais
+                .iter()
+                .filter(|e| e.regra == regra.id)
+                .flat_map(|e| e.mudancas.iter())
+                .chain(plano.mudancas.values().filter(|m| m.regra == regra.id))
+                .map(|m| destino_ipc(&m.destino))
+                .filter(|d| d.validar().is_ok())
+                .take(nvt_ipc::CHAVES_ARQUIVO_MAX)
+                .collect();
+            let ui = mapa.entry(jogo.to_owned()).or_default();
+            if ui.experimentais.len() < nvt_ipc::ACOES_JOGO_MAX {
+                ui.experimentais.push(nvt_ipc::SugestaoConfigJogo {
+                    regra: regra.id.clone(),
+                    descricao: regra.descricao.clone(),
+                    impacto_visual: impacto(regra.impacto_visual),
+                    destinos,
+                    estado,
+                });
             }
         }
         mapa

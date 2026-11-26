@@ -241,9 +241,8 @@ gravado ainda)”, “original guardado e íntegro”, “backup ausente ou alte
 o app não grava mais neste arquivo”) e cada chave como
 `nome: antes → depois (situação)`, com o motivo quando não aplicada. Chave
 aplicada com `reversivel` tem o botão **Reverter**, que envia
-`ReverterConfigJogo`; a projeção v7 não traz a instância opaca, então o
-destino usa `conta` quando ela já está na forma canônica de instância e,
-senão, o botão fica desabilitado com a explicação.
+`ReverterConfigJogo` com a instância opaca projetada pelo serviço
+(`ArquivoJogoUi.instancia`, a mesma do destino do agente).
 
 Orientações (`config_jogo.orientacoes`), uma frase por item:
 
@@ -261,8 +260,8 @@ aplicar” —, `arquivo_na_nuvem`, `arquivo_somente_leitura`,
 `formato_inesperado`, `arquivo_alterado_pelo_jogo`, `conta_ambigua`,
 `arquivo_ausente`, `reparse_recusado`) têm texto curto e longo próprios;
 nenhum atribui a restrição a exigência de anticheat. Sugestões experimentais
-de config do jogo (regras `jogo-<id>-…` em `sugestoes_driver`) aparecem na
-mesma seção com **Aceitar**/**Retirar** (`DefinirAceiteExperimental`, o
+de config do jogo (campo próprio `config_jogo.experimentais`, com regra,
+destinos e estado `aceitavel`/`aceita`) aparecem na mesma seção com **Aceitar**/**Retirar** (`DefinirAceiteExperimental`, o
 fluxo da Fase 2). A UI continua sem gravar nada.
 
 ### Mudanças (`mudancas.png`)

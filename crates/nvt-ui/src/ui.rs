@@ -783,7 +783,7 @@ impl Janela {
         tema: &Theme,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let sugestoes = aj::sugestoes_do_jogo(j, &self.ui.dados.sugestoes_driver);
+        let sugestoes = aj::sugestoes_do_jogo(j);
         if j.config_jogo.is_none() && sugestoes.is_empty() {
             return None;
         }
@@ -821,8 +821,9 @@ impl Janela {
                         d.child(sub(aj::SEM_MUDANCAS_ARQUIVO.into()))
                     });
                 for (n, m) in a.mudancas.iter().enumerate() {
-                    let destino = (a.reversivel && m.status == nvt_ipc::StatusMudanca::Aplicada)
-                        .then(|| aj::destino_reverter(a, &m.setting));
+                    let destino = (m.status == nvt_ipc::StatusMudanca::Aplicada)
+                        .then(|| aj::destino_reverter(a, &m.setting))
+                        .flatten();
                     let mut linha = h_flex().gap_3().justify_between().child(
                         div()
                             .text_sm()
@@ -832,26 +833,21 @@ impl Janela {
                             .child(format!("• {}", aj::linha_mudanca(m))),
                     );
                     if let Some(destino) = destino {
-                        let ok = pode && destino.is_some();
-                        let dica = if destino.is_none() {
-                            aj::REVERTER_INDISPONIVEL
-                        } else {
-                            t::SO_COM_SERVICO
-                        };
+                        let ok = pode;
                         linha = linha.child(
                             Button::new(("reverter-jogo", i * 10_000 + k * 100 + n))
                                 .small()
                                 .outline()
                                 .label(t::BOTAO_REVERTER)
                                 .disabled(!ok)
-                                .when(!ok, |b| b.tooltip(dica))
+                                .when(!ok, |b| b.tooltip(t::SO_COM_SERVICO))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(d) = &destino {
-                                        this.enviar(
-                                            Comando::ReverterConfigJogo { destino: d.clone() },
-                                            cx,
-                                        )
-                                    }
+                                    this.enviar(
+                                        Comando::ReverterConfigJogo {
+                                            destino: destino.clone(),
+                                        },
+                                        cx,
+                                    )
                                 })),
                         );
                     }
@@ -866,10 +862,9 @@ impl Janela {
             );
         }
         if !sugestoes.is_empty() {
-            let lista: Vec<SugestaoExperimental> = sugestoes.into_iter().cloned().collect();
             v = v
                 .child(sub(aj::SECAO_SUGESTOES_JOGO.into()))
-                .child(self.experimentais(&lista, tema, cx));
+                .child(self.experimentais(&sugestoes, tema, cx));
         }
         Some(v)
     }

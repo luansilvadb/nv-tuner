@@ -223,7 +223,7 @@ fn main() -> ExitCode {
     match &cli.comando {
         None | Some(Comando::Service) => rodar_servico(&cli),
         Some(Comando::Run { sem_vigia }) => rodar_console(&cli, *sem_vigia),
-        Some(Comando::Status) => relatorio::status(&dir),
+        Some(Comando::Status) => relatorio::status(&dir, &normalizar_pipe(&cli.pipe)),
         Some(Comando::DryRun) => relatorio::dry_run(&dir),
         Some(Comando::PrepareStateDir) => {
             if !diretorio::processo_privilegiado() {

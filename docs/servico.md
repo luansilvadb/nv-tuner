@@ -13,7 +13,7 @@ tratar deriva e atende a UI pelo named pipe do `nvt-ipc`.
 | *(sem subcomando)* / `service` | sim | entrada do SCM; fora do SCM sai com código 2 e uma dica |
 | `run [--sem-vigia]` | sim | mesma lógica no console (desenvolvimento). Ctrl+C ou uma linha `sair` no stdin encerra |
 | `dry-run` | não | plano e diff por perfil (muda / conforme / travada), perfis a criar, sugestões experimentais e descartes |
-| `status` | não | driver, GPU, capacidades, preferências, estado salvo, jogos detectados com perfil, conformidade e deriva |
+| `status` | não | driver, GPU, capacidades, preferências, estado salvo, jogos detectados com perfil, conformidade e deriva; com o serviço no ar, resumo da config de jogo da própria sessão (arquivos geridos e pendências por jogo, com Steam ou jogo aberto), sem caminhos nem contas |
 | `apply --yes` | sim | aplica o plano agora e **reativa a autonomia**; exige administrador; código 3 se o serviço adiar (jogo aberto) |
 | `restore-original --yes` | sim | volta ao snapshot original e **pausa a autonomia**; exige administrador; código 0 também quando não há snapshot (idempotente); código 3 se o serviço adiar (jogo aberto: a restauração não foi feita) |
 | `prepare-state-dir` | só o diretório | cria ou corrige o diretório de estado (ver “Diretório de estado seguro”); usado pelo instalador como SYSTEM; exige administrador (código 2 sem) |
@@ -351,6 +351,20 @@ console ativa** entram no plano do driver: o serviço obtém essa identidade
 pela sessão de console do Windows (`identidade_console`). Troca de console
 ou identidade indisponível reavalia o DRS sob o portão; sem SID elegível, o
 conjunto vale vazio. A UI indica quando um aceite de driver fica inativo.
+
+### Limite de FPS no jogo e o DRS (F3-13)
+
+O laço repassa ao coordenador as preferências do motor na inicialização e a
+cada atendimento ou tick (`Coordenador::definir_preferencias`; mudança de
+`limite_fps` invalida as tarefas de jogo em voo). Junto com os aceites DRS,
+o laço obtém `Coordenador::limites_no_jogo_efetivos` do **SID da sessão de
+console** e o entrega ao núcleo; ao montar o plano DRS, o núcleo aplica
+`nvt_core::desligar_limite_drs` e reclassifica o `limite_fps` do perfil do
+jogo contra o driver (`off` no lugar do limite do usuário). Quando a lista
+muda (relato do agente com sucesso ou falha, aceite, troca de console), o
+DRS é reavaliado sob o portão. Arquivo do jogo com falha, adiado ou ainda
+não aplicado não entra na lista: o limite do driver permanece. Outros SIDs
+não afetam o DRS.
 
 ### Diagnósticos
 

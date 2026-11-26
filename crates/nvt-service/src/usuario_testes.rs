@@ -1243,3 +1243,270 @@ fn usuarios_json_antigo_sem_resultados_jogo_carrega() {
     let texto = serde_json::to_string(&dados).unwrap();
     assert!(!texto.contains("resultados_jogo"));
 }
+
+// ── F3-13 no plano DRS e identificador de conta ponta a ponta (L3-a) ──────
+
+const ID_LIMITE: u32 = 0x1083_5002;
+const PERFIL_R6: &str = "Rainbow Six Siege";
+
+/// `limite_fps` do perfil DRS do R6 depois de um ciclo do núcleo com o
+/// limite do usuário em 141 e os limites no jogo efetivos informados.
+fn limite_drs_r6(limites: BTreeMap<IdJogo, String>) -> Option<u32> {
+    use crate::nucleo::{Config, Nucleo};
+    let d = nvt_engine::DriverFalso::turing();
+    d.adicionar_perfil_predefinido(PERFIL_R6, &["RainbowSix.exe"], &[]);
+    let agora = Instant::now();
+    let fab = d.clone();
+    let mut n = Nucleo::novo_com_portao(
+        Box::new(move || Ok(fab.clone())),
+        Box::new(|| vec![nvt_engine::JogoEntrada::new(PERFIL_R6, "RainbowSix.exe")]),
+        Box::new(|| None),
+        None,
+        Config::default(),
+        agora,
+        nvt_engine::Portao::new(nvt_engine::ProcessosFalsos::default()),
+    )
+    .expect("núcleo");
+    n.iniciar(agora);
+    let prefs = Requisicao::DefinirPreferencias {
+        sincronismo: nvt_ipc::Sincronismo::Desligado,
+        qualidade: nvt_ipc::Qualidade::Equilibrado,
+        limite_fps: Some(141),
+    };
+    assert_eq!(n.tratar(prefs, agora), Resposta::Ok);
+    assert_eq!(n.preferencias().limite_fps, Some(141));
+    n.definir_limites_jogo(limites);
+    n.ciclo(agora, "teste F3-13");
+    d.valor(&nvt_drs::ProfileRef::Named(PERFIL_R6.into()), ID_LIMITE)
+}
+
+fn limite_off() -> u32 {
+    ConjuntoRegras::embutido()
+        .unwrap()
+        .catalogo
+        .get("limite_fps")
+        .unwrap()
+        .valores["off"]
+}
+
+#[test]
+fn f313_limite_no_jogo_aplicado_desliga_o_limite_do_perfil_drs() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    let b = cliente("S-1-5-21-2", 2);
+    aceite(&mut c, &a, agora, R6, true);
+    let t = consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('a'), vec![])])
+        .tarefa_jogo
+        .unwrap();
+    // Antes do relato: o driver mantém o limite do usuário.
+    assert!(c.limites_no_jogo_efetivos(Some(&a.sid)).is_empty());
+    assert_eq!(
+        limite_drs_r6(c.limites_no_jogo_efetivos(Some(&a.sid))),
+        Some(141)
+    );
+
+    let ok = resultado(StatusMudanca::Aplicada, 0, 141, &h('a'), None);
+    assert_eq!(
+        c.tratar(&a, &relato_jogo(&t, vec![ok]), agora, 12),
+        Some(Resposta::Ok)
+    );
+    let limites = c.limites_no_jogo_efetivos(Some(&a.sid));
+    assert_eq!(limites.values().collect::<Vec<_>>(), [R6]);
+    assert_eq!(limite_drs_r6(limites), Some(limite_off()));
+    // Outro SID (não é a sessão de console) não afeta o DRS.
+    assert_eq!(
+        limite_drs_r6(c.limites_no_jogo_efetivos(Some(&b.sid))),
+        Some(141)
+    );
+    assert_eq!(limite_drs_r6(c.limites_no_jogo_efetivos(None)), Some(141));
+}
+
+#[test]
+fn f313_falha_relatada_mantem_o_limite_do_driver() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    aceite(&mut c, &a, agora, R6, true);
+    let t = consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('a'), vec![])])
+        .tarefa_jogo
+        .unwrap();
+    let falha = resultado(
+        StatusMudanca::Falhou,
+        0,
+        0,
+        &h('a'),
+        Some(MotivoNaoAplicada::FormatoInesperado),
+    );
+    assert_eq!(
+        c.tratar(&a, &relato_jogo(&t, vec![falha]), agora, 12),
+        Some(Resposta::Ok)
+    );
+    assert_eq!(
+        limite_drs_r6(c.limites_no_jogo_efetivos(Some(&a.sid))),
+        Some(141)
+    );
+}
+
+/// Instância como o agente a gera (`instancia_conta`: 16 hex do SHA-256).
+const CONTA_AGENTE: &str = "3f9a0c1b2d4e5f60";
+
+fn fato_conta(
+    instancia: &str,
+    ambigua: bool,
+    gestao: Vec<nvt_ipc::GestaoJogoIpc>,
+) -> FatoConfigJogo {
+    let mut f = fato_r6(0, &h('a'), gestao);
+    f.instancia = instancia.into();
+    f.conta_ambigua = ambigua;
+    f
+}
+
+/// Agente falso, serviço, agente falso: a instância opaca relatada nos
+/// fatos é a mesma em `InstanciaJogo.conta`, nas ações da `TarefaJogo`, no
+/// relato aceito, na projeção da UI e em `ReverterConfigJogo`.
+#[test]
+fn instancia_opaca_ida_e_volta_agente_servico_agente() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    aceite(&mut c, &a, agora, R6, true);
+
+    // Ida: fatos do agente com a instância opaca.
+    let t = consultar_jogo(
+        &mut c,
+        &a,
+        agora,
+        0,
+        vec![fato_conta(CONTA_AGENTE, false, vec![])],
+    )
+    .tarefa_jogo
+    .expect("tarefa");
+    assert!(t.validar().is_ok());
+    assert!(
+        t.acoes
+            .iter()
+            .all(|a| a.destino().instancia == CONTA_AGENTE)
+    );
+    // O coordenador usa a mesma instância em `InstanciaJogo.conta`.
+    let core = destino_core(t.acoes[0].destino(), &c.catalogo_jogo).unwrap();
+    assert_eq!(core.instancia.conta.as_deref(), Some(CONTA_AGENTE));
+    assert_eq!(destino_ipc(&core), *t.acoes[0].destino());
+
+    // Volta: o agente relata pelo mesmo destino; outro destino é recusado.
+    let mut r = resultado(StatusMudanca::Aplicada, 0, 141, &h('a'), None);
+    r.destino.instancia = CONTA_AGENTE.into();
+    let mut errado = r.clone();
+    errado.destino.instancia = "conta1".into();
+    assert!(recusado(c.tratar(
+        &a,
+        &relato_jogo(&t, vec![errado]),
+        agora,
+        12
+    )));
+    assert_eq!(
+        c.tratar(&a, &relato_jogo(&t, vec![r]), agora, 12),
+        Some(Resposta::Ok)
+    );
+
+    // A UI recebe a instância e a usa em ReverterConfigJogo.
+    let mut g = gestao_r6(0, 141);
+    g.hash_antes = h('a');
+    let mut f = fato_conta(CONTA_AGENTE, false, vec![g]);
+    f.hash = Some(h('b'));
+    f.valores[0].valor = Fato::Conhecido(ValorJogoIpc::Inteiro(141));
+    assert!(
+        consultar_jogo(&mut c, &a, agora, 0, vec![f.clone()])
+            .tarefa_jogo
+            .is_none()
+    );
+    let ui = c.config_jogo_ui(&a, agora);
+    let arquivo = &ui["r6-siege"].arquivos[0];
+    assert_eq!(arquivo.instancia, CONTA_AGENTE);
+    assert!(arquivo.reversivel && ui["r6-siege"].validar().is_ok());
+    let destino = DestinoJogoIpc {
+        alvo: arquivo.alvo.clone(),
+        setting: "r6_fps_limit".into(),
+        instancia: arquivo.instancia.clone(),
+    };
+    assert_eq!(
+        c.tratar(&a, &Requisicao::ReverterConfigJogo { destino }, agora, 12),
+        Some(Resposta::Ok)
+    );
+    let t = consultar_jogo(&mut c, &a, agora, 0, vec![f])
+        .tarefa_jogo
+        .expect("reversão");
+    assert_eq!(t.tarefa.operacao, OperacaoUsuario::Reverter);
+    assert!(
+        t.acoes
+            .iter()
+            .all(|a| a.destino().instancia == CONTA_AGENTE)
+    );
+}
+
+/// Conta ambígua: a instância `ambigua` do agente chega à UI tal como veio,
+/// sem conta exibida, sem tarefa e sem reversão possível.
+#[test]
+fn instancia_ambigua_ida_e_volta() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    aceite(&mut c, &a, agora, R6, true);
+    let p = consultar_jogo(
+        &mut c,
+        &a,
+        agora,
+        0,
+        vec![fato_conta("ambigua", true, vec![])],
+    );
+    assert!(p.tarefa_jogo.is_none());
+    let ui = c.config_jogo_ui(&a, agora);
+    let r6 = &ui["r6-siege"];
+    assert!(r6.validar().is_ok());
+    assert_eq!(r6.arquivos[0].instancia, "ambigua");
+    assert_eq!(r6.arquivos[0].conta, None);
+    assert!(!r6.arquivos[0].reversivel);
+    assert!(
+        r6.orientacoes
+            .contains(&OrientacaoConfigJogo::EscolherConta)
+    );
+    assert!(recusado(c.tratar(
+        &a,
+        &Requisicao::ReverterConfigJogo {
+            destino: destino_r6("ambigua")
+        },
+        agora,
+        12
+    )));
+    assert!(!r6_efetivo(&c, Some(&a.sid)));
+}
+
+/// As sugestões experimentais de config de jogo vão no campo próprio, com
+/// destino e estado, e acompanham o aceite.
+#[test]
+fn sugestoes_experimentais_de_jogo_no_campo_proprio() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('a'), vec![])]);
+    let ui = c.config_jogo_ui(&a, agora);
+    let s = ui["r6-siege"]
+        .experimentais
+        .iter()
+        .find(|s| s.regra == R6)
+        .expect("sugestão do R6");
+    assert_eq!(s.estado, EstadoExperimental::Aceitavel);
+    assert_eq!(s.destinos, [destino_r6("conta1")]);
+    assert!(ui["r6-siege"].validar().is_ok());
+
+    aceite(&mut c, &a, agora, R6, true);
+    consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('a'), vec![])]);
+    let ui = c.config_jogo_ui(&a, agora);
+    let s = ui["r6-siege"]
+        .experimentais
+        .iter()
+        .find(|s| s.regra == R6)
+        .unwrap();
+    assert_eq!(s.estado, EstadoExperimental::Aceita);
+    assert_eq!(s.destinos, [destino_r6("conta1")]);
+}

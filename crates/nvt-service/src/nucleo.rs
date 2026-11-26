@@ -23,7 +23,7 @@
 //! O tempo é sempre passado por quem chama (`agora`), para os testes
 //! controlarem o relógio.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -274,6 +274,9 @@ pub struct Nucleo<'a, S: DriverStore> {
     engine: Engine<S>,
     regras_drs: nvt_core::ConjuntoRegras,
     aceites_drs: BTreeSet<String>,
+    /// F3-13: jogos com limite de FPS efetivo no próprio jogo (SID da sessão
+    /// de console) → regra. O perfil DRS deles recebe `limite_fps = off`.
+    limites_jogo: BTreeMap<nvt_core::IdJogo, String>,
     fabrica: Fabrica<'a, S>,
     varredor: Varredor<'a>,
     assinador: Assinador<'a>,
@@ -368,6 +371,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         Ok(Self {
             regras_drs: engine.regras().clone(),
             aceites_drs: BTreeSet::new(),
+            limites_jogo: BTreeMap::new(),
             engine,
             fabrica,
             varredor,
@@ -624,6 +628,16 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
     /// alterado por `nvt-service apply`/`restore-original` em outro processo.
     pub(crate) fn definir_aceites_drs(&mut self, aceites: BTreeSet<String>) {
         self.aceites_drs = aceites;
+    }
+
+    /// F3-13: limites no jogo efetivos (de [`crate::usuario::Coordenador::limites_no_jogo_efetivos`]).
+    pub(crate) fn definir_limites_jogo(&mut self, limites: BTreeMap<nvt_core::IdJogo, String>) {
+        self.limites_jogo = limites;
+    }
+
+    /// Preferências persistidas no estado do motor (repassadas ao coordenador).
+    pub(crate) fn preferencias(&self) -> Preferences {
+        self.engine.estado().preferencias.clone()
     }
 
     fn renovar(&mut self) -> Resultado<()> {
@@ -909,6 +923,83 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         self.alertas.drain(..excesso);
     }
 
+    /// Nome da setting `limite_fps` no catálogo (`SETTING_LIMITE_FPS` do núcleo).
+    const LIMITE_FPS: &str = "limite_fps";
+
+    /// F3-13: aplica [`nvt_core::desligar_limite_drs`] ao plano e reclassifica
+    /// o `limite_fps` dos perfis afetados contra o driver (o motor planejou o
+    /// limite do usuário; aqui ele vira `off`). Sem limite efetivo no jogo
+    /// (arquivo falhou, adiado ou não aplicado), o limite do driver permanece.
+    fn desligar_limite_drs(&self, diff: &mut Diff, fatos: &[nvt_core::GameFacts]) -> Resultado<()> {
+        if self.limites_jogo.is_empty() {
+            return Ok(());
+        }
+        let prefs = self.engine.estado().preferencias_efetivas();
+        nvt_core::desligar_limite_drs(
+            &mut diff.plano,
+            fatos,
+            &self.limites_jogo,
+            &self.regras_drs.catalogo,
+            &prefs,
+        );
+        for r in &diff.jogos {
+            let Some(regra) = r
+                .fatos
+                .jogo_base
+                .as_ref()
+                .and_then(|b| self.limites_jogo.get(b))
+            else {
+                continue;
+            };
+            let alvo = Alvo::Jogo(r.perfil.clone());
+            let Some(m) = diff
+                .plano
+                .mudancas(&alvo)
+                .iter()
+                .find(|m| m.setting == Self::LIMITE_FPS && m.origem.regra() == Some(regra.as_str()))
+                .cloned()
+            else {
+                continue;
+            };
+            let perfil = ProfileRef::Named(r.perfil.clone());
+            let mesmo = |x: &nvt_engine::MudancaPlanejada| x.alvo == alvo && x.mudanca.id == m.id;
+            diff.mudancas.retain(|x| !mesmo(x));
+            diff.conformes.retain(|x| !mesmo(x));
+            diff.reverter.retain(|x| {
+                !(x.esperado.id == m.id
+                    && matches!(&x.esperado.perfil, ProfileRef::Named(n) if n.eq_ignore_ascii_case(&r.perfil)))
+            });
+            let existe = r.origem != nvt_engine::OrigemPerfil::ACriar;
+            let atual = if existe {
+                self.engine
+                    .store()
+                    .ler_setting(&perfil, m.id)?
+                    .and_then(|s| s.value.as_u32())
+            } else {
+                None
+            };
+            let mut mudanca = m.clone();
+            mudanca.valor_anterior = atual;
+            let item = nvt_engine::MudancaPlanejada {
+                alvo,
+                perfil,
+                mudanca,
+            };
+            if atual == Some(m.valor) {
+                diff.conformes.push(item);
+            } else {
+                if !existe && !diff.criar.iter().any(|c| c.nome == r.perfil) {
+                    diff.criar.push(nvt_engine::PerfilCriado {
+                        nome: r.perfil.clone(),
+                        exe: r.entrada.exe.clone(),
+                    });
+                }
+                diff.mudancas.push(item);
+            }
+        }
+        Ok(())
+    }
+
     /// Planeja e guarda os jogos ignorados (registrando no log quando mudam).
     fn planejar(&mut self) -> Resultado<Diff> {
         let mut diff = self.engine.planejar(&self.jogos)?;
@@ -924,6 +1015,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             &self.regras_drs,
             &self.aceites_drs,
         );
+        self.desligar_limite_drs(&mut diff, &fatos)?;
         let ignorados: Vec<nvt_ipc::JogoIgnorado> = diff
             .ignorados
             .iter()

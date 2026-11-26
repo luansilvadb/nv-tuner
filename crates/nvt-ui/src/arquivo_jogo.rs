@@ -4,8 +4,9 @@
 //! grava nada. Caminhos chegam já anonimizados (`%USERPROFILE%\…`).
 
 use nvt_ipc::{
-    ArquivoJogoUi, DestinoJogoIpc, EstadoBackup, EstadoExperimental, Jogo, MotivoNaoAplicada,
-    MudancaArquivoJogo, OrientacaoConfigJogo, SugestaoExperimental, ValorJogoIpc,
+    ArquivoJogoUi, Camada, DestinoJogoIpc, EstadoBackup, EstadoExperimental, Jogo,
+    MotivoNaoAplicada, MudancaArquivoJogo, OrientacaoConfigJogo, SugestaoExperimental,
+    ValorJogoIpc,
 };
 
 use crate::textos;
@@ -15,8 +16,6 @@ pub const ROTULO_CONTA: &str = "Conta";
 pub const ROTULO_BACKUP: &str = "Backup";
 pub const SECAO_SUGESTOES_JOGO: &str = "Sugestões experimentais deste jogo";
 pub const SEM_MUDANCAS_ARQUIVO: &str = "Nenhuma chave alterada neste arquivo.";
-pub const REVERTER_INDISPONIVEL: &str =
-    "Reversão indisponível: o serviço não informou a conta deste arquivo.";
 pub const OK_REVERSAO_JOGO: &str = "Reversão do arquivo do jogo solicitada.";
 
 /// Estado do backup `.orig`.
@@ -206,8 +205,8 @@ fn politica_legivel(p: &str) -> &str {
     }
 }
 
-/// Destino de “Reverter” de uma chave. A projeção v7 não traz a instância
-/// opaca; usa-se `conta` quando ela já está na forma canônica de instância.
+/// Destino de “Reverter” de uma chave: a instância opaca que o serviço
+/// projetou (`ArquivoJogoUi.instancia`), só quando há gestão do app.
 pub fn destino_reverter(a: &ArquivoJogoUi, setting: &str) -> Option<DestinoJogoIpc> {
     if !a.reversivel {
         return None;
@@ -215,24 +214,26 @@ pub fn destino_reverter(a: &ArquivoJogoUi, setting: &str) -> Option<DestinoJogoI
     let d = DestinoJogoIpc {
         alvo: a.alvo.clone(),
         setting: setting.to_owned(),
-        instancia: a.conta.clone()?,
+        instancia: a.instancia.clone(),
     };
     d.validar().is_ok().then_some(d)
 }
 
-/// Sugestões experimentais de config deste jogo (`jogo-<id>-…`), com
-/// botão Aceitar/Retirar (mesmo fluxo da Fase 2).
-pub fn sugestoes_do_jogo<'a>(
-    j: &Jogo,
-    sugestoes: &'a [SugestaoExperimental],
-) -> Vec<&'a SugestaoExperimental> {
-    let Some(id) = &j.competitivo else {
-        return vec![];
-    };
-    let prefixo = format!("jogo-{id}-");
-    sugestoes
+/// Sugestões experimentais de config deste jogo, do campo próprio
+/// `config_jogo.experimentais`, com botão Aceitar/Retirar (mesmo fluxo da
+/// Fase 2, `DefinirAceiteExperimental`).
+pub fn sugestoes_do_jogo(j: &Jogo) -> Vec<SugestaoExperimental> {
+    j.config_jogo
         .iter()
-        .filter(|s| s.regra.starts_with(&prefixo) && s.estado != EstadoExperimental::Estavel)
+        .flat_map(|c| c.experimentais.iter())
+        .filter(|s| s.estado != EstadoExperimental::Estavel)
+        .map(|s| SugestaoExperimental {
+            regra: s.regra.clone(),
+            descricao: s.descricao.clone(),
+            camada: Camada::Usuario,
+            impacto_visual: s.impacto_visual,
+            estado: s.estado,
+        })
         .collect()
 }
 
@@ -241,7 +242,8 @@ mod testes {
     use super::*;
     use nvt_ipc::AlvoIpc;
     use nvt_ipc::{
-        Camada, ConfigJogoUi, ImpactoVisual, OrigemPerfil, ResumoJogo, RotuloCaminho, StatusMudanca,
+        ConfigJogoUi, ImpactoVisual, OrigemPerfil, ResumoJogo, RotuloCaminho, StatusMudanca,
+        SugestaoConfigJogo,
     };
 
     fn todos_motivos() -> Vec<MotivoNaoAplicada> {
@@ -345,7 +347,7 @@ mod testes {
         );
     }
 
-    fn arquivo(conta: Option<&str>, reversivel: bool) -> ArquivoJogoUi {
+    fn arquivo(instancia: &str, reversivel: bool) -> ArquivoJogoUi {
         ArquivoJogoUi {
             alvo: AlvoIpc::ConfigJogo {
                 jogo: "r6".into(),
@@ -355,7 +357,8 @@ mod testes {
                 "%USERPROFILE%\\Documents\\My Games\\Rainbow Six - Siege\\<conta>\\GameSettings.ini"
                     .into(),
             ),
-            conta: conta.map(Into::into),
+            instancia: instancia.into(),
+            conta: None,
             backup: EstadoBackup::Integro,
             mudancas: vec![
                 MudancaArquivoJogo {
@@ -397,7 +400,7 @@ mod testes {
 
     #[test]
     fn arquivo_do_jogo_mostra_caminho_antes_depois_e_backup() {
-        let a = arquivo(Some("a1b2c3"), true);
+        let a = arquivo("a1b2c3", true);
         assert!(a.rotulo.0.starts_with("%USERPROFILE%\\"));
         assert_eq!(nome_arquivo(&a.rotulo.0), "GameSettings.ini");
         assert_eq!(backup(a.backup), "original guardado e íntegro");
@@ -424,7 +427,7 @@ mod testes {
 
     #[test]
     fn reverter_so_com_gestao_e_instancia() {
-        let a = arquivo(Some("a1b2c3"), true);
+        let a = arquivo("a1b2c3", true);
         let d = destino_reverter(&a, "r6_fps_limit").unwrap();
         assert_eq!(d.instancia, "a1b2c3");
         assert!(
@@ -432,20 +435,21 @@ mod testes {
                 .validar()
                 .is_ok()
         );
-        assert!(destino_reverter(&arquivo(Some("a1b2c3"), false), "r6_fps_limit").is_none());
-        assert!(destino_reverter(&arquivo(None, true), "r6_fps_limit").is_none());
-        assert!(destino_reverter(&arquivo(Some("Conta 1"), true), "r6_fps_limit").is_none());
+        assert!(destino_reverter(&arquivo("a1b2c3", false), "r6_fps_limit").is_none());
+        assert!(destino_reverter(&arquivo("", true), "r6_fps_limit").is_none());
+        assert!(destino_reverter(&arquivo("Conta 1", true), "r6_fps_limit").is_none());
     }
 
     #[test]
     fn orientacoes_do_jogo_citam_o_arquivo() {
         assert!(orientacoes(&jogo(None)).is_empty());
         let j = jogo(Some(ConfigJogoUi {
-            arquivos: vec![arquivo(None, false)],
+            arquivos: vec![arquivo("a1b2c3", false)],
             orientacoes: vec![
                 OrientacaoConfigJogo::DesmarcarSomenteLeitura,
                 OrientacaoConfigJogo::FecharSteam,
             ],
+            experimentais: vec![],
         }));
         assert_eq!(
             orientacoes(&j),
@@ -457,28 +461,29 @@ mod testes {
     }
 
     #[test]
-    fn sugestoes_experimentais_do_jogo() {
-        let s = |regra: &str, estado| SugestaoExperimental {
+    fn sugestoes_experimentais_do_jogo_vem_do_campo_proprio() {
+        let s = |regra: &str, estado| SugestaoConfigJogo {
             regra: regra.into(),
             descricao: "d".into(),
-            camada: Camada::Driver,
             impacto_visual: ImpactoVisual::Nenhum,
+            destinos: vec![],
             estado,
         };
-        let todas = vec![
-            s("jogo-r6-fps-limit", EstadoExperimental::Aceitavel),
-            s("jogo-r6-vsync", EstadoExperimental::Aceita),
-            s("jogo-r6-outra", EstadoExperimental::Estavel),
-            s("jogo-cs2-fps-max", EstadoExperimental::Aceitavel),
-            s("dlss-preset", EstadoExperimental::Aceitavel),
-        ];
-        let r: Vec<_> = sugestoes_do_jogo(&jogo(None), &todas)
-            .iter()
-            .map(|s| s.regra.as_str())
-            .collect();
-        assert_eq!(r, ["jogo-r6-fps-limit", "jogo-r6-vsync"]);
-        let mut fora = jogo(None);
-        fora.competitivo = None;
-        assert!(sugestoes_do_jogo(&fora, &todas).is_empty());
+        assert!(sugestoes_do_jogo(&jogo(None)).is_empty());
+        let j = jogo(Some(ConfigJogoUi {
+            arquivos: vec![],
+            orientacoes: vec![],
+            experimentais: vec![
+                s("jogo-limite-no-jogo-r6", EstadoExperimental::Aceitavel),
+                s("jogo-vsync-r6", EstadoExperimental::Aceita),
+                s("jogo-estavel", EstadoExperimental::Estavel),
+            ],
+        }));
+        let r = sugestoes_do_jogo(&j);
+        let regras: Vec<_> = r.iter().map(|s| s.regra.as_str()).collect();
+        assert_eq!(regras, ["jogo-limite-no-jogo-r6", "jogo-vsync-r6"]);
+        assert_eq!(r[0].estado, EstadoExperimental::Aceitavel);
+        assert_eq!(r[1].estado, EstadoExperimental::Aceita);
+        assert!(r.iter().all(|s| s.camada == Camada::Usuario));
     }
 }

@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocolo::{MotivoNaoAplicada, StatusMudanca};
-use crate::usuario::{Fato, ReferenciaTarefa, validar_texto};
+use crate::protocolo::{ImpactoVisual, MotivoNaoAplicada, StatusMudanca};
+use crate::usuario::{EstadoExperimental, Fato, ReferenciaTarefa, validar_texto};
 
 /// Máximo de instâncias de arquivo de jogo relatadas numa consulta.
 pub const ARQUIVOS_JOGO_MAX: usize = 64;
@@ -370,15 +370,57 @@ pub struct ConfigJogoUi {
     /// Orientações para destravar a aplicação (ex.: “feche a Steam”).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub orientacoes: Vec<OrientacaoConfigJogo>,
+    /// Regras experimentais de config deste jogo (Aceitar/Retirar pelo
+    /// `DefinirAceiteExperimental`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub experimentais: Vec<SugestaoConfigJogo>,
+}
+
+/// Regra experimental de config de jogo aceitável ou já aceita pelo SID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SugestaoConfigJogo {
+    pub regra: String,
+    pub descricao: String,
+    pub impacto_visual: ImpactoVisual,
+    /// Destinos que a regra muda nesta sessão (vazio se já aceita e sem
+    /// mudança no plano).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub destinos: Vec<DestinoJogoIpc>,
+    /// Só `Aceitavel` ou `Aceita`.
+    pub estado: EstadoExperimental,
+}
+
+impl SugestaoConfigJogo {
+    fn validar(&self) -> Result<(), String> {
+        validar_texto(&self.regra, 128)?;
+        validar_texto(&self.descricao, 1024)?;
+        if self.estado == EstadoExperimental::Estavel {
+            return Err("sugestão de jogo não experimental".into());
+        }
+        if self.destinos.len() > CHAVES_ARQUIVO_MAX {
+            return Err("muitos destinos na sugestão de jogo".into());
+        }
+        for d in &self.destinos {
+            d.validar()?;
+        }
+        Ok(())
+    }
 }
 
 impl ConfigJogoUi {
     pub fn validar(&self) -> Result<(), String> {
-        if self.arquivos.len() > ARQUIVOS_JOGO_MAX || self.orientacoes.len() > 16 {
+        if self.arquivos.len() > ARQUIVOS_JOGO_MAX
+            || self.orientacoes.len() > 16
+            || self.experimentais.len() > ACOES_JOGO_MAX
+        {
             return Err("projeção de arquivo de jogo grande demais".into());
         }
         for a in &self.arquivos {
             a.validar()?;
+        }
+        for e in &self.experimentais {
+            e.validar()?;
         }
         for o in &self.orientacoes {
             if let OrientacaoConfigJogo::FecharJogo { processos } = o {
@@ -394,6 +436,10 @@ impl ConfigJogoUi {
 pub struct ArquivoJogoUi {
     pub alvo: AlvoIpc,
     pub rotulo: RotuloCaminho,
+    /// Instância opaca da conta, idêntica a `DestinoJogoIpc.instancia` (hash
+    /// ou `local`/`ambigua`; nunca nome do usuário nem SteamID). É o que a UI
+    /// envia em `ReverterConfigJogo`.
+    pub instancia: String,
     /// Conta escolhida, já anonimizada (ex.: R6 com várias contas, F3-12).
     pub conta: Option<String>,
     pub backup: EstadoBackup,
@@ -406,6 +452,7 @@ impl ArquivoJogoUi {
     fn validar(&self) -> Result<(), String> {
         self.alvo.validar()?;
         self.rotulo.validar()?;
+        validar_instancia(&self.instancia)?;
         if let Some(c) = &self.conta {
             validar_texto(c, 128)?;
         }

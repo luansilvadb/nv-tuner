@@ -241,7 +241,8 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
             usuario.atualizar_processos(self.nucleo.processos_vigiados());
         }
         let estado = self.nucleo.servico().clone();
-        self.integracao
+        let resposta = self
+            .integracao
             .tratar(identidade, req, agora, &estado, |req| {
                 let plano = matches!(req, Requisicao::ObterPlano);
                 let mut resposta = self.nucleo.tratar(req, agora);
@@ -257,7 +258,10 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
                     resposta = plano_sem_driver();
                 }
                 (resposta, self.nucleo.servico().clone())
-            })
+            });
+        self.integracao
+            .definir_preferencias(&self.nucleo.preferencias());
+        resposta
     }
 
     fn notificar_mudanca_drs(&mut self, agora: Instant) {
@@ -280,11 +284,17 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
             }
         }
         self.integracao.repassar_sessoes(agora);
+        self.integracao
+            .definir_preferencias(&self.nucleo.preferencias());
         if self.integracao.atualizar_console(false) {
             self.nucleo
                 .definir_aceites_drs(self.integracao.aceites_drs.clone());
             self.nucleo
-                .ciclo(agora, "sessão de console ou aceite experimental");
+                .definir_limites_jogo(self.integracao.limites_jogo.clone());
+            self.nucleo.ciclo(
+                agora,
+                "sessão de console, aceite experimental ou limite no jogo",
+            );
         }
         self.nucleo.tick(agora);
     }
@@ -535,8 +545,10 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>, integracao: &mut Inte
                 }
             }
         };
+        integracao.definir_preferencias(&nucleo.preferencias());
         integracao.atualizar_console(true);
         nucleo.definir_aceites_drs(integracao.aceites_drs.clone());
+        nucleo.definir_limites_jogo(integracao.limites_jogo.clone());
         let exclusao = integracao.exclusao.clone();
         let fim = match protegido("início do ciclo", || {
             let _drs = exclusao.ciclo_drs();
@@ -584,6 +596,8 @@ pub(crate) struct Integracao {
     regras_drs: Option<nvt_core::ConjuntoRegras>,
     console: Option<IdentidadeCliente>,
     aceites_drs: std::collections::BTreeSet<String>,
+    /// F3-13 do SID da sessão de console (ver `Coordenador::limites_no_jogo_efetivos`).
+    limites_jogo: std::collections::BTreeMap<nvt_core::IdJogo, String>,
 }
 
 impl Integracao {
@@ -663,15 +677,27 @@ impl Integracao {
         }
     }
 
+    /// Repassa ao coordenador as preferências vigentes do motor (só invalida
+    /// tarefas de jogo quando `limite_fps` muda).
+    pub(crate) fn definir_preferencias(&mut self, prefs: &nvt_core::Preferences) {
+        if let Some(usuario) = &mut self.usuario {
+            usuario.definir_preferencias(prefs);
+        }
+    }
+
     fn atualizar_console(&mut self, forcar: bool) -> bool {
         let Some(usuario) = &self.usuario else {
             return false;
         };
         let console = identidade_console();
-        let aceites = usuario.aceites_drs(console.as_ref().map(|c| c.sid.as_str()));
-        let mudou = self.console != console || self.aceites_drs != aceites;
+        let sid = console.as_ref().map(|c| c.sid.as_str());
+        let aceites = usuario.aceites_drs(sid);
+        let limites = usuario.limites_no_jogo_efetivos(sid);
+        let mudou =
+            self.console != console || self.aceites_drs != aceites || self.limites_jogo != limites;
         self.console = console;
         self.aceites_drs = aceites;
+        self.limites_jogo = limites;
         forcar || mudou
     }
 
