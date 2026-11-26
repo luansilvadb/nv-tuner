@@ -7,6 +7,7 @@
 #[cfg(not(windows))]
 compile_error!("nvt-service só existe para Windows");
 
+mod atualizacao;
 mod diretorio;
 mod laco;
 mod logs;

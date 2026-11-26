@@ -4587,6 +4587,7 @@ version = "0.0.2"
 dependencies = [
  "clap",
  "embed-resource",
+ "nvt-atualizacao",
  "nvt-core",
  "nvt-drs",
  "nvt-engine",
