@@ -268,6 +268,26 @@ mod com_feature {
     }
 
     #[test]
+    fn variavel_desligada_nao_abre_sessao_etw() {
+        assert!(medicao_desligada(Some("1")));
+        assert!(!medicao_desligada(None));
+        assert!(!medicao_desligada(Some("0")));
+        let c = cenario("desligada");
+        let f = fontes(&c, vec![jogo()], false);
+        let mut p = Partidas::default();
+        let raiz = c.dir.join("estado");
+        let mut subiu = false;
+        p.iniciar_com(&raiz, true, |a| {
+            subiu = true;
+            ThreadPartidas::com_fontes(a, move || f, false)
+        });
+        assert!(!subiu, "thread de partidas não sobe");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(p.thread.is_none());
+        assert_eq!(c.aberturas.load(Ordering::SeqCst), 0, "nenhuma sessão ETW");
+    }
+
+    #[test]
     fn thread_para_a_sessao_no_stop() {
         let c = cenario("thread");
         let f = fontes(&c, vec![jogo()], false);

@@ -153,13 +153,16 @@ pub(crate) trait Ambiente {
     fn agora_ms(&self) -> u64;
     /// Dorme até `d`; `false` = pediram para parar.
     fn esperar(&self, d: Duration) -> bool;
+    /// Pediram para parar (sem esperar).
+    fn parada_pedida(&self) -> bool;
 }
 
 struct Adaptador<'a, A: Ambiente>(&'a A);
 
 impl<A: Ambiente> Portao for Adaptador<'_, A> {
+    /// Pedido de parada também fecha o portão: interrompe a passada.
     fn jogo_aberto(&self) -> bool {
-        self.0.jogo_aberto()
+        self.0.parada_pedida() || self.0.jogo_aberto()
     }
 }
 
@@ -246,17 +249,19 @@ where
         &self.estado
     }
 
-    /// Um passo do agendador. Com jogo aberto, não faz nada.
+    /// Um passo do agendador. Com jogo aberto ou parada pedida, não faz nada.
     pub(crate) fn passo(&mut self) {
-        if self.ambiente.jogo_aberto() {
+        if self.ambiente.parada_pedida() || self.ambiente.jogo_aberto() {
             return;
         }
         let agora = self.ambiente.agora_ms() / 1000;
         if agora >= self.proximo_sinais {
             self.proximo_sinais = agora + INTERVALO_SINAIS_S;
-            self.ler_sinais(agora);
+            if !self.ler_sinais(agora) {
+                return;
+            }
         }
-        if self.ambiente.jogo_aberto() {
+        if self.ambiente.parada_pedida() || self.ambiente.jogo_aberto() {
             return;
         }
         if agora >= self.proximo_inicio {
@@ -269,21 +274,24 @@ where
         }
     }
 
-    fn ler_sinais(&mut self, agora: u64) {
+    /// `false` = pediram para parar durante a leitura (nada é publicado).
+    fn ler_sinais(&mut self, agora: u64) -> bool {
         let parametros = ParametrosSinais {
             janela_cpu: (self.ambiente.desde_inicio_s() >= REPOUSO_APOS_INICIO_S)
                 .then_some(JANELA_CPU),
             ..ParametrosSinais::default()
         };
         let ambiente = &self.ambiente;
+        let mut continuar = true;
         let mut sinais = ler_sinais_maquina(
             &self.leitor,
             &parametros,
-            |d| {
-                ambiente.esperar(d);
-            },
+            |d| continuar = ambiente.esperar(d),
             agora,
         );
+        if !continuar {
+            return false;
+        }
         if self.ambiente.jogo_aberto() {
             // A média cobriu um jogo: não é repouso.
             for s in sinais
@@ -299,6 +307,7 @@ where
             }
         }
         travar(&self.cache).sinais = sinais;
+        true
     }
 
     fn ler_inicio(&mut self, agora: u64) {
@@ -601,6 +610,10 @@ impl Ambiente for AmbienteReal {
 
     fn esperar(&self, d: Duration) -> bool {
         self.parar.recv_timeout(d) == Err(RecvTimeoutError::Timeout)
+    }
+
+    fn parada_pedida(&self) -> bool {
+        self.parar.try_recv() != Err(mpsc::TryRecvError::Empty)
     }
 }
 

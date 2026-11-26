@@ -202,11 +202,31 @@ Preparação:
 3. Referência externa: PresentMon de console ligado nas duas condições, sobre o
    processo do jogo, gravando em CSV.
 4. Condições:
-   - **A**: gravação desligada. A variável `NVT_MEDICAO_DESLIGADA=1` prevista na spec
-     ainda não existe no código; até ela existir, use A = build de teste com o serviço
-     parado (`sc.exe stop nvt-service` como administrador, perfil do driver já
-     aplicado), e anote isso na planilha.
-   - **B**: build de teste com gravação ligada (serviço rodando).
+   - **A**: o MESMO build de teste com a gravação desligada pela variável de ambiente
+     do serviço `NVT_MEDICAO_DESLIGADA=1` (só existe no build de teste). Com ela, a
+     thread de partidas não sobe: nenhuma sessão ETW, nenhuma leitura da GPU. O
+     serviço roda pelo SCM, então a variável vai no registro do serviço. Em um
+     PowerShell como administrador:
+
+     ```powershell
+     $chave = 'HKLM:\SYSTEM\CurrentControlSet\Services\nvt-service'
+     New-ItemProperty -Path $chave -Name Environment -PropertyType MultiString `
+         -Value @('NVT_MEDICAO_DESLIGADA=1') -Force
+     Restart-Service nvt-service
+     ```
+
+     Confirme no log do serviço a linha
+     `partidas: gravação DESLIGADA pela variável NVT_MEDICAO_DESLIGADA=1`.
+   - **B**: o mesmo build com gravação ligada. Remova a variável e reinicie o
+     serviço; o log não deve mais trazer a linha acima:
+
+     ```powershell
+     Remove-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\nvt-service' `
+         -Name Environment
+     Restart-Service nvt-service
+     ```
+
+     Ao terminar o Lab-M, deixe a variável removida (estado B).
 5. Ordem das execuções: **A B B A A B B A A B** (dez execuções por jogo).
 
 Registrar por execução: FPS médio e 1% low pelo PresentMon; na condição B, também o

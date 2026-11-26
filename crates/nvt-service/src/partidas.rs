@@ -80,6 +80,14 @@ mod imp {
 
     pub(crate) type Compartilhado = Arc<Mutex<Option<Armazem>>>;
 
+    /// Variável de ambiente do serviço que desliga a gravação (Lab-M, condição A).
+    pub(crate) const VAR_DESLIGADA: &str = "NVT_MEDICAO_DESLIGADA";
+
+    /// Só o valor exato `1` desliga.
+    pub(crate) fn medicao_desligada(valor: Option<&str>) -> bool {
+        valor.map(str::trim) == Some("1")
+    }
+
     /// Armazém compartilhado entre a thread e o IPC (`None` = indisponível).
     #[derive(Debug, Default)]
     pub(crate) struct Partidas {
@@ -90,16 +98,41 @@ mod imp {
     impl Partidas {
         /// Prepara a pasta e sobe a thread com as fachadas reais.
         pub(crate) fn iniciar(&mut self, estado_dir: &Path, portao: nvt_engine::Portao) {
-            match abrir_armazem(&estado_dir.join("partidas")) {
+            let desligada = medicao_desligada(std::env::var(VAR_DESLIGADA).ok().as_deref());
+            self.iniciar_com(estado_dir, desligada, move |a| {
+                ThreadPartidas::iniciar(a, portao)
+            });
+        }
+
+        /// `desligada` (Lab-M, condição A): a pasta continua listável, mas a
+        /// thread não sobe; nenhuma sessão ETW nem leitura da GPU.
+        pub(crate) fn iniciar_com(
+            &mut self,
+            estado_dir: &Path,
+            desligada: bool,
+            subir: impl FnOnce(Compartilhado) -> io::Result<ThreadPartidas>,
+        ) {
+            let pasta = match abrir_armazem(&estado_dir.join("partidas")) {
                 Ok(a) => {
                     *self.armazem.lock().unwrap_or_else(PoisonError::into_inner) = Some(a);
+                    true
                 }
                 Err(e) => {
                     error!("partidas: pasta indisponível ({e}); gravação desligada");
-                    return;
+                    false
                 }
+            };
+            if desligada {
+                info!(
+                    "partidas: gravação DESLIGADA pela variável {VAR_DESLIGADA}=1 \
+                     (sem sessão ETW nem leitura da GPU)"
+                );
+                return;
             }
-            match ThreadPartidas::iniciar(self.armazem.clone(), portao) {
+            if !pasta {
+                return;
+            }
+            match subir(self.armazem.clone()) {
                 Ok(t) => self.thread = Some(t),
                 Err(e) => error!("partidas: thread indisponível: {e}"),
             }

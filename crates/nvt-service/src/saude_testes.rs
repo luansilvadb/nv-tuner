@@ -18,6 +18,8 @@ const T0_MS: u64 = 1_800_000_000_000;
 #[derive(Default)]
 struct Leitor {
     leituras: Cell<u32>,
+    cpu: Cell<bool>,
+    inicios: Cell<u32>,
     run: RefCell<Vec<(String, String)>>,
 }
 
@@ -32,7 +34,11 @@ impl LeitorSinaisMaquina for Leitor {
     }
     fn tempos_cpu(&self) -> Option<TemposCpu> {
         self.leituras.set(self.leituras.get() + 1);
-        None
+        self.cpu.get().then_some(TemposCpu {
+            ocioso: 0,
+            kernel: 0,
+            usuario: 0,
+        })
     }
     fn plano_ativo(&self) -> Option<u128> {
         self.leituras.set(self.leituras.get() + 1);
@@ -47,6 +53,7 @@ impl LeitorSinaisMaquina for Leitor {
 impl LeitorInicio for Leitor {
     fn run(&self, chave: ChaveRun) -> Option<Vec<(String, String)>> {
         self.leituras.set(self.leituras.get() + 1);
+        self.inicios.set(self.inicios.get() + 1);
         Some(if chave == ChaveRun::RunMaquina {
             self.run.borrow().clone()
         } else {
@@ -69,6 +76,10 @@ struct Amb {
     msi: Cell<bool>,
     agora_ms: Cell<u64>,
     exclusao: Arc<crate::laco::Exclusao>,
+    desde_inicio: Cell<u64>,
+    /// A próxima espera recebe o pedido de parada.
+    parar_na_espera: Cell<bool>,
+    parado: Cell<bool>,
 }
 
 impl Default for Amb {
@@ -78,6 +89,9 @@ impl Default for Amb {
             msi: Cell::new(false),
             agora_ms: Cell::new(T0_MS),
             exclusao: Arc::default(),
+            desde_inicio: Cell::new(0),
+            parar_na_espera: Cell::new(false),
+            parado: Cell::new(false),
         }
     }
 }
@@ -96,13 +110,19 @@ impl Ambiente for Amb {
         self.exclusao.liberar_limpeza();
     }
     fn desde_inicio_s(&self) -> u64 {
-        0
+        self.desde_inicio.get()
     }
     fn agora_ms(&self) -> u64 {
         self.agora_ms.get()
     }
     fn esperar(&self, _: Duration) -> bool {
-        true
+        if self.parar_na_espera.get() {
+            self.parado.set(true);
+        }
+        !self.parado.get()
+    }
+    fn parada_pedida(&self) -> bool {
+        self.parado.get()
     }
 }
 
@@ -190,6 +210,27 @@ fn montar(modo: ModoLimpeza) -> Montagem {
         raizes,
         armazem,
     }
+}
+
+#[test]
+fn parada_na_janela_de_cpu_nao_le_inicio_nem_limpa() {
+    let mut m = montar(ModoLimpeza::Simulacao);
+    m.leitor.leitor.cpu.set(true);
+    m.leitor.ambiente().desde_inicio.set(u64::MAX / 2);
+    m.leitor.ambiente().parar_na_espera.set(true);
+    m.leitor.passo();
+    assert!(m.leitor.ambiente().parado.get(), "a janela de CPU esperou");
+    assert_eq!(m.leitor.leitor.inicios.get(), 0, "sem ler_inicio");
+    assert_eq!(m.listagens.get(), 0, "sem limpar");
+    assert_eq!(*m.raizes.lock().unwrap(), 0);
+    assert!(m.cache.lock().unwrap().limpeza.is_none());
+}
+
+#[test]
+fn parada_fecha_o_portao_da_limpeza() {
+    let m = montar(ModoLimpeza::Simulacao);
+    m.leitor.ambiente().parado.set(true);
+    assert!(Portao::jogo_aberto(&Adaptador(m.leitor.ambiente())));
 }
 
 // ── Limpeza ────────────────────────────────────────────────────────────────
