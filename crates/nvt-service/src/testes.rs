@@ -12,7 +12,7 @@ use nvt_drs::ProfileRef;
 use nvt_engine::{DriverFalso, JogoEntrada};
 use nvt_ipc::{CodigoErro, NivelAviso, Requisicao, Resposta, StatusMudanca, codigo_aviso};
 
-use crate::nucleo::{Assinatura, Config, Nucleo};
+use crate::nucleo::{Assinador, Assinatura, Config, Fabrica, Nucleo, Varredor};
 
 const EXE_WARDOGS: &str = "WardogsClient-Win64-Shipping.exe";
 const EXE_LOL: &str = "League of Legends.exe";
@@ -84,7 +84,7 @@ fn nucleo<'a>(
 ) -> Nucleo<'a, DriverFalso> {
     let d = d.clone();
     let s = sinal.clone();
-    Nucleo::novo(
+    novo_sem_processos(
         Box::new(move || Ok(d.clone())),
         Box::new(jogos),
         Box::new(move || Some(s.borrow().clone())),
@@ -93,6 +93,27 @@ fn nucleo<'a>(
         t,
     )
     .expect("núcleo")
+}
+
+/// [`Nucleo::novo`] com o portão sobre uma lista de processos falsa e vazia:
+/// os testes não dependem dos jogos ou anticheats abertos na máquina.
+fn novo_sem_processos<'a>(
+    fabrica: Fabrica<'a, DriverFalso>,
+    varredor: Varredor<'a>,
+    assinador: Assinador<'a>,
+    dir: Option<PathBuf>,
+    c: Config,
+    t: Instant,
+) -> nvt_engine::Resultado<Nucleo<'a, DriverFalso>> {
+    Nucleo::novo_com_portao(
+        fabrica,
+        varredor,
+        assinador,
+        dir,
+        c,
+        t,
+        nvt_engine::Portao::new(nvt_engine::ProcessosFalsos::default()),
+    )
 }
 
 fn sinal() -> Sinal {
@@ -362,7 +383,7 @@ fn laco_atende_ipc_pelo_pipe_e_para() {
     let h = std::thread::spawn(move || {
         let d = driver();
         let s = sinal();
-        let mut n = Nucleo::novo(
+        let mut n = novo_sem_processos(
             Box::new(move || Ok(d.clone())),
             Box::new(jogos),
             Box::new(move || Some(s.borrow().clone())),
@@ -533,7 +554,7 @@ fn jogo_invalido_e_ignorado_com_aviso() {
     let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
     let d2 = d.clone();
     let s2 = s.clone();
-    let mut n = Nucleo::novo(
+    let mut n = novo_sem_processos(
         Box::new(move || Ok(d2.clone())),
         Box::new(|| {
             let mut v = jogos();
@@ -922,7 +943,7 @@ fn plano_envia_jogos_com_fatos_e_explicacao() {
     let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
     let d2 = d.clone();
     let s2 = s.clone();
-    let mut n = Nucleo::novo(
+    let mut n = novo_sem_processos(
         Box::new(move || Ok(d2.clone())),
         Box::new(|| {
             let mut v = jogos();

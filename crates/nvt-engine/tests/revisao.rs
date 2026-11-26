@@ -1,6 +1,8 @@
 //! Regressões dos achados da revisão adversarial da v0.1 (`docs/revisao-v0.1.md`).
 //! Cada teste reproduz a prova original e afirma o comportamento corrigido.
 
+mod comum;
+
 use std::path::PathBuf;
 
 use nvt_core::{Alvo, Api, Origem, Preferences, Qualidade, Sincronismo, Versao};
@@ -64,7 +66,7 @@ fn dir_teste(nome: &str) -> PathBuf {
 #[test]
 fn perfil_do_app_apagado_nao_trava_o_ciclo_e_e_recriado() {
     let f = DriverFalso::turing();
-    let mut e = Engine::new(f.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(f.clone(), Armazem::em_memoria());
     let jogos = vec![jogo_novo()];
     aplicar(&mut e, &jogos);
     assert!(f.perfis().iter().any(|p| p == NOME_NOVO));
@@ -182,7 +184,7 @@ fn erro_num_perfil_de_jogo_fica_isolado_e_o_global_segue() {
         f: f.clone(),
         perfil: "Jogo".into(),
     };
-    let mut e = Engine::new(s, Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(s, Armazem::em_memoria());
     let jogos = vec![jogo_predefinido(), jogo_novo()];
     let diff = e
         .planejar(&jogos)
@@ -264,7 +266,7 @@ impl DriverStore for Limite {
 #[test]
 fn jogo_com_nome_longo_nao_derruba_o_plano() {
     let f = DriverFalso::turing();
-    let mut e = Engine::new(Limite(f.clone()), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(Limite(f.clone()), Armazem::em_memoria());
     let mut longo = JogoEntrada::new("A".repeat(3000), "longo.exe");
     longo.dlss = Some(Versao::new(310, 0, 0, 0));
     let mut nul = JogoEntrada::new("Com\0NUL", "nul.exe");
@@ -300,7 +302,7 @@ fn jogo_com_nome_longo_nao_derruba_o_plano() {
 #[test]
 fn desligar_limite_fps_volta_ao_original_e_reset_nao_regrava() {
     let d = DriverFalso::turing();
-    let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::em_memoria());
     let lim = id(&e, "limite_fps");
     let original = d.valor(&ProfileRef::Base, lim);
     e.definir_preferencias(prefs(
@@ -341,7 +343,7 @@ fn desligar_limite_fps_volta_ao_original_e_reset_nao_regrava() {
 fn limite_fps_volta_ao_valor_original_gravado_pelo_usuario() {
     let d = DriverFalso::turing();
     d.mudar_pelo_usuario(&ProfileRef::Base, 0x1083_5002, 60);
-    let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::em_memoria());
     let lim = id(&e, "limite_fps");
     assert_eq!(lim, 0x1083_5002);
     e.definir_preferencias(prefs(
@@ -372,7 +374,7 @@ fn ids_dlss<S: DriverStore>(e: &Engine<S>) -> [u32; 3] {
 fn equilibrado_para_fidelidade_remove_as_settings_do_dlss() {
     let d = DriverFalso::turing();
     d.adicionar_perfil_predefinido("Jogo", &["jogo.exe"], &[]);
-    let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::em_memoria());
     let jogos = vec![jogo_predefinido()];
     aplicar(&mut e, &jogos);
     let p = ProfileRef::Named("Jogo".into());
@@ -396,7 +398,7 @@ fn equilibrado_para_fidelidade_remove_as_settings_do_dlss() {
 #[test]
 fn fidelidade_limpa_perfil_criado_pelo_app() {
     let d = DriverFalso::turing();
-    let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::em_memoria());
     let jogos = vec![jogo_novo()];
     aplicar(&mut e, &jogos);
     let p = ProfileRef::Named(NOME_NOVO.into());
@@ -413,7 +415,7 @@ fn fidelidade_limpa_perfil_criado_pelo_app() {
 fn jogo_fora_da_varredura_mantem_o_que_tinha() {
     let d = DriverFalso::turing();
     d.adicionar_perfil_predefinido("Jogo", &["jogo.exe"], &[]);
-    let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::em_memoria());
     aplicar(&mut e, &[jogo_predefinido()]);
     let diff = e.planejar(&[]).unwrap();
     assert!(diff.reverter.is_empty());
@@ -427,7 +429,7 @@ fn todas_as_transicoes_de_sincronismo_equivalem_a_aplicar_do_zero() {
     let todos = [SemSync, GSync, VSync];
     let do_zero = |s: Sincronismo| {
         let d = DriverFalso::turing();
-        let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+        let mut e = comum::motor(d.clone(), Armazem::em_memoria());
         e.definir_preferencias(prefs(s, Qualidade::Equilibrado, None))
             .unwrap();
         aplicar(&mut e, &[]);
@@ -439,7 +441,7 @@ fn todas_as_transicoes_de_sincronismo_equivalem_a_aplicar_do_zero() {
                 continue;
             }
             let d = DriverFalso::turing();
-            let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+            let mut e = comum::motor(d.clone(), Armazem::em_memoria());
             e.definir_preferencias(prefs(a, Qualidade::Equilibrado, None))
                 .unwrap();
             aplicar(&mut e, &[]);
@@ -461,7 +463,7 @@ fn todas_as_transicoes_de_sincronismo_equivalem_a_aplicar_do_zero() {
 #[test]
 fn gsync_para_vsync_desliga_gsync() {
     let d = DriverFalso::turing();
-    let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::em_memoria());
     e.definir_preferencias(prefs(Sincronismo::GSync, Qualidade::Equilibrado, None))
         .unwrap();
     aplicar(&mut e, &[]);
@@ -497,7 +499,7 @@ fn estado_vazio_ou_truncado_vira_corrompido_e_inicia_limpo() {
         let dir = dir_teste(&format!("estado-{n}"));
         let d = DriverFalso::turing();
         {
-            let mut e = Engine::new(d.clone(), Armazem::abrir(&dir).unwrap()).unwrap();
+            let mut e = comum::motor(d.clone(), Armazem::abrir(&dir).unwrap());
             aplicar(&mut e, &[]);
         }
         let snap = std::fs::read_to_string(dir.join("snapshot-original.json")).unwrap();
@@ -525,7 +527,7 @@ fn estado_vazio_ou_truncado_vira_corrompido_e_inicia_limpo() {
             snap
         );
         // O motor volta a funcionar a partir daí.
-        let e = Engine::new(d.clone(), a).unwrap();
+        let e = comum::motor(d.clone(), a);
         e.planejar(&[]).unwrap();
         e.armazem().salvar().unwrap();
         assert!(Armazem::abrir(&dir).unwrap().avisos().is_empty());
@@ -538,7 +540,7 @@ fn estado_truncado_e_recuperado_da_copia_anterior() {
     let dir = dir_teste("estado-anterior");
     let d = DriverFalso::turing();
     {
-        let mut e = Engine::new(d.clone(), Armazem::abrir(&dir).unwrap()).unwrap();
+        let mut e = comum::motor(d.clone(), Armazem::abrir(&dir).unwrap());
         aplicar(&mut e, &[]);
         // Segundo salvamento: a versão anterior vira a cópia de segurança.
         e.armazem().salvar().unwrap();
@@ -570,7 +572,7 @@ fn snapshot_truncado_ou_vazio_nao_trava_e_nao_e_sobrescrito() {
         assert!(motivo.contains("restauração desabilitada"));
 
         let d = DriverFalso::turing();
-        let mut e = Engine::new(d.clone(), a).unwrap();
+        let mut e = comum::motor(d.clone(), a);
         let r = e.plano_restauracao();
         assert!(r.is_err(), "restauração recusada com aviso");
         assert!(e.restaurar(true).is_err());
@@ -618,7 +620,7 @@ fn historico_tem_limite_e_descarta_as_mais_antigas() {
     let d = DriverFalso::turing();
     let mut a = Armazem::em_memoria();
     a.definir_limite_historico(10);
-    let mut e = Engine::new(d.clone(), a).unwrap();
+    let mut e = comum::motor(d.clone(), a);
     for limite in 100..130 {
         e.definir_preferencias(prefs(
             Sincronismo::SemSync,
@@ -679,7 +681,7 @@ fn travar<S: DriverStore>(e: &mut Engine<S>, setting: &str) {
 #[test]
 fn travar_destravar_repetidos_sao_coalescidos() {
     let d = DriverFalso::turing();
-    let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::em_memoria());
     aplicar(&mut e, &[]);
     let antes = e.estado().historico.len();
     for _ in 0..200 {

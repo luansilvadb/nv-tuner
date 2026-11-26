@@ -88,8 +88,35 @@ caminhos da sua máquina, números de série). Vulnerabilidades de segurança
   privilégios de administrador.
 - Prioridade das decisões: **estabilidade > latência > FPS**, respeitando um
   teto de qualidade (padrão: "Equilibrado") e as escolhas manuais do usuário.
-- Atua apenas na camada do driver: não modifica arquivos dos jogos nem injeta
-  código em processos.
+- Ajusta só o **driver NVIDIA** (perfis DRS via NVAPI), por mecanismos
+  oficiais; ajustes do Windows e de jogos chegam nas próximas versões.
+- Toda alteração é registrada, explicada e pode ser desfeita com **Restaurar
+  original**.
+- Nunca injeta código, nunca abre processos de jogos ou de anticheats (vê os
+  jogos abertos só pela lista de processos, por nome), nunca altera
+  executáveis nem arquivos da pasta de instalação dos jogos (só os lê, com
+  compartilhamento total) e adia qualquer gravação no driver enquanto detecta
+  um jogo (instalado detectado ou da base competitiva) ou anticheat aberto.
+  Como a detecção é por nome, ela pode falhar; por isso a promessa é “adia
+  enquanto detecta”.
+
+## Foco competitivo
+
+- **Base curada de 14 jogos competitivos** ([`regras/jogos.toml`](regras/jogos.toml)):
+  Counter-Strike 2, VALORANT, League of Legends, Fortnite, Apex Legends,
+  Overwatch 2, Rainbow Six Siege, Call of Duty, Rocket League, PUBG:
+  Battlegrounds, Dota 2, Marvel Rivals, Deadlock e THE FINALS. Para cada um, o
+  plano traz orientações **“Faça no jogo”** (por exemplo, Reflex em
+  *On + Boost*, limitador de FPS do próprio jogo, tela cheia), que o app não
+  aplica: quem muda é você, no menu do jogo. A interface desta versão ainda
+  não mostra essas orientações; o serviço já as envia no plano.
+- **Taxa de atualização e VRR (G-SYNC)** do monitor principal lidos pela
+  NVAPI, com aviso quando o modo G-SYNC é escolhido sem VRR ativo.
+- **Limite de FPS para G-SYNC** um pouco abaixo da taxa do monitor (por
+  exemplo, 224 FPS a 240 Hz). Por ora a regra é *experimental*: aparece como
+  sugestão e só passa a valer depois de validada em laboratório.
+- **Energia em desempenho máximo só nos jogos competitivos**, no perfil de cada
+  jogo; o perfil global volta ao valor que tinha antes do nv-tuner.
 
 Plataforma: somente Windows com GPU NVIDIA. Licença: [MIT](LICENSE).
 

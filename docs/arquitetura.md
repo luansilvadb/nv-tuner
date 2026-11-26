@@ -6,11 +6,20 @@ mudanças relevantes devem ser registradas aqui.
 ## Escopo
 
 - Somente Windows e GPUs NVIDIA.
-- Atua **apenas na camada do driver**: perfis DRS (global e por aplicativo)
-  via NVAPI, com FFI própria em Rust — sem depender de ferramentas externas
-  ou de .NET.
-- Não altera arquivos de configuração dos jogos e não injeta código em
-  processos.
+- Nesta versão atua **apenas na camada `driver`**: perfis DRS (global e por
+  aplicativo) via NVAPI, com FFI própria em Rust — sem depender de
+  ferramentas externas ou de .NET. As camadas `windows` e `jogo`
+  (`docs/spec/competitivo.md`, fases 2 e 3) ainda não existem.
+- A camada `driver` tem snapshot do original, releitura após gravar,
+  histórico e restauração.
+- Não injeta código, não abre handle para processos de jogos ou de
+  anticheats (jogos abertos são vistos só pela lista de processos,
+  `TH32CS_SNAPPROCESS`, por nome), não altera executáveis nem arquivos da
+  pasta de instalação dos jogos (só os lê, com compartilhamento total) e não
+  altera recursos de segurança do sistema.
+- Não grava no DRS enquanto detecta jogo ou anticheat vigiado em execução: a
+  gravação fica adiada e roda quando o jogo fecha (portão único de gravação,
+  `crates/nvt-engine/src/portao.rs`).
 
 ## Camadas
 
@@ -115,8 +124,17 @@ explicitamente.
   configuração DRS**; IDs fora da lista são rejeitados, mesmo que venham de
   uma regra válida.
 - Valores são validados por tipo e faixa antes da gravação.
-- O serviço não executa comandos arbitrários nem lê/grava arquivos fora dos
-  seus próprios diretórios de estado.
+- **Nenhum componente executa processos externos** (nem `powercfg.exe`,
+  `bcdedit.exe`, `reg.exe`, `cmd.exe`): toda ação usa APIs Win32/NVAPI
+  diretamente. Exceção: o instalador.
+- O serviço **grava** apenas no DRS (via NVAPI) e nos seus diretórios de
+  estado.
+- O serviço **lê** arquivos fora do seu estado só para detecção: pastas de
+  instalação dos jogos (executáveis, com compartilhamento total
+  `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`, handle curto,
+  leitura para buffer e sem mapeamento) e os manifestos das bibliotecas de
+  jogos. A pasta de um jogo em execução não é lida: valem os fatos da
+  varredura anterior.
 
 ## Distribuição
 

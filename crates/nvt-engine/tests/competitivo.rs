@@ -3,6 +3,8 @@
 //! execução (F1-09), energia por jogo com reversão do global (F1-11),
 //! orientações (F1-12) e avisos (F1-15).
 
+mod comum;
+
 use std::path::PathBuf;
 
 use nvt_core::{
@@ -63,7 +65,7 @@ fn capacidades_leem_refresh_e_vrr_da_exibicao() {
 
 #[test]
 fn base_curada_vence_a_deteccao_em_disco() {
-    let e = Engine::new(DriverFalso::turing(), Armazem::em_memoria()).unwrap();
+    let e = comum::motor(DriverFalso::turing(), Armazem::em_memoria());
     let mut cs2 = JogoEntrada::new("Counter-Strike 2", "CS2.EXE");
     cs2.steam_appid = Some(730);
     cs2.reflex = None; // a detecção em disco não acha Reflex via NVAPI
@@ -117,7 +119,7 @@ fn base_curada_vence_a_deteccao_em_disco() {
 fn plano_traz_orientacoes_filtradas_e_avisos_de_vrr() {
     let d = DriverFalso::turing();
     d.definir_exibicao(FonteFalsa::monitor(7, 240_000, vrr(false, false)));
-    let mut e = Engine::new(d.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::em_memoria());
     let mut cs2 = JogoEntrada::new("Counter-Strike 2", "cs2.exe");
     cs2.steam_appid = Some(730);
     let jogos = [cs2];
@@ -211,7 +213,8 @@ fn energia_global_volta_ao_valor_de_antes_da_gestao() {
 
     // Versão anterior: energia gerida no global.
     {
-        let mut e = Engine::com_regras(d.clone(), Armazem::abrir(&dir).unwrap(), regras_antigas());
+        let mut e = Engine::com_regras(d.clone(), Armazem::abrir(&dir).unwrap(), regras_antigas())
+            .com_portao(comum::sem_processos());
         let diff = e.planejar(&jogos).unwrap();
         e.aplicar(&diff, true).unwrap();
         assert_eq!(d.valor(&ProfileRef::Base, ENERGIA), Some(1));
@@ -225,7 +228,7 @@ fn energia_global_volta_ao_valor_de_antes_da_gestao() {
 
     // Regras atuais: o global sai do plano e volta ao original; o perfil do
     // jogo fica com desempenho máximo.
-    let mut e = Engine::new(d.clone(), Armazem::abrir(&dir).unwrap()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::abrir(&dir).unwrap());
     let diff = e.planejar(&jogos).unwrap();
     let rev: Vec<_> = diff
         .reverter
@@ -333,7 +336,7 @@ fn jogo_em_execucao_reaproveita_fatos_e_nao_le_a_pasta() {
     assert_eq!(j.id_jogo.as_ref().map(|i| i.as_str()), Some("cs2"));
 
     // O motor ainda monta os fatos curados do jogo aberto.
-    let e = Engine::new(DriverFalso::turing(), Armazem::em_memoria()).unwrap();
+    let e = comum::motor(DriverFalso::turing(), Armazem::em_memoria());
     let res = e.resolver_jogos(&r.jogos).unwrap();
     assert!(res[0].fatos.competitivo);
     assert_eq!(res[0].fatos.reflex, Some(true));

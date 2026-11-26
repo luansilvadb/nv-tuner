@@ -1,5 +1,7 @@
 //! Ciclo completo do motor sobre o [`DriverFalso`].
 
+mod comum;
+
 use nvt_core::{Alvo, Api, Versao};
 use nvt_drs::{ProfileRef, SettingValue};
 use nvt_engine::{
@@ -33,7 +35,7 @@ fn jogos() -> Vec<JogoEntrada> {
 }
 
 fn motor(d: &DriverFalso) -> Engine<DriverFalso> {
-    Engine::new(d.clone(), Armazem::em_memoria()).expect("regras embutidas")
+    comum::motor(d.clone(), Armazem::em_memoria())
 }
 
 fn id(e: &Engine<DriverFalso>, nome: &str) -> u32 {
@@ -415,7 +417,7 @@ fn estado_persiste_e_snapshot_nunca_e_sobrescrito() {
     let _ = std::fs::remove_dir_all(&dir);
     let d = driver();
     {
-        let mut e = Engine::new(d.clone(), Armazem::abrir(&dir).unwrap()).unwrap();
+        let mut e = comum::motor(d.clone(), Armazem::abrir(&dir).unwrap());
         aplicar_tudo(&mut e);
     }
     assert!(dir.join("estado.json").exists());
@@ -432,7 +434,7 @@ fn estado_persiste_e_snapshot_nunca_e_sobrescrito() {
     );
 
     // Novo ciclo a partir do disco: nada a fazer.
-    let e = Engine::new(d.clone(), a).unwrap();
+    let e = comum::motor(d.clone(), a);
     assert!(e.planejar(&jogos()).unwrap().vazio());
     let _ = std::fs::remove_dir_all(&dir);
 }

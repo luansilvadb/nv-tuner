@@ -4,8 +4,8 @@
 //! incorpora. A renderização só lê o estado e emite [`Comando`]s.
 
 use nvt_ipc::{
-    AlertaDeriva, Aviso, EntradaHistorico, Estado, ImpactoVisual, Jogo, JogoIgnorado, Plano,
-    Preferencias, Qualidade, Reversao, Sincronismo, StatusMudanca,
+    Adiamento, AlertaDeriva, Aviso, EntradaHistorico, Estado, ImpactoVisual, Jogo, JogoIgnorado,
+    Plano, Preferencias, Qualidade, Resposta, Reversao, Sincronismo, StatusMudanca, codigo_aviso,
 };
 
 use crate::textos;
@@ -171,7 +171,31 @@ impl Comando {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TipoMensagem {
     Sucesso,
+    /// O serviço aceitou, mas adiou a gravação (jogo aberto): não é erro.
+    Adiada,
     Erro,
+}
+
+/// Desfecho de um comando aceito pelo serviço.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Desfecho {
+    /// Feito agora.
+    Feito,
+    /// Jogo aberto: a gravação fica pendente até ele fechar (IPC v4).
+    Adiado(Adiamento),
+}
+
+impl Desfecho {
+    /// Desfecho de uma resposta do serviço: `Plano.adiada` (Aplicar agora) e
+    /// `Restauracao.adiada` (Restaurar original) viram [`Desfecho::Adiado`].
+    pub fn da_resposta(r: &Resposta) -> Self {
+        let adiada = match r {
+            Resposta::Plano(p) => p.adiada.clone(),
+            Resposta::Restauracao { adiada } => adiada.clone(),
+            _ => None,
+        };
+        adiada.map_or(Desfecho::Feito, Desfecho::Adiado)
+    }
 }
 
 /// Evento produzido pela thread de comunicação.
@@ -189,7 +213,7 @@ pub enum Evento {
     /// Uma operação terminou.
     Concluido {
         comando: Comando,
-        resultado: Result<(), String>,
+        resultado: Result<Desfecho, String>,
     },
 }
 
@@ -319,6 +343,56 @@ impl EstadoUi {
             .and_then(|e| e.restauracao_bloqueada())
     }
 
+    /// Gravação pendente porque há jogo aberto (faixa de estado).
+    pub fn adiamento(&self) -> Option<&Adiamento> {
+        self.dados
+            .estado
+            .as_ref()
+            .and_then(|e| e.adiamento.as_ref())
+    }
+
+    /// Texto da faixa de estado “Jogo aberto (…)”, se houver adiamento.
+    pub fn faixa_adiamento(&self) -> Option<String> {
+        self.adiamento().map(textos::adiamento)
+    }
+
+    /// A mensagem do topo, sem repetir a faixa de adiamento (a resposta
+    /// “adiada” e o estado seguinte dizem a mesma coisa).
+    pub fn mensagem_visivel(&self) -> Option<&(TipoMensagem, String)> {
+        self.mensagem.as_ref().filter(|(tipo, texto)| {
+            !(*tipo == TipoMensagem::Adiada
+                && self.faixa_adiamento().as_deref() == Some(texto.as_str()))
+        })
+    }
+
+    /// Aviso ao lado da escolha de sincronismo nas Preferências (F1-15),
+    /// calculado para o rascunho: G-SYNC escolhido sem VRR, ou com VRR
+    /// desligado no painel. Sem a leitura do monitor, vale o aviso do serviço
+    /// (se o rascunho é o que está em vigor).
+    pub fn aviso_sincronismo(&self) -> Option<&'static str> {
+        if self.rascunho.sincronismo != Sincronismo::GSync {
+            return None;
+        }
+        let vrr = self
+            .dados
+            .estado
+            .as_ref()
+            .and_then(|e| e.gpu.as_ref())
+            .map(|g| g.capacidades.vrr)
+            .unwrap_or_default();
+        match (vrr.possivel, vrr.ativo) {
+            (Some(false), _) => Some(textos::GSYNC_SEM_VRR),
+            (Some(true), Some(false)) => Some(textos::VRR_DESLIGADO_NO_PAINEL),
+            (Some(true), _) => None,
+            (None, _) if self.rascunho_alterado() => None,
+            (None, _) => self.avisos().iter().find_map(|a| match a.codigo.as_str() {
+                codigo_aviso::GSYNC_SEM_VRR => Some(textos::GSYNC_SEM_VRR),
+                codigo_aviso::VRR_DESLIGADO_NO_PAINEL => Some(textos::VRR_DESLIGADO_NO_PAINEL),
+                _ => None,
+            }),
+        }
+    }
+
     /// O botão “Restaurar original” pode ser usado?
     pub fn pode_restaurar(&self) -> bool {
         self.pode_escrever() && self.restauracao_bloqueada().is_none()
@@ -368,9 +442,10 @@ impl EstadoUi {
             Evento::Concluido { comando, resultado } => {
                 self.ocupado = None;
                 self.mensagem = match resultado {
-                    Ok(()) => comando
+                    Ok(Desfecho::Feito) => comando
                         .mensagem_sucesso()
                         .map(|m| (TipoMensagem::Sucesso, m.to_string())),
+                    Ok(Desfecho::Adiado(a)) => Some((TipoMensagem::Adiada, textos::adiamento(&a))),
                     Err(e) => Some((TipoMensagem::Erro, e)),
                 };
                 if matches!(comando, Comando::DefinirPreferencias(_)) {
@@ -667,7 +742,7 @@ mod testes {
         assert!(!ui.pode_executar(&Comando::Atualizar));
         ui.aplicar(Evento::Concluido {
             comando: Comando::AplicarAgora,
-            resultado: Ok(()),
+            resultado: Ok(Desfecho::Feito),
         });
         assert!(ui.pode_escrever());
         assert_eq!(
@@ -722,7 +797,7 @@ mod testes {
         assert_eq!(ui.rascunho.qualidade, Qualidade::Desempenho);
         ui.aplicar(Evento::Concluido {
             comando: Comando::DefinirPreferencias(ui.rascunho.clone()),
-            resultado: Ok(()),
+            resultado: Ok(Desfecho::Feito),
         });
         assert!(!ui.rascunho_alterado());
     }
@@ -955,6 +1030,227 @@ mod testes {
                 AcaoReversao::Remover
             ),
             "Saiu do plano porque a preferência “limite_fps” mudou: sai do perfil (volta ao predefinido da NVIDIA, se houver)."
+        );
+    }
+
+    #[test]
+    fn todo_codigo_de_orientacao_tem_texto() {
+        for o in nvt_core::Orientacao::TODAS {
+            let texto = textos::orientacao(o.codigo())
+                .unwrap_or_else(|| panic!("sem texto: {}", o.codigo()));
+            assert!(texto.ends_with('.'), "{texto}");
+            assert!(
+                !texto.contains(o.codigo()),
+                "código vazou no texto: {texto}"
+            );
+        }
+        assert_eq!(
+            textos::orientacao("reflex_on_boost"),
+            Some("Ligue o NVIDIA Reflex em On + Boost (Ativado + Turbo).")
+        );
+        // Código desconhecido (serviço mais novo): não quebra, mostra o código.
+        assert_eq!(textos::orientacao("reflex_turbo"), None);
+        assert_eq!(textos::orientacao_ou_codigo("reflex_turbo"), "reflex_turbo");
+        assert_eq!(textos::faca_no_jogo_resumo(0), "");
+        assert_eq!(textos::faca_no_jogo_resumo(1), "Faça no jogo: 1 item");
+        assert_eq!(textos::faca_no_jogo_resumo(3), "Faça no jogo: 3 itens");
+    }
+
+    fn adiamento(acao: nvt_ipc::AcaoAdiada) -> Adiamento {
+        Adiamento {
+            processos: vec!["cs2.exe".into()],
+            desde_unix: 1,
+            acao,
+        }
+    }
+
+    #[test]
+    fn adiamento_vira_mensagem_e_nao_erro() {
+        use nvt_ipc::AcaoAdiada;
+        let mut p = plano();
+        assert_eq!(
+            Desfecho::da_resposta(&Resposta::Plano(p.clone())),
+            Desfecho::Feito
+        );
+        p.adiada = Some(adiamento(AcaoAdiada::AplicarPlano));
+        let d = Desfecho::da_resposta(&Resposta::Plano(p));
+        assert_eq!(d, Desfecho::Adiado(adiamento(AcaoAdiada::AplicarPlano)));
+
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        ui.aplicar(Evento::Servico(Dados::default()));
+        ui.aplicar(Evento::Ocupado(Comando::AplicarAgora));
+        ui.aplicar(Evento::Concluido {
+            comando: Comando::AplicarAgora,
+            resultado: Ok(d),
+        });
+        assert_eq!(
+            ui.mensagem,
+            Some((
+                TipoMensagem::Adiada,
+                "Jogo aberto (cs2.exe): as alterações serão aplicadas quando você fechar o jogo."
+                    .into()
+            ))
+        );
+        assert!(ui.pode_escrever());
+
+        let r = Desfecho::da_resposta(&Resposta::Restauracao {
+            adiada: Some(adiamento(AcaoAdiada::RestaurarOriginal)),
+        });
+        ui.aplicar(Evento::Concluido {
+            comando: Comando::RestaurarOriginal,
+            resultado: Ok(r),
+        });
+        let (tipo, texto) = ui.mensagem.clone().unwrap();
+        assert_eq!(tipo, TipoMensagem::Adiada);
+        assert!(
+            texto.contains("valores originais serão restaurados"),
+            "{texto}"
+        );
+        assert_eq!(
+            Desfecho::da_resposta(&Resposta::Restauracao { adiada: None }),
+            Desfecho::Feito
+        );
+        assert!(
+            textos::adiamento(&adiamento(AcaoAdiada::TratarDeriva))
+                .contains("será tratada quando você fechar o jogo")
+        );
+    }
+
+    #[test]
+    fn faixa_de_adiamento_vem_do_estado_sem_repetir_a_mensagem() {
+        use nvt_ipc::AcaoAdiada;
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        let mut e = estado(preferencias_padrao());
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(e.clone()),
+            ..Default::default()
+        }));
+        assert_eq!(ui.faixa_adiamento(), None);
+        e.adiamento = Some(adiamento(AcaoAdiada::AplicarPlano));
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(e),
+            ..Default::default()
+        }));
+        let faixa = ui.faixa_adiamento().unwrap();
+        assert!(faixa.starts_with("Jogo aberto (cs2.exe):"), "{faixa}");
+        ui.mensagem = Some((TipoMensagem::Adiada, faixa));
+        assert_eq!(ui.mensagem_visivel(), None, "a faixa já diz o mesmo");
+        ui.mensagem = Some((TipoMensagem::Sucesso, textos::OK_PREFS.into()));
+        assert!(ui.mensagem_visivel().is_some());
+    }
+
+    fn com_vrr(possivel: Option<bool>, ativo: Option<bool>) -> Estado {
+        let mut e = estado(Preferencias {
+            sincronismo: Sincronismo::GSync,
+            ..preferencias_padrao()
+        });
+        e.gpu = Some(nvt_ipc::Gpu {
+            nome: "GPU".into(),
+            arquitetura: "ada".into(),
+            vram_mb: 8192,
+            capacidades: nvt_ipc::Capacidades {
+                dlss: true,
+                geracao_quadros: true,
+                reflex: true,
+                rebar: true,
+                refresh_mhz: Some(239_757),
+                vrr: nvt_ipc::Vrr { possivel, ativo },
+            },
+        });
+        e
+    }
+
+    #[test]
+    fn aviso_de_sincronismo_segue_o_rascunho_e_o_vrr() {
+        let mut ui = EstadoUi::new(Tela::Preferencias);
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(com_vrr(Some(false), Some(false))),
+            ..Default::default()
+        }));
+        assert_eq!(ui.aviso_sincronismo(), Some(textos::GSYNC_SEM_VRR));
+        assert!(textos::GSYNC_SEM_VRR.starts_with("Seu monitor não tem G-SYNC/VRR"));
+        ui.rascunho.sincronismo = Sincronismo::Desligado;
+        assert_eq!(ui.aviso_sincronismo(), None, "sem G-SYNC, sem aviso");
+
+        let mut ui = EstadoUi::new(Tela::Preferencias);
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(com_vrr(Some(true), Some(false))),
+            ..Default::default()
+        }));
+        assert_eq!(
+            ui.aviso_sincronismo(),
+            Some(textos::VRR_DESLIGADO_NO_PAINEL)
+        );
+        assert!(textos::VRR_DESLIGADO_NO_PAINEL.contains("Configurar G-SYNC"));
+
+        let mut ui = EstadoUi::new(Tela::Preferencias);
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(com_vrr(Some(true), Some(true))),
+            ..Default::default()
+        }));
+        assert_eq!(ui.aviso_sincronismo(), None);
+
+        // VRR desconhecido: vale o aviso do serviço.
+        let mut e = com_vrr(None, None);
+        e.avisos = vec![Aviso::gsync_sem_vrr(1)];
+        let mut ui = EstadoUi::new(Tela::Preferencias);
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(e),
+            ..Default::default()
+        }));
+        assert_eq!(ui.aviso_sincronismo(), Some(textos::GSYNC_SEM_VRR));
+        assert_eq!(
+            textos::mensagem_aviso(&ui.avisos()[0]),
+            textos::GSYNC_SEM_VRR
+        );
+    }
+
+    #[test]
+    fn refresh_e_vrr_desconhecidos_dizem_desconhecido() {
+        assert_eq!(textos::refresh(Some(239_757)), "240 Hz");
+        assert_eq!(textos::refresh(Some(143_999)), "144 Hz");
+        assert_eq!(textos::refresh(Some(60_000)), "60 Hz");
+        assert_eq!(textos::refresh(None), "desconhecido");
+        assert_eq!(textos::refresh(Some(0)), "desconhecido");
+        assert_eq!(textos::sim_nao_desconhecido(None), "desconhecido");
+        assert_eq!(textos::sim_nao_desconhecido(Some(true)), "Sim");
+        assert_eq!(textos::sim_nao_desconhecido(Some(false)), "Não");
+    }
+
+    #[test]
+    fn motivos_vrr_inativo_e_jogo_com_reflex_tem_texto_proprio() {
+        let generico = textos::motivo_curto(&MotivoNaoAplicada::CondicaoNaoAtendida {
+            condicao: "x".into(),
+            esperado: "a".into(),
+            encontrado: "b".into(),
+        });
+        for m in [
+            MotivoNaoAplicada::VrrInativo,
+            MotivoNaoAplicada::JogoComReflex,
+        ] {
+            assert_ne!(textos::motivo_curto(&m), generico);
+            assert!(!textos::motivo_longo(&m).contains("Condições da regra"));
+        }
+        assert!(textos::motivo_longo(&MotivoNaoAplicada::VrrInativo).contains("Configurar G-SYNC"));
+        assert!(textos::motivo_longo(&MotivoNaoAplicada::JogoComReflex).contains("Reflex"));
+        // Mais relevante que a condição genérica no texto curto.
+        let r = ResumoJogo {
+            nao_aplicadas: vec![
+                nao(
+                    "a",
+                    MotivoNaoAplicada::CondicaoNaoAtendida {
+                        condicao: "x".into(),
+                        esperado: "a".into(),
+                        encontrado: "b".into(),
+                    },
+                ),
+                nao("b", MotivoNaoAplicada::VrrInativo),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            textos::resumo_curto(&r),
+            "Nenhum ajuste específico — G-SYNC (VRR) não está ativo"
         );
     }
 

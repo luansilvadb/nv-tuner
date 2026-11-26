@@ -4,8 +4,9 @@
 //! não contém frases de interface, só referências a este módulo.
 
 use nvt_ipc::{
-    AcaoHistorico, AcaoReversao, Aviso, CodigoErro, ImpactoVisual, MotivoNaoAplicada, NivelAviso,
-    OrigemPerfil, Qualidade, ResumoJogo, Sincronismo, StatusMudanca, codigo_aviso,
+    AcaoAdiada, AcaoHistorico, AcaoReversao, Adiamento, Aviso, CodigoErro, ImpactoVisual,
+    MotivoNaoAplicada, NivelAviso, OrigemPerfil, Qualidade, ResumoJogo, Sincronismo, StatusMudanca,
+    codigo_aviso,
 };
 
 pub const TITULO_JANELA: &str = "nv-tuner";
@@ -50,7 +51,9 @@ pub const CAP_DLSS: &str = "DLSS";
 pub const CAP_FG: &str = "Geração de quadros";
 pub const CAP_REFLEX: &str = "Reflex";
 pub const CAP_REBAR: &str = "Resizable BAR";
-pub const CAP_VRR: &str = "VRR (G-SYNC)";
+pub const CAP_REFRESH: &str = "Taxa de atualização";
+pub const CAP_VRR_POSSIVEL: &str = "VRR (G-SYNC) suportado";
+pub const CAP_VRR_ATIVO: &str = "VRR (G-SYNC) ativo";
 pub const CONF_PENDENTES: &str = "pendentes";
 pub const CONF_CONFORMES: &str = "conformes";
 pub const CONF_TRAVADAS: &str = "escolhas suas";
@@ -86,6 +89,11 @@ pub const PERFIL_DRIVER: &str = "perfil da NVIDIA";
 pub const PERFIL_USUARIO: &str = "perfil existente";
 pub const PERFIL_APP: &str = "perfil criado pelo app";
 pub const PERFIL_A_CRIAR: &str = "sem perfil (será criado se preciso)";
+pub const SELO_COMPETITIVO: &str = "competitivo";
+pub const SELO_ABERTO: &str = "aberto";
+pub const DETALHE_FACA_NO_JOGO: &str = "Faça no jogo";
+pub const FACA_NO_JOGO_EXPLICACAO: &str =
+    "O app não mexe nas opções do jogo: ajuste estes itens no menu do próprio jogo.";
 
 // Mudanças ----------------------------------------------------------------
 pub const SEM_MUDANCAS: &str = "Nenhuma mudança no plano.";
@@ -129,6 +137,7 @@ pub const OK_RESTAURADO: &str = "Valores originais restaurados.";
 pub const OK_PREFS: &str = "Preferências salvas.";
 pub const OK_DESTRAVADO: &str = "Setting devolvida ao automático.";
 pub const OK_REESCANEADO: &str = "Jogos reescaneados.";
+pub const ADIAMENTO_TITULO: &str = "Jogo aberto";
 pub const EM_ANDAMENTO: &str = "Operação em andamento…";
 
 /// Nome de uma opção de sincronismo.
@@ -380,12 +389,22 @@ pub fn texto_aviso_motor(c: nvt_engine::CodigoAviso) -> &'static str {
 /// Frase exibida para um aviso: o texto próprio da UI quando ela tem um que
 /// substitui a mensagem recebida; senão, a mensagem do serviço.
 pub fn mensagem_aviso(a: &Aviso) -> &str {
-    if a.codigo == codigo_aviso::SNAPSHOT_ORIGINAL_PERDIDO {
-        SNAPSHOT_ORIGINAL_PERDIDO
-    } else {
-        &a.mensagem
+    match a.codigo.as_str() {
+        codigo_aviso::SNAPSHOT_ORIGINAL_PERDIDO => SNAPSHOT_ORIGINAL_PERDIDO,
+        codigo_aviso::GSYNC_SEM_VRR => GSYNC_SEM_VRR,
+        codigo_aviso::VRR_DESLIGADO_NO_PAINEL => VRR_DESLIGADO_NO_PAINEL,
+        _ => &a.mensagem,
     }
 }
+
+/// Texto próprio da UI para `gsync_sem_vrr` (também ao lado da escolha de
+/// sincronismo nas Preferências).
+pub const GSYNC_SEM_VRR: &str = "Seu monitor não tem G-SYNC/VRR: escolha “sem sincronismo”. \
+     Sem VRR, o G-SYNC vira V-Sync comum, com fila de quadros e mais latência.";
+/// Texto próprio da UI para `vrr_desligado_no_painel`.
+pub const VRR_DESLIGADO_NO_PAINEL: &str = "Ative o G-SYNC em Painel de Controle NVIDIA > \
+     Configurar G-SYNC: o monitor aceita VRR, mas ele está desligado (o app não liga o VRR \
+     do monitor).";
 
 pub const RESTAURAR_BLOQUEADO: &str = "Restauração desabilitada";
 
@@ -618,10 +637,8 @@ pub fn motivo_curto(m: &MotivoNaoAplicada) -> String {
             format!("não foi possível detectar: {}", nome_condicao(fato))
         }
         MotivoNaoAplicada::CondicaoNaoAtendida { .. } => "condições da regra não atendidas".into(),
-        // IPC v4: textos próprios ficam para a UI da Fase 1.
-        MotivoNaoAplicada::VrrInativo | MotivoNaoAplicada::JogoComReflex => {
-            "condições da regra não atendidas".into()
-        }
+        MotivoNaoAplicada::VrrInativo => "G-SYNC (VRR) não está ativo".into(),
+        MotivoNaoAplicada::JogoComReflex => "o jogo tem Reflex, que já cuida disso".into(),
     }
 }
 
@@ -681,10 +698,14 @@ pub fn motivo_longo(m: &MotivoNaoAplicada) -> String {
             valor_condicao(esperado),
             valor_condicao(encontrado)
         ),
-        // IPC v4: textos próprios ficam para a UI da Fase 1.
-        MotivoNaoAplicada::VrrInativo | MotivoNaoAplicada::JogoComReflex => {
-            "Condições da regra não atendidas.".into()
-        }
+        MotivoNaoAplicada::VrrInativo => "Só vale com o G-SYNC (VRR) ativo, e ele está \
+            desligado ou o monitor não tem VRR. Ative o G-SYNC em Painel de Controle NVIDIA > \
+            Configurar G-SYNC ou escolha outro sincronismo em Preferências."
+            .into(),
+        MotivoNaoAplicada::JogoComReflex => "Esta regra é para jogos sem NVIDIA Reflex. Este \
+            jogo tem Reflex: ligue-o nas opções do jogo, que ele já controla a fila de quadros \
+            e a latência."
+            .into(),
     }
 }
 
@@ -699,9 +720,8 @@ fn relevancia(m: &MotivoNaoAplicada) -> u8 {
         MotivoNaoAplicada::JogoSemDlss => 5,
         MotivoNaoAplicada::FatoDesconhecido { .. } => 6,
         MotivoNaoAplicada::ConflitoComRegraMaisEspecifica { .. } => 7,
-        MotivoNaoAplicada::CondicaoNaoAtendida { .. }
-        | MotivoNaoAplicada::VrrInativo
-        | MotivoNaoAplicada::JogoComReflex => 8,
+        MotivoNaoAplicada::VrrInativo | MotivoNaoAplicada::JogoComReflex => 7,
+        MotivoNaoAplicada::CondicaoNaoAtendida { .. } => 8,
     }
 }
 
@@ -743,5 +763,110 @@ pub fn herda_globais_lista(n: usize) -> String {
     match s.strip_prefix('h') {
         Some(resto) => format!("H{resto}"),
         None => s,
+    }
+}
+
+// Fase 1: refresh, VRR, adiamento e orientações -----------------------------
+
+/// Taxa de atualização em Hz arredondados (`239_757` mHz → “240 Hz”).
+pub fn refresh(mhz: Option<u32>) -> String {
+    match mhz {
+        Some(m) if m > 0 => format!("{} Hz", (u64::from(m) + 500) / 1000),
+        _ => DESCONHECIDO.into(),
+    }
+}
+
+/// Valor de uma capacidade que pode ser desconhecida.
+pub fn sim_nao_desconhecido(v: Option<bool>) -> &'static str {
+    match v {
+        Some(true) => SIM,
+        Some(false) => NAO,
+        None => DESCONHECIDO,
+    }
+}
+
+/// O que acontece quando o jogo fechar, conforme a ação pendente.
+pub fn efeito_adiado(a: AcaoAdiada) -> &'static str {
+    match a {
+        AcaoAdiada::AplicarPlano => "as alterações serão aplicadas quando você fechar o jogo",
+        AcaoAdiada::TratarDeriva => {
+            "a mudança detectada no driver será tratada quando você fechar o jogo"
+        }
+        AcaoAdiada::RestaurarOriginal => {
+            "os valores originais serão restaurados quando você fechar o jogo"
+        }
+    }
+}
+
+/// Faixa de estado com jogo aberto (ex.: “Jogo aberto (cs2.exe): as
+/// alterações serão aplicadas quando você fechar o jogo.”).
+pub fn adiamento(a: &Adiamento) -> String {
+    let efeito = efeito_adiado(a.acao);
+    if a.processos.is_empty() {
+        format!("Jogo aberto: {efeito}.")
+    } else {
+        format!("Jogo aberto ({}): {efeito}.", a.processos.join(", "))
+    }
+}
+
+/// Orientação “faça no jogo” de um código do núcleo
+/// (`nvt_core::Orientacao::codigo`); `None` se o código for desconhecido.
+pub fn orientacao(codigo: &str) -> Option<&'static str> {
+    Some(match codigo {
+        "reflex_on" => "Ligue o NVIDIA Reflex em On (Ativado) nas opções de vídeo.",
+        "reflex_on_boost" => "Ligue o NVIDIA Reflex em On + Boost (Ativado + Turbo).",
+        "reduce_buffering" => {
+            "Se preferir não usar o Reflex, ative “Reduzir buffer” (Reduce Buffering)."
+        }
+        "limitador_do_jogo" => {
+            "Limite o FPS no próprio jogo, num valor que a máquina mantenha estável."
+        }
+        "sem_limite_com_reflex" => {
+            "Com o Reflex ligado, deixe o FPS sem limite no jogo: o Reflex já segura a fila."
+        }
+        "tela_cheia" => "Use tela cheia (não janela nem janela sem bordas).",
+        "vsync_jogo_off" => "Desligue o V-Sync nas opções do jogo.",
+        "vsync_driver_com_gsync" => {
+            "Desligue o V-Sync no jogo: com G-SYNC, o app já liga o V-Sync no driver."
+        }
+        "fps_max_launch_ea" => {
+            "No EA app, em Propriedades > Opções de inicialização avançadas, use +fps_max 0 \
+             com o Reflex ligado (ou um teto estável, ex.: +fps_max 200)."
+        }
+        "fps_max_padrao_baixo" => {
+            "O limite padrão é de 120 FPS: aumente-o no menu de vídeo ou use +fps_max nas \
+             opções de inicialização da Steam."
+        }
+        "one_frame_thread_lag_off" => {
+            "Desligue “One Frame Thread Lag” no menu de vídeo (menos latência, um pouco menos \
+             de FPS)."
+        }
+        "resolucao_adaptativa_off" => {
+            "Desligue a resolução adaptativa (Adaptive Resolution FPS Target = 0)."
+        }
+        "modo_performance_opcional" => {
+            "Opcional: o modo de renderização Performance tem menos latência, mas reduz a \
+             qualidade visual."
+        }
+        "fps_limit_cpu_100" => {
+            "Se a CPU fica em 100%, ative o limite de FPS do jogo (FPSLimit), como orienta a \
+             Ubisoft."
+        }
+        _ => return None,
+    })
+}
+
+/// Texto de um código de orientação; o próprio código se for desconhecido
+/// (versão mais nova do serviço), sem quebrar a tela.
+pub fn orientacao_ou_codigo(codigo: &str) -> String {
+    orientacao(codigo).map_or_else(|| codigo.to_owned(), str::to_owned)
+}
+
+/// Linha curta na coluna “O que o app fez” (ex.: “Faça no jogo: 3 itens”).
+pub fn faca_no_jogo_resumo(n: usize) -> String {
+    match n {
+        0 => String::new(),
+        1 => format!("{DETALHE_FACA_NO_JOGO}: 1 item"),
+        n => format!("{DETALHE_FACA_NO_JOGO}: {n} itens"),
     }
 }

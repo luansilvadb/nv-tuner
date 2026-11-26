@@ -2,6 +2,8 @@
 //! `docs/revisao-v0.1.md`, seção "Reverificação"). Cada teste reproduz o
 //! cenário do relatório e afirma o comportamento corrigido. Só `DriverFalso`.
 
+mod comum;
+
 use std::path::PathBuf;
 
 use nvt_core::{Alvo, Api, Preferences, Versao};
@@ -49,7 +51,7 @@ fn jogo_novo() -> JogoEntrada {
 #[test]
 fn r1_reversao_volta_ao_valor_de_antes_da_gestao() {
     let f = DriverFalso::turing();
-    let mut e = Engine::new(f.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(f.clone(), Armazem::em_memoria());
     aplicar(&mut e, &[]);
     assert!(e.armazem().snapshot_original().is_some());
     let limite = id(&e, "limite_fps");
@@ -82,7 +84,7 @@ fn r1_reversao_volta_ao_valor_de_antes_da_gestao() {
 #[test]
 fn r1_inexistente_e_preservado_entre_gravacoes() {
     let f = DriverFalso::turing();
-    let mut e = Engine::new(f.clone(), Armazem::em_memoria()).unwrap();
+    let mut e = comum::motor(f.clone(), Armazem::em_memoria());
     aplicar(&mut e, &[]);
     let limite = id(&e, "limite_fps");
     e.definir_preferencias(com_limite(&e, Some(141))).unwrap();
@@ -109,7 +111,7 @@ fn r2_perfis_criados_sobrevivem_a_perda_das_duas_copias() {
     let jogos = vec![jogo_novo()];
     let preset;
     {
-        let mut e = Engine::new(f.clone(), Armazem::abrir(&dir).unwrap()).unwrap();
+        let mut e = comum::motor(f.clone(), Armazem::abrir(&dir).unwrap());
         aplicar(&mut e, &jogos);
         aplicar(&mut e, &jogos); // segunda gravação: cria estado.anterior.json
         preset = id(&e, "dlss_preset");
@@ -120,7 +122,7 @@ fn r2_perfis_criados_sobrevivem_a_perda_das_duas_copias() {
     std::fs::write(dir.join("estado.json"), b"{ lixo").unwrap();
     std::fs::write(dir.join("estado.anterior.json"), b"lixo").unwrap();
 
-    let mut e = Engine::new(f.clone(), Armazem::abrir(&dir).unwrap()).unwrap();
+    let mut e = comum::motor(f.clone(), Armazem::abrir(&dir).unwrap());
     let codigos: Vec<_> = e.avisos().iter().map(|a| a.codigo).collect();
     assert!(
         codigos.contains(&CodigoAviso::EstadoReiniciado),
@@ -228,7 +230,7 @@ fn r10_travas_com_grafias_diferentes_sao_uma_so() {
         a.estado
             .travada(&Alvo::Jogo("lEaGuE oF lEgEnDs".into()), "dlss_preset")
     );
-    let mut e = Engine::new(DriverFalso::turing(), a).unwrap();
+    let mut e = comum::motor(DriverFalso::turing(), a);
     assert!(
         e.liberar_travada(&Alvo::Jogo("LEAGUE of legends".into()), "dlss_preset")
             .unwrap()
@@ -256,7 +258,7 @@ fn quarentena_marca_o_snapshot_novo_como_base_pos_quarentena() {
         CodigoAviso::SnapshotOriginalPerdido.como_str(),
         "snapshot_original_perdido"
     );
-    let mut e = Engine::new(f.clone(), a).unwrap();
+    let mut e = comum::motor(f.clone(), a);
     aplicar(&mut e, &[]);
     assert!(e.armazem().snapshot_original().is_some());
     // Depois da captura, o aviso continua e diz que é base pós-quarentena.

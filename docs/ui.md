@@ -113,20 +113,49 @@ temporário (junções para as pastas de launchers e um `nv-tuner` com
 foram alterados. Depois:
 GPU, arquitetura, VRAM, driver (versão e ramo), número de jogos detectados;
 capacidades relevantes (DLSS, geração de quadros, Reflex, Resizable BAR,
-VRR); status do serviço, versão e última aplicação; **conformidade**
+**taxa de atualização** atual do monitor principal em Hz arredondados
+(`refresh_mhz` 239 757 → “240 Hz”), **VRR (G-SYNC) suportado** e **VRR
+(G-SYNC) ativo**; valor não detectado aparece como “desconhecido”, nunca
+“?”); status do serviço, versão e última aplicação; **conformidade**
 (mudanças pendentes, conformes, escolhas do usuário e falhas); alertas de
 deriva (setting cujo valor no driver diverge do que foi aplicado). Botões
 **Aplicar agora** (só com serviço), **Reescanear jogos** e **Atualizar**.
 
-No modo de visualização, VRR aparece como “Não” porque o monitor ainda não
-é detectado localmente.
+Os avisos `gsync_sem_vrr` e `vrr_desligado_no_painel` (F1-15) usam textos
+próprios da UI (`textos::GSYNC_SEM_VRR`, `textos::VRR_DESLIGADO_NO_PAINEL`):
+“Seu monitor não tem G-SYNC/VRR: escolha “sem sincronismo”…” e “Ative o
+G-SYNC em Painel de Controle NVIDIA > Configurar G-SYNC…”. No modo de
+visualização eles são calculados localmente a partir de `plano.avisos`
+(`local::aviso_do_plano`, igual ao serviço).
+
+### Faixa de jogo aberto (adiamento, IPC v4)
+
+Com `estado.adiamento` presente (jogo ou anticheat vigiado em execução), uma
+faixa azul **Jogo aberto** aparece no topo de todas as telas, com os
+processos e a ação pendente (`textos::adiamento`):
+
+| Ação | Texto |
+|---|---|
+| `aplicar_plano` | Jogo aberto (cs2.exe): as alterações serão aplicadas quando você fechar o jogo. |
+| `tratar_deriva` | Jogo aberto (cs2.exe): a mudança detectada no driver será tratada quando você fechar o jogo. |
+| `restaurar_original` | Jogo aberto (cs2.exe): os valores originais serão restaurados quando você fechar o jogo. |
+
+As respostas adiadas de **Aplicar agora** (`Plano.adiada`) e **Restaurar
+original** (`Resposta::Restauracao { adiada }`) viram `Desfecho::Adiado` e
+mostram essa mesma mensagem (tipo `TipoMensagem::Adiada`, em azul), **não**
+erro nem “Plano aplicado”. Se a faixa do estado já diz o mesmo, a mensagem
+não é repetida.
 
 ### Jogos (`jogos.png`)
 
 Tabela com jogo, perfil do driver usado (e a origem: perfil da NVIDIA,
 existente, criado pelo app ou a criar), launcher, API gráfica, versão do
 DLSS, Reflex, anticheat de kernel e **O que o app fez**: um texto curto
-(`textos::resumo_curto`) e “herda N ajustes globais”. Exemplos:
+(`textos::resumo_curto`), “herda N ajustes globais” e, se o jogo tiver
+orientações, “Faça no jogo: N itens”. Jogo da base curada de competitivos
+(`jogo.competitivo`) ganha o selo **competitivo** ao lado do nome; jogo em
+execução na última varredura (`jogo.em_execucao`), o selo discreto
+**aberto**. Exemplos:
 
 | Situação | Texto |
 |---|---|
@@ -139,14 +168,33 @@ DLSS, Reflex, anticheat de kernel e **O que o app fez**: um texto curto
 
 Sem regra aplicada, o motivo mostrado é o mais relevante entre as regras não
 aplicadas (experimental > escolha sua > teto > sem Tensor Cores > arquitetura
-> jogo sem DLSS > fato desconhecido > conflito > condição genérica).
+> jogo sem DLSS > fato desconhecido > conflito, VRR inativo ou jogo com
+Reflex > condição genérica). Os motivos `vrr_inativo` (“G-SYNC (VRR) não
+está ativo”, com a instrução do Painel NVIDIA no texto longo) e
+`jogo_com_reflex` (“o jogo tem Reflex, que já cuida disso”) têm textos
+próprios.
 
 Clicar na linha expande a explicação completa: **Regras aplicadas no perfil
 do jogo** (cada setting com valor e situação no plano), **Regras não
 aplicadas** com o motivo por extenso (`textos::motivo_longo`, ex.: “GPU Ada
 Lovelace: o modelo padrão do DLSS já roda com FP8, forçar outro preset não
-ganharia desempenho.”) e **Herdado do perfil global** (as settings). O modo
-de visualização mostra o mesmo. Abaixo da tabela, se houver, **Ignorados
+ganharia desempenho.”), **Herdado do perfil global** (as settings) e, por
+fim, **Faça no jogo**: as orientações (`jogo.orientacoes`, já filtradas pelo
+sincronismo no núcleo) traduzidas por `textos::orientacao`, uma frase curta
+e acionável por código, ex.:
+
+| Código | Texto |
+|---|---|
+| `reflex_on_boost` | Ligue o NVIDIA Reflex em On + Boost (Ativado + Turbo). |
+| `limitador_do_jogo` | Limite o FPS no próprio jogo, num valor que a máquina mantenha estável. |
+| `vsync_driver_com_gsync` | Desligue o V-Sync no jogo: com G-SYNC, o app já liga o V-Sync no driver. |
+| `fps_max_padrao_baixo` | O limite padrão é de 120 FPS: aumente-o no menu de vídeo ou use +fps_max nas opções de inicialização da Steam. |
+
+Todo código de `nvt_core::Orientacao::TODAS` tem texto (teste); um código
+desconhecido (serviço mais novo) aparece como o próprio código, sem quebrar a
+tela. O modo de visualização mostra o mesmo (`local::jogos_ipc` preenche
+`competitivo`, `em_execucao`, `orientacoes` e os fatos curados como o
+serviço). Abaixo da tabela, se houver, **Ignorados
 pelo plano**: jogos deixados de fora por um problema só deles, com executável
 e motivo.
 
@@ -170,7 +218,12 @@ setting ao automático. Por fim, se houver, **Ignorados pelo plano**.
 
 ### Preferências (`preferencias.png`)
 
-- **Sincronismo**: Sem sincronização / G-SYNC / V-Sync, com explicação.
+- **Sincronismo**: Sem sincronização / G-SYNC / V-Sync, com explicação. Com
+  G-SYNC no rascunho, um alerta amarelo ao lado da escolha
+  (`EstadoUi::aviso_sincronismo`): monitor sem VRR (`vrr.possivel = false`)
+  → texto de `gsync_sem_vrr`; VRR possível e desligado → texto de
+  `vrr_desligado_no_painel`. Com o VRR desconhecido, vale o aviso que o
+  serviço mandou para as preferências em vigor.
 - **Qualidade visual**: Desempenho / Equilibrado / Fidelidade, com a
   explicação de cada teto de impacto visual.
 - **Limite de FPS** opcional (20 a 1000): interruptor, ajuste fino (±1,
@@ -254,4 +307,10 @@ restauração; alerta de versão incompatível até reconectar; textos de
 reversão iguais aos do serviço; leitura local do estado (válido,
 corrompido com e sem cópia, versão não suportada, snapshot vazio, erro de
 leitura) sem escrever; reversões e jogos ignorados calculados localmente
-sem nenhuma gravação.
+sem nenhuma gravação. Fase 1: todo código de orientação tem texto (e o
+desconhecido não quebra); jogo local da base curada com `competitivo`, fatos
+curados e orientações; respostas adiadas de Aplicar agora e Restaurar
+original viram mensagem de adiamento, não erro; faixa de adiamento vinda do
+estado sem repetir a mensagem; aviso de sincronismo conforme rascunho e VRR;
+avisos do plano iguais aos do serviço; refresh em Hz e “desconhecido”;
+textos próprios de VRR inativo e jogo com Reflex.

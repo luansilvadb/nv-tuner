@@ -2,9 +2,11 @@
 //! reparse points (link simbólico/junção) no lugar de `estado.json` e
 //! `snapshot-original.json`.
 
+mod comum;
+
 use std::path::{Path, PathBuf};
 
-use nvt_engine::{Armazem, CodigoAviso, DriverFalso, DriverStore, Engine, ErroEngine, NivelAviso};
+use nvt_engine::{Armazem, CodigoAviso, DriverFalso, DriverStore, ErroEngine, NivelAviso};
 
 fn dir_teste(nome: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("nvt-armazem-{nome}-{}", std::process::id()));
@@ -108,7 +110,7 @@ fn modo_normal_recupera_e_guarda_o_corrompido() {
         [CodigoAviso::EstadoCorrompido, CodigoAviso::EstadoReiniciado]
     );
     assert!(a.snapshot_original().is_some(), "snapshot preservado");
-    let e = Engine::new(DriverFalso::turing(), a).unwrap();
+    let e = comum::motor(DriverFalso::turing(), a);
     assert_eq!(e.avisos().len(), 2, "o motor expõe os mesmos avisos");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -306,7 +308,7 @@ fn motor_somente_leitura_recusa_gravar_antes_do_driver() {
     // Snapshot já existe: a recusa não depende de guardar o snapshot.
     let dir = preparar_estado("motor-leitura");
     let d = DriverFalso::turing();
-    let mut e = Engine::new(d.clone(), Armazem::abrir_somente_leitura(&dir).unwrap()).unwrap();
+    let mut e = comum::motor(d.clone(), Armazem::abrir_somente_leitura(&dir).unwrap());
     let antes = conteudo(&dir);
     let g = d.gravacoes();
     let mut j = nvt_engine::JogoEntrada::new("Jogo", "jogo.exe");

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use nvt_ipc::{ErroIpc, Requisicao, Resposta};
 
 use crate::local;
-use crate::modelo::{Comando, Dados, Evento, grupos_do_plano};
+use crate::modelo::{Comando, Dados, Desfecho, Evento, grupos_do_plano};
 use crate::textos;
 
 /// Intervalo entre tentativas de conexão no modo de visualização.
@@ -177,13 +177,13 @@ impl Trabalhador {
             Comando::Atualizar => {
                 self.enviar(Evento::Ocupado(c.clone()));
                 self.atualizar(true);
-                self.concluir(c, Ok(()));
+                self.concluir(c, Ok(Desfecho::Feito));
                 return;
             }
             Comando::Reescanear if !self.servico => {
                 self.enviar(Evento::Ocupado(c.clone()));
                 self.modo_visualizacao();
-                self.concluir(c, Ok(()));
+                self.concluir(c, Ok(Desfecho::Feito));
                 return;
             }
             _ => {}
@@ -215,7 +215,7 @@ impl Trabalhador {
         }
         self.enviar(Evento::Ocupado(c.clone()));
         let resultado = match self.requisitar(&req) {
-            Ok(_) => Ok(()),
+            Ok(r) => Ok(Desfecho::da_resposta(&r)),
             Err(Falha::Recusa(m)) | Err(Falha::Comunicacao(m)) => Err(m),
             Err(Falha::Ausente(m)) => Err(m.unwrap_or_else(|| {
                 textos::erro_comunicacao(&ErroIpc::ServicoIndisponivel.to_string())
@@ -226,7 +226,7 @@ impl Trabalhador {
         self.concluir(c, resultado);
     }
 
-    fn concluir(&self, comando: Comando, resultado: Result<(), String>) {
+    fn concluir(&self, comando: Comando, resultado: Result<Desfecho, String>) {
         self.enviar(Evento::Concluido { comando, resultado });
     }
 }

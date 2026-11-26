@@ -174,12 +174,21 @@ pub fn calcular() -> Result<Dados, String> {
     if !dados.ignorados.is_empty() {
         avisos.push(Aviso::jogos_ignorados(&dados.ignorados, agora));
     }
+    avisos.extend(diff.plano.avisos.iter().map(|a| aviso_do_plano(*a, agora)));
     nvt_ipc::ordenar_avisos(&mut avisos);
     if let Some(e) = &mut dados.estado {
         e.avisos = avisos;
     }
     dados.jogos = jogos_ipc(&engine, &diff);
     Ok(dados)
+}
+
+/// Aviso do plano (F1-15) no formato do protocolo, como no serviço.
+pub fn aviso_do_plano(a: nvt_core::AvisoPlano, quando: u64) -> Aviso {
+    match a {
+        nvt_core::AvisoPlano::GsyncSemVrr => Aviso::gsync_sem_vrr(quando),
+        nvt_core::AvisoPlano::VrrDesligadoNoPainel => Aviso::vrr_desligado_no_painel(quando),
+    }
 }
 
 fn agora_unix() -> u64 {
@@ -717,6 +726,21 @@ pub fn jogos_ipc<S: DriverStore>(e: &Engine<S>, diff: &Diff) -> Vec<Jogo> {
             }
         }
         M::FatoDesconhecido { fato } => MotivoNaoAplicada::FatoDesconhecido { fato: fato.clone() },
+        // Mesmos motivos específicos do serviço (`nvt-service::nucleo::jogos_ipc`).
+        M::CondicaoNaoAtendida {
+            condicao,
+            esperado,
+            encontrado,
+        } if condicao == "vrr_ativo" && esperado == "true" && encontrado == "false" => {
+            MotivoNaoAplicada::VrrInativo
+        }
+        M::CondicaoNaoAtendida {
+            condicao,
+            esperado,
+            encontrado,
+        } if condicao == "jogo_reflex" && esperado == "false" && encontrado == "true" => {
+            MotivoNaoAplicada::JogoComReflex
+        }
         M::CondicaoNaoAtendida {
             condicao,
             esperado,
@@ -727,6 +751,7 @@ pub fn jogos_ipc<S: DriverStore>(e: &Engine<S>, diff: &Diff) -> Vec<Jogo> {
             encontrado: encontrado.clone(),
         },
     };
+    let base = e.base_jogos();
     diff.jogos
         .iter()
         .map(|j| {
@@ -736,6 +761,7 @@ pub fn jogos_ipc<S: DriverStore>(e: &Engine<S>, diff: &Diff) -> Vec<Jogo> {
                 .get(&j.perfil)
                 .cloned()
                 .unwrap_or_default();
+            let curado = nvt_engine::casar_na_base(base, &j.entrada);
             Jogo {
                 nome: j.entrada.nome.clone(),
                 perfil: j.perfil.clone(),
@@ -754,12 +780,17 @@ pub fn jogos_ipc<S: DriverStore>(e: &Engine<S>, diff: &Diff) -> Vec<Jogo> {
                         v.to_string()
                     }
                 }),
-                reflex: j.entrada.reflex,
-                anticheat_kernel: j.entrada.anticheat_kernel,
-                // IPC v4: campos ainda não usados pela UI (preenchidos na UI da Fase 1).
-                competitivo: None,
-                em_execucao: false,
-                orientacoes: Vec::new(),
+                // Jogo da base curada: Reflex e anticheat vêm da base (como no serviço).
+                reflex: curado.map_or(j.entrada.reflex, |c| Some(c.reflex)),
+                anticheat_kernel: curado
+                    .map_or(j.entrada.anticheat_kernel, |c| Some(c.anticheat_kernel)),
+                competitivo: curado.map(|c| c.id.as_str().to_owned()),
+                em_execucao: j.entrada.em_execucao,
+                orientacoes: r
+                    .orientacoes
+                    .iter()
+                    .map(|o| o.codigo().to_owned())
+                    .collect(),
                 resumo: ResumoJogo {
                     aplicadas: r
                         .aplicadas
@@ -1088,7 +1119,35 @@ mod testes {
             ENERGIA_TXT
         );
         assert!(!w.resumo.herda_do_global.is_empty());
+        // Fase 1: jogo da base curada sai com o id, os fatos curados e as
+        // orientações “faça no jogo”, todas com texto na UI.
+        assert_eq!(w.competitivo, None);
+        assert!(w.orientacoes.is_empty());
+        let l = jogos
+            .iter()
+            .find(|j| j.nome == "League of Legends")
+            .unwrap();
+        assert_eq!(l.competitivo.as_deref(), Some("lol"));
+        assert_eq!(l.reflex, Some(false), "fato da base curada");
+        assert!(!l.em_execucao);
+        assert!(!l.orientacoes.is_empty());
+        assert!(
+            l.orientacoes
+                .iter()
+                .all(|o| textos::orientacao(o).is_some())
+        );
         assert_eq!((falso.gravacoes(), falso.salvamentos()), (0, 0));
+    }
+
+    #[test]
+    fn avisos_do_plano_iguais_aos_do_servico() {
+        let a = aviso_do_plano(nvt_core::AvisoPlano::GsyncSemVrr, 9);
+        assert_eq!(a.codigo, codigo_aviso::GSYNC_SEM_VRR);
+        assert_eq!(a.quando_unix, 9);
+        let b = aviso_do_plano(nvt_core::AvisoPlano::VrrDesligadoNoPainel, 9);
+        assert_eq!(b.codigo, codigo_aviso::VRR_DESLIGADO_NO_PAINEL);
+        assert_eq!(textos::mensagem_aviso(&a), textos::GSYNC_SEM_VRR);
+        assert_eq!(textos::mensagem_aviso(&b), textos::VRR_DESLIGADO_NO_PAINEL);
     }
 
     #[test]

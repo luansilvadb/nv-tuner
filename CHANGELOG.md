@@ -9,6 +9,22 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
+*Fase competitiva 1: driver e fatos dos jogos*
+
+### Adicionado
+
+- **Base curada de 14 jogos competitivos** (Counter-Strike 2, VALORANT, League of Legends, Fortnite, Apex Legends, Overwatch 2, Rainbow Six Siege, Call of Duty, Rocket League, PUBG: Battlegrounds, Dota 2, Marvel Rivals, Deadlock e THE FINALS), com Reflex, limitador próprio e anticheat de cada um. Esses fatos valem mais que os lidos do disco.
+- **Orientações “Faça no jogo”** por jogo da base (ex.: Reflex em *On + Boost*, limitador do jogo, tela cheia), enviadas no plano. O app não as aplica: são ajustes para você fazer no menu do jogo.
+- **Taxa de atualização e VRR (G-SYNC)** do monitor principal lidos pela NVAPI, com os avisos “G-SYNC sem VRR” e “VRR desligado no painel”.
+- **Gravação adiada com jogo aberto.** Enquanto um jogo detectado, um jogo da base ou um anticheat (EasyAntiCheat, BattlEye) estiver em execução, nada é gravado no driver, nem a reaplicação por deriva nem o **Restaurar original**: a ação fica pendente e roda quando o jogo fecha. A detecção usa só a lista de processos, por nome, sem abrir os processos.
+- Regras novas de G-SYNC: limite de FPS logo abaixo da taxa do monitor (ex.: 224 FPS a 240 Hz) e, em jogos competitivos com Reflex, sem limite do driver. Entram como **experimentais**: aparecem como sugestão e não têm efeito até a validação em laboratório.
+
+### Alterado
+
+- **Energia em desempenho máximo saiu do perfil global** e passa a valer só no perfil de cada jogo competitivo. O perfil global volta ao valor que tinha antes do nv-tuner.
+- Os executáveis dos jogos são lidos com compartilhamento total e sem mapeamento, e a pasta de um jogo em execução não é lida (valem os dados da varredura anterior).
+- Protocolo entre interface e serviço atualizado para a **v4**: interface e serviço precisam ser da mesma versão (o MSI instala os dois juntos).
+
 ## [0.0.2] - 2026-11-25
 
 *O que o app fez em cada jogo*

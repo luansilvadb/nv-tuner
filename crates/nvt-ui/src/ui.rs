@@ -151,9 +151,15 @@ impl Janela {
         if let Some(e) = &self.ui.erro_local {
             v = v.child(Alert::error("erro-local", e.clone()));
         }
-        if let Some((tipo, texto)) = &self.ui.mensagem {
+        if let Some(faixa) = self.ui.faixa_adiamento() {
+            v = v.child(Alert::info("faixa-adiamento", faixa).title(t::ADIAMENTO_TITULO));
+        }
+        if let Some((tipo, texto)) = self.ui.mensagem_visivel() {
             let a = match tipo {
                 TipoMensagem::Sucesso => Alert::success("mensagem", texto.clone()),
+                TipoMensagem::Adiada => {
+                    Alert::info("mensagem", texto.clone()).title(t::ADIAMENTO_TITULO)
+                }
                 TipoMensagem::Erro => Alert::error("mensagem", texto.clone()),
             };
             v = v.child(a.on_close(cx.listener(|this, _, _, cx| {
@@ -240,11 +246,14 @@ impl Janela {
                 .justify_between()
                 .text_sm()
                 .child(div().text_color(tema.muted_foreground).child(nome))
-                .child(match v {
-                    Some(true) => Tag::success().child(t::SIM),
-                    Some(false) => Tag::secondary().child(t::NAO),
-                    None => Tag::secondary().child("?"),
-                })
+                .child(
+                    match v {
+                        Some(true) => Tag::success(),
+                        Some(false) => Tag::secondary(),
+                        None => Tag::secondary().outline(),
+                    }
+                    .child(t::sim_nao_desconhecido(v)),
+                )
         };
         let capacidades = cartao(
             t::SECAO_CAPACIDADES,
@@ -254,7 +263,13 @@ impl Janela {
                 .child(cap(t::CAP_FG, caps.map(|c| c.geracao_quadros)))
                 .child(cap(t::CAP_REFLEX, caps.map(|c| c.reflex)))
                 .child(cap(t::CAP_REBAR, caps.map(|c| c.rebar)))
-                .child(cap(t::CAP_VRR, caps.and_then(|c| c.vrr.ativo))),
+                .child(linha(
+                    t::CAP_REFRESH,
+                    t::refresh(caps.and_then(|c| c.refresh_mhz)),
+                    &tema,
+                ))
+                .child(cap(t::CAP_VRR_POSSIVEL, caps.and_then(|c| c.vrr.possivel)))
+                .child(cap(t::CAP_VRR_ATIVO, caps.and_then(|c| c.vrr.ativo))),
             &tema,
         );
 
@@ -478,6 +493,7 @@ impl Janela {
             let aberto = self.expandidos.contains(&j.perfil) || self.expandidos.contains(&j.nome);
             let (perfil, nome) = (j.perfil.clone(), j.nome.clone());
             let herda = t::herda_globais(j.resumo.herda_do_global.len());
+            let faca = t::faca_no_jogo_resumo(j.orientacoes.len());
             let linha =
                 h_flex()
                     .id(("jogo", i))
@@ -508,7 +524,23 @@ impl Janela {
                         v_flex()
                             .flex_1()
                             .min_w(px(160.))
-                            .child(div().text_sm().font_semibold().child(j.nome.clone()))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .flex_wrap()
+                                    .child(div().text_sm().font_semibold().child(j.nome.clone()))
+                                    .when(j.competitivo.is_some(), |d| {
+                                        d.child(Tag::info().small().child(t::SELO_COMPETITIVO))
+                                    })
+                                    .when(j.em_execucao, |d| {
+                                        d.child(
+                                            Tag::secondary()
+                                                .small()
+                                                .outline()
+                                                .child(t::SELO_ABERTO),
+                                        )
+                                    }),
+                            )
                             .child(div().text_xs().text_color(tema.muted_foreground).child(
                                 format!("“{}” · {}", j.perfil, t::origem_perfil(j.origem_perfil)),
                             )),
@@ -543,6 +575,9 @@ impl Janela {
                             )
                             .when(!herda.is_empty(), |d| {
                                 d.child(div().text_color(tema.muted_foreground).child(herda))
+                            })
+                            .when(!faca.is_empty(), |d| {
+                                d.child(div().text_color(tema.info).child(faca))
                             }),
                     );
             v_flex()
@@ -660,6 +695,23 @@ impl Janela {
                 ))
             },
         );
+        let faca_no_jogo = (!j.orientacoes.is_empty()).then(|| {
+            v_flex()
+                .gap_1()
+                .child(titulo(t::DETALHE_FACA_NO_JOGO))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(tema.muted_foreground)
+                        .child(t::FACA_NO_JOGO_EXPLICACAO),
+                )
+                .children(j.orientacoes.iter().map(|o| {
+                    div()
+                        .text_sm()
+                        .pl_3()
+                        .child(format!("• {}", t::orientacao_ou_codigo(o)))
+                }))
+        });
         v_flex()
             .gap_3()
             .ml(px(26.))
@@ -673,6 +725,7 @@ impl Janela {
             .child(aplicadas)
             .child(nao_aplicadas)
             .child(herda)
+            .children(faca_no_jogo)
     }
 
     // -----------------------------------------------------------------------
@@ -789,7 +842,10 @@ impl Janela {
                             cx.notify();
                         })),
                 )
-                .child(explicacao(t::explicacao_sincronismo(r.sincronismo), &tema)),
+                .child(explicacao(t::explicacao_sincronismo(r.sincronismo), &tema))
+                .when_some(self.ui.aviso_sincronismo(), |v, texto| {
+                    v.child(Alert::warning("aviso-sincronismo", texto))
+                }),
             &tema,
         );
         let qualidade =
