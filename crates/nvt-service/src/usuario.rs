@@ -317,6 +317,7 @@ impl Coordenador {
                 operacao,
                 revisao,
                 resultados,
+                ..
             } => req.validar().map_err(invalida).and_then(|()| {
                 self.relatar(
                     identidade,
@@ -419,6 +420,7 @@ impl Coordenador {
                 geracao_restauracao: geracao,
                 tarefa: None,
                 processos_vigiados: self.processos.clone(),
+            tarefa_jogo: None,
             }));
         }
         if restaurada > s.restaurada
@@ -498,6 +500,7 @@ impl Coordenador {
             geracao_restauracao: geracao,
             tarefa,
             processos_vigiados: self.processos.clone(),
+            tarefa_jogo: None,
         }))
     }
 

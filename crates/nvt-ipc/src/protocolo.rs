@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config_jogo::{ConfigJogoUi, DestinoJogoIpc, ResultadoJogo};
+
 use crate::usuario::{
     Camada, Diagnostico, EstadoAgente, EstadoExperimental, EstadoTarefa, FatosUsuario,
     OperacaoUsuario, PlanoAgente, ResultadoUsuario, ResumoSistema, SettingUsuario,
@@ -73,6 +75,9 @@ pub enum Requisicao {
         operacao: OperacaoUsuario,
         revisao: u64,
         resultados: Vec<ResultadoUsuario>,
+        /// Resultados das ações de arquivo de jogo (v7).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        resultados_jogo: Vec<ResultadoJogo>,
     },
     DefinirAceiteExperimental {
         regra: String,
@@ -82,6 +87,10 @@ pub enum Requisicao {
         destino: SettingUsuario,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         alvo_tela: Option<String>,
+    },
+    /// Reversão individual de uma chave de arquivo de jogo (v7).
+    ReverterConfigJogo {
+        destino: DestinoJogoIpc,
     },
     /// O usuário viu o aviso "Atualizado para a vX.Y.Z" (v6, U-47/U-52).
     /// A identidade vem só do token do chamador; `versao` diferente de
@@ -126,7 +135,12 @@ impl Requisicao {
                 Ok(())
             }
             Self::AgenteConsultar { fatos, .. } => fatos.validar(),
-            Self::AgenteRelatar { resultados, .. } => {
+            Self::AgenteRelatar {
+                resultados,
+                resultados_jogo,
+                ..
+            } => {
+                crate::config_jogo::validar_resultados_jogo(resultados_jogo)?;
                 if resultados.len() > 256 {
                     return Err("muitos resultados da tarefa".into());
                 }
@@ -157,6 +171,7 @@ impl Requisicao {
                 }
                 Ok(())
             }
+            Self::ReverterConfigJogo { destino } => destino.validar(),
             Self::MarcarAtualizacaoVista { versao } => validar_versao(versao),
             _ => Ok(()),
         }
@@ -783,6 +798,9 @@ pub struct Jogo {
     /// (ex.: `"reflex_on_boost"`); a UI traduz (v4).
     pub orientacoes: Vec<String>,
     pub resumo: ResumoJogo,
+    /// Arquivo do jogo: o que o app fez (v7); `None` = jogo sem `[[arquivo]]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_jogo: Option<ConfigJogoUi>,
 }
 
 /// De onde vem o perfil do driver de um jogo.
@@ -862,6 +880,24 @@ pub enum MotivoNaoAplicada {
     VrrInativo,
     /// A regra é para jogo sem Reflex e o jogo tem Reflex (`jogo_reflex`; v4).
     JogoComReflex,
+    /// Política do jogo na base curada impede a escrita (`orientar`/`proibido`; v7).
+    ConfigPolitica { politica: String },
+    /// Processos que precisam estar fechados para a escrita (ex.: `steam.exe`; v7).
+    JanelaFechadaExigida { processos: Vec<String> },
+    /// Arquivo efetivo sincronizado na nuvem (F3-09; v7).
+    ArquivoNaNuvem,
+    /// Arquivo marcado como somente leitura (F3-06; v7).
+    ArquivoSomenteLeitura,
+    /// Codificação ou sintaxe não reconhecida, ou chave ausente (v7).
+    FormatoInesperado,
+    /// O jogo mudou a chave depois da escrita do app (F3-07; v7).
+    ArquivoAlteradoPeloJogo,
+    /// Várias contas empatadas (F3-12; v7).
+    ContaAmbigua,
+    /// Arquivo não encontrado na instância resolvida (v7).
+    ArquivoAusente,
+    /// Link ou junção no caminho: recusado (v7).
+    ReparseRecusado,
 }
 
 /// Setting gerida pelo app que o plano atual não quer mais (preferência
@@ -1015,6 +1051,7 @@ mod testes {
         use crate::Fato;
         Requisicao::AgenteConsultar {
             fatos: FatosUsuario {
+                config_jogo: vec![],
                 tela: Fato::Desconhecido,
                 mouse: Fato::Desconhecido,
                 swap_effect_upgrade: Fato::Ausente,
@@ -1058,6 +1095,7 @@ mod testes {
             Requisicao::ReescanearJogos,
             consulta(),
             Requisicao::AgenteRelatar {
+                resultados_jogo: vec![],
                 id_tarefa: 1,
                 operacao: OperacaoUsuario::Aplicar,
                 revisao: 7,
@@ -1085,6 +1123,9 @@ mod testes {
                     alvo: "monitor-estavel".into(),
                 },
             },
+            Requisicao::ReverterConfigJogo {
+                destino: crate::config_jogo::testes::destino(),
+            },
             Requisicao::MarcarAtualizacaoVista {
                 versao: "1.4.0".into(),
             },
@@ -1104,6 +1145,7 @@ mod testes {
                 | Requisicao::AgenteRelatar { .. }
                 | Requisicao::DefinirAceiteExperimental { .. }
                 | Requisicao::ReverterAjusteUsuario { .. }
+                | Requisicao::ReverterConfigJogo { .. }
                 | Requisicao::MarcarAtualizacaoVista { .. } => {}
             }
         }
@@ -1138,6 +1180,19 @@ mod testes {
             },
             MotivoNaoAplicada::VrrInativo,
             MotivoNaoAplicada::JogoComReflex,
+            MotivoNaoAplicada::ConfigPolitica {
+                politica: "orientar".into(),
+            },
+            MotivoNaoAplicada::JanelaFechadaExigida {
+                processos: vec!["steam.exe".into()],
+            },
+            MotivoNaoAplicada::ArquivoNaNuvem,
+            MotivoNaoAplicada::ArquivoSomenteLeitura,
+            MotivoNaoAplicada::FormatoInesperado,
+            MotivoNaoAplicada::ArquivoAlteradoPeloJogo,
+            MotivoNaoAplicada::ContaAmbigua,
+            MotivoNaoAplicada::ArquivoAusente,
+            MotivoNaoAplicada::ReparseRecusado,
         ];
         for m in &v {
             match m {
@@ -1151,7 +1206,16 @@ mod testes {
                 | MotivoNaoAplicada::FatoDesconhecido { .. }
                 | MotivoNaoAplicada::CondicaoNaoAtendida { .. }
                 | MotivoNaoAplicada::VrrInativo
-                | MotivoNaoAplicada::JogoComReflex => {}
+                | MotivoNaoAplicada::JogoComReflex
+                | MotivoNaoAplicada::ConfigPolitica { .. }
+                | MotivoNaoAplicada::JanelaFechadaExigida { .. }
+                | MotivoNaoAplicada::ArquivoNaNuvem
+                | MotivoNaoAplicada::ArquivoSomenteLeitura
+                | MotivoNaoAplicada::FormatoInesperado
+                | MotivoNaoAplicada::ArquivoAlteradoPeloJogo
+                | MotivoNaoAplicada::ContaAmbigua
+                | MotivoNaoAplicada::ArquivoAusente
+                | MotivoNaoAplicada::ReparseRecusado => {}
             }
         }
         v
@@ -1159,6 +1223,7 @@ mod testes {
 
     fn jogo_exemplo() -> Jogo {
         Jogo {
+            config_jogo: None,
             nome: "WARDOGS".into(),
             perfil: "WARDOGS".into(),
             origem_perfil: OrigemPerfil::Usuario,
@@ -1396,6 +1461,7 @@ mod testes {
                 },
             },
             Resposta::PlanoAgente(PlanoAgente {
+                tarefa_jogo: None,
                 revisao: 7,
                 geracao_restauracao: 2,
                 tarefa: Some(crate::TarefaUsuario {
@@ -1564,9 +1630,12 @@ mod testes {
     }
 
     #[test]
-    fn mensagens_da_v4_e_v5_sao_recusadas() {
+    fn mensagens_da_v4_v5_e_v6_sao_recusadas() {
         for (versao, payload) in [
-            (4, &br#"{"versao":4,"corpo":{"tipo":"obter_estado"}}"#[..]),
+            (6, &br#"{"versao":6,"corpo":{"tipo":"obter_estado"}}"#[..]),
+            (6, br#"{"versao":6,"corpo":{"tipo":"ok"}}"#),
+            (6, br#"{"versao":6,"corpo":{"tipo":"formatar_disco"}}"#),
+            (4, br#"{"versao":4,"corpo":{"tipo":"obter_estado"}}"#),
             (4, br#"{"versao":4,"corpo":{"tipo":"ok"}}"#),
             (5, br#"{"versao":5,"corpo":{"tipo":"obter_estado"}}"#),
             (5, br#"{"versao":5,"corpo":{"tipo":"ok"}}"#),
@@ -1577,7 +1646,7 @@ mod testes {
                 decodificar::<Requisicao>(payload),
                 Err(crate::ErroIpc::VersaoIncompativel {
                     recebida,
-                    esperada: 6
+                    esperada: 7
                 }) if recebida == versao
             ));
             assert!(matches!(
@@ -1786,10 +1855,10 @@ mod testes {
         .unwrap();
         assert_eq!(
             json,
-            r#"{"versao":6,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
+            r#"{"versao":7,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
         );
         let json = String::from_utf8(codificar(&Resposta::Ok).unwrap()).unwrap();
-        assert_eq!(json, r#"{"versao":6,"corpo":{"tipo":"ok"}}"#);
+        assert_eq!(json, r#"{"versao":7,"corpo":{"tipo":"ok"}}"#);
     }
 
     #[test]
@@ -1908,6 +1977,7 @@ mod testes {
                 },
             },
             Requisicao::AgenteRelatar {
+                resultados_jogo: vec![],
                 id_tarefa: 1,
                 operacao: OperacaoUsuario::Aplicar,
                 revisao: 7,

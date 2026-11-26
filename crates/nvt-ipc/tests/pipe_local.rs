@@ -257,6 +257,10 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
         ),
         (
             br#"{"versao":6,"corpo":{"tipo":"executar","cmd":"x"}}"#.as_slice(),
+            CodigoErro::VersaoIncompativel,
+        ),
+        (
+            br#"{"versao":7,"corpo":{"tipo":"executar","cmd":"x"}}"#.as_slice(),
             CodigoErro::MensagemInvalida,
         ),
     ] {
@@ -266,7 +270,7 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
         assert!(matches!(r, Resposta::Erro { codigo: recebido, .. } if recebido == codigo));
     }
     assert_eq!(s.pedir(&Requisicao::ObterPlano), Resposta::Ok);
-    assert_eq!(PROTOCOL_VERSION, 6);
+    assert_eq!(PROTOCOL_VERSION, 7);
     s.parar();
 }
 
@@ -499,6 +503,7 @@ fn consulta_agente() -> Requisicao {
     use nvt_ipc::{Fato, FatosUsuario};
     Requisicao::AgenteConsultar {
         fatos: FatosUsuario {
+            config_jogo: vec![],
             tela: Fato::Desconhecido,
             mouse: Fato::Desconhecido,
             swap_effect_upgrade: Fato::Ausente,
@@ -649,6 +654,7 @@ fn ui_intercalada_com_dois_agentes_em_conexoes_curtas() {
             assert!(identidade.sid.starts_with("S-1-"));
             match req {
                 Requisicao::AgenteConsultar { .. } => Resposta::PlanoAgente(PlanoAgente {
+                    tarefa_jogo: None,
                     revisao: 7,
                     geracao_restauracao: 2,
                     tarefa: None,
@@ -679,6 +685,7 @@ fn ui_intercalada_com_dois_agentes_em_conexoes_curtas() {
                 continuar.recv_timeout(Duration::from_secs(10)).unwrap();
                 assert_eq!(
                     pedir(Requisicao::AgenteRelatar {
+                        resultados_jogo: vec![],
                         id_tarefa,
                         operacao: OperacaoUsuario::Aplicar,
                         revisao: plano.revisao,

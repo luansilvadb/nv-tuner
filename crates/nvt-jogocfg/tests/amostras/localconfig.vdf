@@ -1,0 +1,33 @@
+"UserLocalConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				// comentário sintético
+				"apps"
+				{
+					"730"
+					{
+						"LastPlayed"		"1700000000"
+						"LaunchOptions"		"-novid -console +exec \"auto.cfg\""
+					}
+					"570"
+					{
+						"LaunchOptions"		""
+					}
+					"1422450"
+					{
+						"LastPlayed"		"1700000001"
+					}
+				}
+			}
+		}
+	}
+	"friends"
+	{
+		"PersonaName"		"JogadorFicticio"
+	}
+}

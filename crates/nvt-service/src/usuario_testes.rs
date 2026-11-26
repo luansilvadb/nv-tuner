@@ -39,6 +39,7 @@ fn cliente(sid: &str, sessao: u32) -> IdentidadeCliente {
 
 fn fatos(captura: u32) -> nvt_ipc::FatosUsuario {
     nvt_ipc::FatosUsuario {
+        config_jogo: vec![],
         tela: Fato::Desconhecido,
         mouse: Fato::Desconhecido,
         swap_effect_upgrade: Fato::Desconhecido,
@@ -85,6 +86,7 @@ fn relato(
         revisao,
     } = tarefa.tarefa;
     Requisicao::AgenteRelatar {
+        resultados_jogo: vec![],
         id_tarefa,
         operacao,
         revisao,
@@ -391,6 +393,7 @@ const REGRAS_USUARIO: [&str; 4] = [
 
 fn fatos_base() -> nvt_ipc::FatosUsuario {
     nvt_ipc::FatosUsuario {
+        config_jogo: vec![],
         tela: Fato::Conhecido(nvt_ipc::FatoTela {
             alvo: "monitor".into(),
             atual: nvt_ipc::RefreshRacional {
@@ -512,6 +515,7 @@ fn relatar(
         revisao,
     } = t.tarefa;
     let req = Requisicao::AgenteRelatar {
+        resultados_jogo: vec![],
         id_tarefa,
         operacao,
         revisao,

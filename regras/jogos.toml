@@ -11,9 +11,17 @@
 #   config               edicao | opcoes_inicializacao | orientar | proibido (fase 3)
 #   orientacoes          códigos de §7.3 (o texto fica na UI)
 #
+# Schema 2 (fase 3, docs/spec/fase3-plano.md): [[arquivo]] lista os arquivos de
+# configuração do usuário que o agente pode editar, com cada chave e os valores
+# ou a faixa do menu (F3-02). Chave `a_confirmar = true` nunca é gravada: a
+# carga recusa regra que a use. [[regra]] (escopo config_jogo) são todas
+# experimentais (D9) e só valem com Aceitar. Jogos com config orientar/proibido
+# não podem ter [[arquivo]] nem regra (erro de carga). Pesquisa e fontes:
+# docs/pesquisa/fase3-confirmacoes.md.
+#
 # Itens marcados com "# a confirmar" estão por verificar em máquina real (§11).
 
-versao_schema = 1
+versao_schema = 2
 
 [[jogo]]
 id = "cs2"
@@ -217,3 +225,187 @@ processos_protegidos = []
 config = "orientar"
 orientacoes = ["reflex_on", "limitador_do_jogo"]
 evidencia = "NVIDIA Reflex supported products; Embark; competitivo-jogos.md §15"
+
+# ── Fase 3: arquivos de configuração do usuário ─────────────────────────────
+
+[[arquivo]]
+id = "r6-game-settings"
+jogo = "r6-siege"
+raiz = "documentos"
+caminho = 'My Games\Rainbow Six - Siege\<conta>\GameSettings.ini'
+formato = "ini"
+processos_fechados = ["RainbowSix.exe", "RainbowSix_BE.exe"]
+evidencia = "Ubisoft, 100% CPU usage (FPSLimit em [DISPLAY], mínimo 30); pasta por conta: Ubisoft Support na Steam"
+
+[[arquivo.chave]]
+setting = "r6_fps_limit"
+secao = "DISPLAY"
+chave = "FPSLimit"
+tipo = "inteiro"
+faixa = { min = 30, max = 1000 }             # abaixo de 30 desliga o limitador; teto a medir (L3-1)
+
+[[arquivo.chave]]
+setting = "r6_reflex"
+secao = "DISPLAY"
+tipo = "inteiro"
+a_confirmar = true                           # chave de Reflex não confirmada
+
+[[arquivo]]
+id = "fortnite-game-user-settings"
+jogo = "fortnite"
+raiz = "local_app_data"
+caminho = 'FortniteGame\Saved\Config\WindowsClient\GameUserSettings.ini'
+formato = "ini"
+processos_fechados = ["FortniteClient-Win64-Shipping.exe"]
+evidencia = "Epic, How do I adjust my FPS (arquivo e teto 360)"
+
+[[arquivo.chave]]
+setting = "fortnite_frame_rate_limit"
+secao = "/Script/FortniteGame.FortGameUserSettings"   # a confirmar em amostra
+chave = "FrameRateLimit"
+tipo = "decimal"
+arredondar = "baixo"
+a_confirmar = true                           # falta a lista de valores do menu
+
+[[arquivo.chave]]
+setting = "fortnite_reflex"
+secao = "/Script/FortniteGame.FortGameUserSettings"
+tipo = "inteiro"
+a_confirmar = true                           # chave de Reflex não confirmada
+
+[[arquivo]]
+id = "rl-ta-system-settings"
+jogo = "rocket-league"
+raiz = "documentos"
+caminho = 'My Games\Rocket League\TAGame\Config\TASystemSettings.ini'
+formato = "ini"
+processos_fechados = ["RocketLeague.exe"]
+evidencia = "PCGH (arquivo TASystemSettings.ini); Steam Community (OneFrameThreadLag)"
+
+[[arquivo.chave]]
+setting = "rl_one_frame_thread_lag"
+secao = "SystemSettings"
+chave = "OneFrameThreadLag"
+tipo = "booleano"
+
+[[arquivo.chave]]
+setting = "rl_max_fps"
+secao = "SystemSettings"
+chave = "MaxSmoothedFrameRate"
+tipo = "inteiro"
+a_confirmar = true                           # chave gravada pelo menu e valores não confirmados
+
+[[arquivo]]
+id = "cs2-launch"
+jogo = "cs2"
+raiz = "steam_userdata"
+caminho = '<steamid3>\config\localconfig.vdf'
+formato = "lancamento"
+processos_fechados = ["cs2.exe", "steam.exe"]
+exige_steam_fechada = true
+evidencia = "totalcsgo (fps_max); gist frostworx (LaunchOptions em localconfig.vdf)"
+
+[[arquivo.chave]]
+setting = "cs2_fps_max"
+chave = "UserLocalConfigStore/Software/Valve/Steam/apps/730/LaunchOptions"
+token = "+fps_max"
+tipo = "token_lancamento"
+faixa = { min = 20, max = 1000 }             # mesma faixa do limite do usuário
+
+[[arquivo]]
+id = "cs2-video"
+jogo = "cs2"
+raiz = "steam_userdata"
+caminho = '<steamid3>\730\local\cfg\cs2_video.txt'
+formato = "vdf"
+processos_fechados = ["cs2.exe", "steam.exe"]
+exige_steam_fechada = true
+evidencia = 'csdb.gg (cs2_video.txt em local\cfg)'
+
+[[arquivo.chave]]
+setting = "cs2_reflex"
+chave = "video.cfg/setting.r_low_latency"
+tipo = "inteiro"
+a_confirmar = true                           # valores e Steam Cloud não confirmados
+
+[[arquivo]]
+id = "dota2-launch"
+jogo = "dota2"
+raiz = "steam_userdata"
+caminho = '<steamid3>\config\localconfig.vdf'
+formato = "lancamento"
+processos_fechados = ["dota2.exe", "steam.exe"]
+exige_steam_fechada = true
+evidencia = "esportstales e Dexerto (padrão 120, menu até 240, +fps_max sobrepõe o menu)"
+
+[[arquivo.chave]]
+setting = "dota2_fps_max"
+chave = "UserLocalConfigStore/Software/Valve/Steam/apps/570/LaunchOptions"
+token = "+fps_max"
+tipo = "token_lancamento"
+faixa = { min = 60, max = 240 }              # faixa do menu
+
+[[arquivo]]
+id = "deadlock-launch"
+jogo = "deadlock"
+raiz = "steam_userdata"
+caminho = '<steamid3>\config\localconfig.vdf'
+formato = "lancamento"
+processos_fechados = ["deadlock.exe", "steam.exe"]
+exige_steam_fechada = true
+evidencia = "Steam Community (AppID 1422450)"
+
+[[arquivo.chave]]
+setting = "deadlock_fps_max"
+chave = "UserLocalConfigStore/Software/Valve/Steam/apps/1422450/LaunchOptions"
+token = "+fps_max"
+tipo = "token_lancamento"
+a_confirmar = true                           # +fps_max na inicialização e faixa do menu não confirmados
+
+# ── Fase 3: regras (todas experimentais, só com Aceitar) ────────────────────
+
+[[regra]]
+id = "jogo-limite-no-jogo-r6"
+descricao = "Limite de FPS no próprio Rainbow Six Siege"
+status = "experimental"
+escopo = "config_jogo"
+quando = { jogo = ["r6-siege"], limite_fps_definido = true }
+aplicar = { r6_fps_limit = { preferencia = "limite_fps" } }
+limite_no_jogo = true
+impacto_visual = "nenhum"
+motivo = "O limitador do jogo segura a CPU e a fila melhor que o do driver; o driver fica sem limite para não empilhar."
+evidencia = "https://www.ubisoft.com/en-us/game/rainbow-six/siege/news-updates/7MPHeuO6hPcy49Mdc3rbDg/100-cpu-usage"
+
+[[regra]]
+id = "jogo-limite-launch-source2"
+descricao = "Limite de FPS nas opções de inicialização (+fps_max)"
+status = "experimental"
+escopo = "config_jogo"
+quando = { jogo = ["cs2", "dota2"], limite_fps_definido = true }
+aplicar = { cs2_fps_max = { preferencia = "limite_fps" }, dota2_fps_max = { preferencia = "limite_fps" } }
+limite_no_jogo = true
+impacto_visual = "nenhum"
+motivo = "fps_max é o limitador do motor; o driver fica sem limite para não empilhar."
+evidencia = "https://totalcsgo.com/commands/fpsmax; https://www.esportstales.com/dota-2/how-to-increase-fps-video-settings-launch-options"
+
+[[regra]]
+id = "jogo-dota2-fps-max-padrao"
+descricao = "Teto de FPS do Dota 2 acima do padrão 120"
+status = "experimental"
+escopo = "config_jogo"
+quando = { jogo = ["dota2"], limite_fps_definido = false, refresh_conhecido = true }
+aplicar = { dota2_fps_max = "refresh_limitado_ao_menu" }
+impacto_visual = "nenhum"
+motivo = "O padrão de 120 FPS segura máquinas boas; sobe até o refresh, no máximo 240 (menu). Nunca cria limite menor."
+evidencia = "https://www.esportstales.com/dota-2/how-to-increase-fps-video-settings-launch-options; https://dexerto.com/dota2/best-dota-2-launch-options-optimize-game-performance-1792226"
+
+[[regra]]
+id = "jogo-rl-one-frame-thread-lag-off"
+descricao = "Rocket League sem o quadro extra de fila (OneFrameThreadLag)"
+status = "experimental"
+escopo = "config_jogo"
+quando = { jogo = ["rocket-league"] }
+aplicar = { rl_one_frame_thread_lag = { booleano = false } }
+impacto_visual = "nenhum"
+motivo = "Desligar OneFrameThreadLag reduz a latência ao custo de algum FPS."
+evidencia = "https://steamcommunity.com/app/252950/discussions/0/3192489717248185958"

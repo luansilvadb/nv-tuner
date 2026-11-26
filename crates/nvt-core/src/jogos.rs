@@ -11,13 +11,14 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config_jogo::{self, CatalogoConfigJogo, DefArquivoJogo, ErroConfigJogo, RegraJogo};
 use crate::preferences::Sincronismo;
 
 /// Conteúdo de `regras/jogos.toml`, embutido no binário.
 pub const JOGOS_TOML: &str = include_str!("../../../regras/jogos.toml");
 
 /// Versão de schema aceita em `regras/jogos.toml`.
-pub const VERSAO_SCHEMA_JOGOS: u32 = 1;
+pub const VERSAO_SCHEMA_JOGOS: u32 = 2;
 
 /// Jogos em que editar arquivos ou opções de inicialização é proibido
 /// (trava do escopo, §7.3).
@@ -29,6 +30,10 @@ pub const JOGOS_SEM_EDICAO: [&str; 4] = ["valorant", "lol", "marvel-rivals", "co
 pub struct IdJogo(String);
 
 impl IdJogo {
+    pub(crate) fn interno(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+
     /// O id como texto.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -174,6 +179,10 @@ struct ArquivoJogos {
     versao_schema: u32,
     #[serde(default)]
     jogo: Vec<JogoCurado>,
+    #[serde(default)]
+    arquivo: Vec<DefArquivoJogo>,
+    #[serde(default)]
+    regra: Vec<RegraJogo>,
 }
 
 /// Um erro de carga ou validação da base de jogos.
@@ -212,6 +221,8 @@ pub enum ErroJogo {
         jogo: String,
         config: PoliticaConfig,
     },
+    /// Erro em `[[arquivo]]`/`[[regra]]` (configuração de jogo, fase 3).
+    ConfigJogo(ErroConfigJogo),
 }
 
 impl fmt::Display for ErroJogo {
@@ -223,7 +234,7 @@ impl fmt::Display for ErroJogo {
                 encontrada,
             } => write!(
                 f,
-                "{arquivo}: versao_schema {encontrada} não suportada (esperado {VERSAO_SCHEMA_JOGOS})"
+                "{arquivo}: versao_schema {encontrada} não suportada (esperado 1 a {VERSAO_SCHEMA_JOGOS})"
             ),
             Self::IdInvalido { id } => write!(
                 f,
@@ -245,6 +256,7 @@ impl fmt::Display for ErroJogo {
                 f,
                 "jogo \"{jogo}\": config {config:?} proibida (o jogo só aceita orientar ou proibido)"
             ),
+            Self::ConfigJogo(e) => write!(f, "{e}"),
         }
     }
 }
@@ -271,6 +283,7 @@ impl std::error::Error for ErrosJogos {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaseJogos {
     jogos: Vec<JogoCurado>,
+    config: CatalogoConfigJogo,
 }
 
 impl BaseJogos {
@@ -288,7 +301,7 @@ impl BaseJogos {
             }])
         })?;
         let mut erros = Vec::new();
-        if bruto.versao_schema != VERSAO_SCHEMA_JOGOS {
+        if !(1..=VERSAO_SCHEMA_JOGOS).contains(&bruto.versao_schema) {
             erros.push(ErroJogo::VersaoSchema {
                 arquivo: arquivo.to_owned(),
                 encontrada: bruto.versao_schema,
@@ -299,8 +312,26 @@ impl BaseJogos {
         for j in &bruto.jogo {
             validar(j, &mut ids, &mut exes, &mut erros);
         }
+        if bruto.versao_schema < 2 && !(bruto.arquivo.is_empty() && bruto.regra.is_empty()) {
+            erros.push(ErroJogo::VersaoSchema {
+                arquivo: arquivo.to_owned(),
+                encontrada: bruto.versao_schema,
+            });
+        }
+        let mut erros_config = Vec::new();
+        let config = config_jogo::carregar(
+            &bruto.jogo,
+            bruto.arquivo,
+            bruto.regra,
+            bruto.versao_schema == VERSAO_SCHEMA_JOGOS,
+            &mut erros_config,
+        );
+        erros.extend(erros_config.into_iter().map(ErroJogo::ConfigJogo));
         if erros.is_empty() {
-            Ok(Self { jogos: bruto.jogo })
+            Ok(Self {
+                jogos: bruto.jogo,
+                config,
+            })
         } else {
             Err(ErrosJogos(erros))
         }
@@ -309,6 +340,11 @@ impl BaseJogos {
     /// Todos os jogos, na ordem do arquivo.
     pub fn jogos(&self) -> &[JogoCurado] {
         &self.jogos
+    }
+
+    /// Catálogo de configuração de jogo (`[[arquivo]]` e `[[regra]]`).
+    pub fn config_jogo(&self) -> &CatalogoConfigJogo {
+        &self.config
     }
 
     /// Jogo pelo id.
@@ -341,7 +377,10 @@ impl BaseJogos {
 
     /// Base sem nenhum jogo (todo jogo fica fora da base).
     pub fn vazia() -> Self {
-        Self { jogos: Vec::new() }
+        Self {
+            jogos: Vec::new(),
+            config: CatalogoConfigJogo::default(),
+        }
     }
 }
 
@@ -590,10 +629,10 @@ evidencia = "teste"
         ));
         let e = erros(&jogo_toml("a", "").replace("\"vac\"", "\"xigncode\""));
         assert!(matches!(&e[..], [ErroJogo::Toml { .. }]));
-        let e = erros(&jogo_toml("a", "").replace("versao_schema = 1", "versao_schema = 2"));
+        let e = erros(&jogo_toml("a", "").replace("versao_schema = 1", "versao_schema = 3"));
         assert!(matches!(
             &e[..],
-            [ErroJogo::VersaoSchema { encontrada: 2, .. }]
+            [ErroJogo::VersaoSchema { encontrada: 3, .. }]
         ));
     }
 

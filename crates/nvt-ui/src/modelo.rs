@@ -954,6 +954,7 @@ mod testes {
 
     fn jogo(nome: &str, resumo: ResumoJogo) -> Jogo {
         Jogo {
+            config_jogo: None,
             nome: nome.into(),
             perfil: nome.into(),
             origem_perfil: OrigemPerfil::Usuario,

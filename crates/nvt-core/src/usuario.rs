@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config_jogo::{FatosConfigJogo, PlanoJogo};
 use crate::evaluator::Chave;
 use crate::plan::{CodigoExplicacao, EstadoExperimental};
 use crate::rules::id_valido;
@@ -102,6 +103,8 @@ pub struct FatosUsuario {
     pub gamedvr_captura_historica: Option<ValorUsuario>,
     pub gestao: BTreeMap<SettingUsuario, GestaoUsuario>,
     pub travadas: BTreeSet<SettingUsuario>,
+    /// Família jogo (fase 3, D10); ausente num estado v6.
+    pub jogo: FatosConfigJogo,
 }
 
 impl FatosUsuario {
@@ -460,6 +463,9 @@ pub struct ResumoSistema {
 pub struct PlanoUsuario {
     pub resumo: ResumoSistema,
     pub experimentais: Vec<SugestaoUsuario>,
+    /// Família jogo (fase 3, D10), preenchida por [`crate::config_jogo::avaliar_config_jogo`].
+    #[serde(default)]
+    pub jogo: PlanoJogo,
 }
 
 /// Avalia o Windows para uma sessão. Para settings geridas, as condições

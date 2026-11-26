@@ -1077,6 +1077,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             | Requisicao::AgenteRelatar { .. }
             | Requisicao::DefinirAceiteExperimental { .. }
             | Requisicao::ReverterAjusteUsuario { .. }
+            | Requisicao::ReverterConfigJogo { .. }
             | Requisicao::MarcarAtualizacaoVista { .. } => {
                 return Resposta::erro(
                     CodigoErro::RequisicaoInvalida,
@@ -1932,6 +1933,7 @@ pub fn jogos_ipc(
                     .iter()
                     .map(|o| o.codigo().to_owned())
                     .collect(),
+                config_jogo: None,
                 resumo: nvt_ipc::ResumoJogo {
                     aplicadas: r
                         .aplicadas

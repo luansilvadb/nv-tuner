@@ -4590,6 +4590,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvt-jogocfg"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "windows-sys 0.61.2",
+ "winreg",
+]
+
+[[package]]
 name = "nvt-service"
 version = "0.1.0"
 dependencies = [

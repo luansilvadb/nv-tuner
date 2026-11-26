@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::config_jogo::{FatoConfigJogo, TarefaJogo};
 use crate::{ImpactoVisual, Mudanca, StatusMudanca};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +80,9 @@ pub struct FatosUsuario {
     /// Agentes anteriores omitem o campo.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gestao: Vec<GestaoAgente>,
+    /// Arquivos de jogo lidos pelo agente (v7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_jogo: Vec<FatoConfigJogo>,
 }
 
 /// Estado persistido pelo agente para um destino acessível na sessão.
@@ -119,6 +123,7 @@ impl FatosUsuario {
                 }
             }
         }
+        crate::config_jogo::validar_fatos_jogo(&self.config_jogo)?;
         if self.diagnosticos.len() > 256 {
             return Err("muitos diagnósticos do agente".into());
         }
@@ -265,6 +270,19 @@ pub struct PlanoAgente {
     pub geracao_restauracao: u64,
     pub tarefa: Option<TarefaUsuario>,
     pub processos_vigiados: BTreeSet<String>,
+    /// Tarefa de arquivo de jogo (v7), independente da tarefa Windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tarefa_jogo: Option<TarefaJogo>,
+}
+
+impl PlanoAgente {
+    /// Validação de forma feita pelo agente antes de executar.
+    pub fn validar(&self) -> Result<(), String> {
+        if let Some(t) = &self.tarefa_jogo {
+            t.validar()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

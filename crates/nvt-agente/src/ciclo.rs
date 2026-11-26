@@ -433,6 +433,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             }),
             diagnosticos: armazem.diagnosticos(),
             gestao: self.gestao(),
+            config_jogo: Vec::new(),
         }
     }
 
@@ -612,6 +613,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             operacao: t.tarefa.operacao,
             revisao: t.tarefa.revisao,
             resultados: t.resultados.clone(),
+            resultados_jogo: Vec::new(),
         };
         match self.agente.transporte.trocar(&req)? {
             Resposta::Encerrar => return Ok(Controle::Encerrar),

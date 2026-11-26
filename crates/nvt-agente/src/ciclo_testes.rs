@@ -152,6 +152,7 @@ fn plano(
     acoes: Vec<AcaoUsuario>,
 ) -> Resposta {
     Resposta::PlanoAgente(PlanoAgente {
+        tarefa_jogo: None,
         revisao,
         geracao_restauracao: geracao,
         tarefa: (!acoes.is_empty()).then_some(TarefaUsuario {

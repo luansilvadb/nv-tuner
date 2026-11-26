@@ -795,6 +795,8 @@ pub fn motivo_curto(m: &MotivoNaoAplicada) -> String {
         MotivoNaoAplicada::CondicaoNaoAtendida { .. } => "condições da regra não atendidas".into(),
         MotivoNaoAplicada::VrrInativo => "G-SYNC (VRR) não está ativo".into(),
         MotivoNaoAplicada::JogoComReflex => "o jogo tem Reflex, que já cuida disso".into(),
+        // Motivos de arquivo de jogo (v7): textos próprios ficam para a L2-e.
+        _ => "condições da regra não atendidas".into(),
     }
 }
 
@@ -862,6 +864,7 @@ pub fn motivo_longo(m: &MotivoNaoAplicada) -> String {
             jogo tem Reflex: ligue-o nas opções do jogo, que ele já controla a fila de quadros \
             e a latência."
             .into(),
+        _ => "Condições da regra não atendidas.".into(),
     }
 }
 
@@ -878,6 +881,7 @@ fn relevancia(m: &MotivoNaoAplicada) -> u8 {
         MotivoNaoAplicada::ConflitoComRegraMaisEspecifica { .. } => 7,
         MotivoNaoAplicada::VrrInativo | MotivoNaoAplicada::JogoComReflex => 7,
         MotivoNaoAplicada::CondicaoNaoAtendida { .. } => 8,
+        _ => 8,
     }
 }
 

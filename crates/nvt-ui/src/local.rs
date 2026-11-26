@@ -822,6 +822,7 @@ pub fn jogos_ipc<S: DriverStore>(e: &Engine<S>, diff: &Diff) -> Vec<Jogo> {
                     .iter()
                     .map(|o| o.codigo().to_owned())
                     .collect(),
+                config_jogo: None,
                 resumo: ResumoJogo {
                     aplicadas: r
                         .aplicadas

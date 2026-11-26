@@ -1215,6 +1215,7 @@ mod testes {
         };
         let consulta = Requisicao::AgenteConsultar {
             fatos: nvt_ipc::FatosUsuario {
+                config_jogo: vec![],
                 tela: nvt_ipc::Fato::Desconhecido,
                 mouse: nvt_ipc::Fato::Desconhecido,
                 swap_effect_upgrade: nvt_ipc::Fato::Desconhecido,

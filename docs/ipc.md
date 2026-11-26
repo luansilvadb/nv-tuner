@@ -78,7 +78,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 ## Envelope e versão
 
 ```json
-{"versao": 6, "corpo": { "tipo": "...", ... }}
+{"versao": 7, "corpo": { "tipo": "...", ... }}
 ```
 
 - `versao` é conferida **antes** de interpretar `corpo`. Versão diferente de
@@ -112,6 +112,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | 4 | Fase 1 competitiva (`docs/spec/competitivo.md` §7.6, só o que a fase 1 usa): `capacidades.refresh_mhz` e `capacidades.vrr` (objeto, antes `bool`); `jogo.competitivo`, `jogo.em_execucao`, `jogo.orientacoes`; `estado.adiamento` (com `lista_indisponivel`); `plano.adiada`; resposta `restauracao` (antes `ok`) para `restaurar_original`; resposta `adiada` para `definir_preferencias`/`destravar_setting` adiados; avisos `gsync_sem_vrr`, `vrr_desligado_no_painel` e `acao_pendente_descartada`; motivos `vrr_inativo` e `jogo_com_reflex`. As variantes de camada (Windows/jogo) ficam para a v5 |
 | 5 | Fase 2 (camada Windows, decisão D6): identidade do cliente pelo token; requisições `agente_consultar`, `agente_relatar`, `definir_aceite_experimental` e `reverter_ajuste_usuario`; respostas `plano_agente` e `encerrar`; `estado.agente` e `estado.diagnosticos`; `plano.sistema` (`ResumoSistema`) e `plano.sugestoes_driver`; erro `identidade_indisponivel`. Mensagens v4 são recusadas antes de desserializar o corpo |
 | 6 | Atualização automática (`docs/spec/atualizacao.md` §8.6 e §10): `estado.atualizacao` (`EstadoAtualizacao`); requisição `marcar_atualizacao_vista`; erro `entrada_invalida`. Mensagens v5 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
+| 7 | Fase 3, arquivo de configuração de jogo (`docs/spec/fase3-plano.md`, L1-c): `fatos.config_jogo` em `agente_consultar`; `plano_agente.tarefa_jogo`; `agente_relatar.resultados_jogo`; requisição `reverter_config_jogo`; `jogo.config_jogo` no plano; motivos da Fase 3. Detalhes em “Arquivo de configuração de jogo (v7)”. Mensagens v6 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
 
 ## Requisições (`corpo.tipo`)
 
@@ -131,6 +132,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | `definir_aceite_experimental` | `regra` (ID), `aceito` (bool)                        |
 | `reverter_ajuste_usuario` | `destino` (setting de usuário tipada), `alvo_tela` (opcional, caminho estável do monitor) |
 | `marcar_atualizacao_vista` | `versao` (1 a 64 caracteres em `[A-Za-z0-9.+-]`); resposta `ok` (v6) |
+| `reverter_config_jogo` | `destino` (`DestinoJogoIpc`); reversão individual de uma chave de arquivo de jogo (v7) |
 
 - `sincronismo`: `desligado` \| `v_sync` \| `g_sync`.
 - `qualidade`: `desempenho` \| `equilibrado` \| `qualidade`.
@@ -146,7 +148,7 @@ validação semântica (lista permitida, existência do perfil) é do serviço.
 Exemplo:
 
 ```json
-{"versao":6,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
+{"versao":7,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
 ```
 
 ## Respostas (`corpo.tipo`)
@@ -390,6 +392,38 @@ O serviço monta a lista a partir do `Diff` (`nucleo::jogos_ipc`); o modo de
 visualização da UI faz a mesma conversão localmente (`local::jogos_ipc`).
 
 Datas são segundos desde a época Unix (UTC).
+
+### Arquivo de configuração de jogo (v7)
+
+DTOs próprios do fio (`crates/nvt-ipc/src/config_jogo.rs`), independentes de
+`nvt-core` e `nvt-jogocfg`. Caminho completo nunca trafega: só o rótulo
+anonimizado.
+
+| Tipo | Forma |
+|---|---|
+| `AlvoIpc` | `{"tipo":"config_jogo","jogo":"r6-siege","arquivo":"game_settings"}`; ids em `[a-z0-9_-]`, até 64 |
+| `DestinoJogoIpc` | `{ alvo, setting, instancia }`; `setting` no formato de nome simbólico; `instancia` é o identificador opaco da conta resolvida (hash), nunca nome do usuário nem SteamID |
+| `RotuloCaminho` | texto que começa por `%USERPROFILE%\`, `%LOCALAPPDATA%\`, `%APPDATA%\` ou `%STEAM%\`; sem letra de unidade, UNC, `/`, `..`, componente vazio, outro `%VAR%`, `\Users\` ou caractere de controle; até 512 bytes |
+| `ValorJogoIpc` | `{"tipo":"ausente"}`, `inteiro`, `booleano`, `texto` (até 256 bytes) ou `token_lancamento` (`+fps_max <n>`, `null` = sem o token), valor em `valor` |
+| `FatoConfigJogo` (`fatos.config_jogo`, até 64) | `alvo`, `instancia`, `rotulo`, `presente`, `hash` (SHA-256 em hexadecimal minúsculo), `somente_leitura`, `na_nuvem`, `conta_ambigua`, `backup`, `valores` (`{setting, valor: Fato}`, até 32) e `gestao` (`{setting, antes, esperado, hash_antes, hash_depois, travado}`, até 32, omitida se vazia) |
+| `EstadoBackup` | `sem_backup`, `integro`, `comprometido` |
+| `AcaoJogo` (`plano_agente.tarefa_jogo.acoes`, até 64) | `aplicar { destino, valor, hash_esperado }`, `restaurar { destino, hash_esperado }`, `reverter { destino, hash_esperado }`; arquivo com hash diferente de `hash_esperado` não é escrito |
+| `ResultadoJogo` (`agente_relatar.resultados_jogo`, até 64) | `destino`, `status`, `motivo` (só motivos da Fase 3), `antes`, `depois`, `hash_antes`, `hash_depois`, `chaves_alteradas` (até 32) |
+| `reverter_config_jogo` | `{ destino }`: reversão individual pedida pela UI |
+| `jogo.config_jogo` (`ConfigJogoUi`) | `arquivos` (`{alvo, rotulo, conta, backup, mudancas: [{setting, antes, depois, status, motivo}], reversivel}`) e `orientacoes`: `fechar_steam`, `fechar_jogo { processos }`, `desmarcar_somente_leitura`, `ajustar_no_jogo`, `escolher_conta` |
+
+Motivos novos em `MotivoNaoAplicada`: `config_politica { politica }`,
+`janela_fechada_exigida { processos }` (nomes de executável, 1 a 32, sem
+caminho), `arquivo_na_nuvem`, `arquivo_somente_leitura`, `formato_inesperado`,
+`arquivo_alterado_pelo_jogo`, `conta_ambigua`, `arquivo_ausente`,
+`reparse_recusado`.
+
+Campos novos opcionais (`config_jogo`, `tarefa_jogo`, `resultados_jogo`,
+`gestao`, `jogo.config_jogo`) têm padrão vazio e são omitidos quando vazios.
+Todos os DTOs usam `deny_unknown_fields`; destino ou instância repetidos,
+hash fora do formato, rótulo não anonimizado e listas acima do limite são
+recusados por `Requisicao::validar`, `PlanoAgente::validar` e
+`ConfigJogoUi::validar`.
 
 ### Códigos de erro
 

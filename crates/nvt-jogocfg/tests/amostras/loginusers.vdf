@@ -1,0 +1,19 @@
+"users"
+{
+	"76561197960265729"
+	{
+		"AccountName"		"conta_ficticia_a"
+		"PersonaName"		"Fulano Ficticio"
+		"RememberPassword"		"1"
+		"MostRecent"		"0"
+		"Timestamp"		"1700000000"
+	}
+	"76561197960265730"
+	{
+		"AccountName"		"conta_ficticia_b"
+		"PersonaName"		"Beltrano Ficticio"
+		"RememberPassword"		"1"
+		"MostRecent"		"1"
+		"Timestamp"		"1700000100"
+	}
+}

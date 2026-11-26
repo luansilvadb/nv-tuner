@@ -1,0 +1,8 @@
+"video.cfg"
+{
+	"Version"		"16"
+	"setting.fps_max"		"0"
+	"setting.r_low_latency"		"1"
+	"setting.mat_vsync"		"0"
+	"setting.defaultres"		"1920"
+}

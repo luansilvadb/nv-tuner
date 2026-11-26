@@ -7,6 +7,7 @@
 
 pub mod capabilities;
 pub mod catalogo;
+pub mod config_jogo;
 pub mod evaluator;
 pub mod explicacao;
 pub mod facts;
@@ -19,6 +20,12 @@ pub mod versao;
 
 pub use capabilities::{Arquitetura, Capabilities, EstadoVrr};
 pub use catalogo::{Catalogo, DefSetting, Faixa, PreferenciaGovernante};
+pub use config_jogo::{
+    AcaoJogo, CatalogoConfigJogo, DefArquivoJogo, DefChaveJogo, DescarteJogo, DestinoInvalido,
+    DestinoJogo, ErroConfigJogo, EstadoDestinoJogo, FatosConfigJogo, GestaoJogo, InstanciaJogo,
+    MotivoDescarteJogo, MudancaJogo, PlanoJogo, RegraJogo, SettingJogo, SugestaoJogo, ValorJogo,
+    avaliar_config_jogo, desligar_limite_drs, limites_no_jogo,
+};
 pub use evaluator::{avaliar, avaliar_com_aceites, limite_vrr};
 pub use explicacao::{
     Falha, MotivoDeclarado, MotivoNaoAplicada, RegraAplicada, RegraNaoAplicada, ResumoJogo,
