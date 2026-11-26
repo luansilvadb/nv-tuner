@@ -15,6 +15,7 @@ mod nomes;
 mod nucleo;
 mod recomendadas;
 mod relatorio;
+mod saude;
 mod scm;
 mod usuario;
 mod vigia;

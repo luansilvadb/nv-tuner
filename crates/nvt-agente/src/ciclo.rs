@@ -51,6 +51,9 @@ pub struct Agente<A, T> {
     /// Perfil para arquivos de jogo (Fase 3); `None` desliga a família jogo.
     #[cfg(windows)]
     pub(crate) jogo: Option<crate::config_jogo::AmbienteJogo>,
+    /// Leituras de saúde e limpeza do `%TEMP%` (L3); `None` desliga.
+    #[cfg(windows)]
+    pub(crate) saude: Option<crate::saude::AgendaSaude>,
     sessoes_existentes: Option<BTreeSet<u32>>,
     fatos_enviados: Option<FatosUsuario>,
     proxima_consulta: Instant,
@@ -124,6 +127,8 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             ausente_desde: Cell::new(None),
             #[cfg(windows)]
             jogo: None,
+            #[cfg(windows)]
+            saude: None,
         })
     }
 
@@ -131,6 +136,15 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
     #[cfg(windows)]
     pub fn definir_ambiente_jogo(&mut self, ambiente: crate::config_jogo::AmbienteJogo) {
         self.jogo = Some(ambiente);
+    }
+
+    /// Liga as leituras de saúde da sessão com a fonte dada.
+    #[cfg(windows)]
+    pub fn definir_saude(&mut self, fonte: Box<dyn crate::saude::FonteSaude>) {
+        self.saude = Some(crate::saude::AgendaSaude::nova(
+            fonte,
+            nvt_manutencao::MODO_LIMPEZA,
+        ));
     }
 
     /// Uma lista confiável permite recuperar o snapshot do mesmo monitor após
@@ -272,6 +286,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
         exec.sessao_mut().revisao = plano.revisao;
         exec.salvar()?;
         exec.compensacoes()?;
+        exec.saude(agora)?;
 
         let tarefa = plano.tarefa;
         let nova_geracao = geracao_restaurada < plano.geracao_restauracao
@@ -409,6 +424,51 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
 
     pub(crate) fn salvar(&self) -> io::Result<()> {
         self.p.salvar(&self.estado)
+    }
+
+    /// Leituras de saúde vencidas, sob o portão com a lista atual do serviço.
+    #[cfg(windows)]
+    fn saude(&mut self, agora: Instant) -> io::Result<()> {
+        let Some(agenda) = self.agente.saude.as_mut() else {
+            return Ok(());
+        };
+        let portao = crate::saude::PortaoAgente {
+            portao: &self.agente.portao,
+            base: &self.agente.base,
+            extras: self
+                .vigiados
+                .as_ref()
+                .map(|v| v.iter().map(String::as_str).collect()),
+        };
+        let agora_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if agenda.passo(agora, agora_unix, &portao, &mut self.estado.saude) {
+            self.salvar()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn saude(&mut self, _: Instant) -> io::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn saude_pendente(&self) -> Option<nvt_ipc::SaudeSessao> {
+        self.agente.saude.as_ref()?.pendente.clone()
+    }
+
+    #[cfg(not(windows))]
+    fn saude_pendente(&self) -> Option<nvt_ipc::SaudeSessao> {
+        None
+    }
+
+    fn saude_confirmada(&mut self) {
+        #[cfg(windows)]
+        if let Some(agenda) = self.agente.saude.as_mut() {
+            agenda.pendente = None;
+        }
     }
 
     fn escopo(&self, destino: &SettingUsuario) -> Option<u32> {
@@ -678,11 +738,15 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             revisao: t.tarefa.revisao,
             resultados: t.resultados.clone(),
             resultados_jogo: t.resultados_jogo.clone(),
-            saude: None,
+            saude: self.saude_pendente(),
         };
+        let com_saude = matches!(&req, Requisicao::AgenteRelatar { saude: Some(_), .. });
         match self.agente.transporte.trocar(&req)? {
             Resposta::Encerrar => return Ok(Controle::Encerrar),
             Resposta::Ok => {
+                if com_saude {
+                    self.saude_confirmada();
+                }
                 let sessao = self.sessao_mut();
                 let trabalho = sessao.trabalho.as_mut().expect("relato existente");
                 trabalho.confirmado = true;

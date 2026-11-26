@@ -2,6 +2,8 @@
 mod ciclo;
 pub mod config_jogo;
 mod estado;
+#[cfg(windows)]
+pub mod saude;
 mod valores;
 #[cfg(windows)]
 pub mod windows;

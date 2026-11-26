@@ -22,6 +22,46 @@ pub struct Estado {
     /// Arquivos de jogo geridos (Fase 3); estado v6 carrega sem eles.
     #[serde(default, skip_serializing_if = "crate::config_jogo::EstadoJogo::vazio")]
     pub(crate) jogo: crate::config_jogo::EstadoJogo,
+    /// Linha de base da inicialização e política da limpeza (L3); estado v7 carrega sem eles.
+    #[serde(default, skip_serializing_if = "EstadoSaude::vazio")]
+    pub(crate) saude: EstadoSaude,
+}
+
+/// Saúde persistida no perfil local. Só nomes e hashes: nenhum comando ou caminho.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct EstadoSaude {
+    /// `None` = primeira leitura ainda não feita.
+    #[serde(default)]
+    pub base: Option<LinhaBase>,
+    /// Itens fora da base, com a data da primeira detecção (mantém a data estável).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fora_da_base: Vec<ItemBase>,
+    /// Início (Unix) da última passada de limpeza por alvo (política diária, R-L-05).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ultimas_limpezas: BTreeMap<nvt_ipc::AlvoLimpeza, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limpeza: Option<nvt_ipc::ResultadoLimpeza>,
+}
+
+impl EstadoSaude {
+    pub fn vazio(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LinhaBase {
+    pub criada_unix: u64,
+    pub itens: Vec<ItemBase>,
+}
+
+/// `hash` = sha256 hexadecimal do comando completo, que nunca é gravado.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ItemBase {
+    pub fonte: nvt_ipc::FonteInicio,
+    pub nome: String,
+    pub hash: String,
+    pub detectado_unix: u64,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]

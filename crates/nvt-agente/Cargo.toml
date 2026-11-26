@@ -21,6 +21,7 @@ serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 nvt-jogocfg = { path = "../nvt-jogocfg" }
+nvt-manutencao = { path = "../nvt-manutencao" }
 nvt-windows = { path = "../nvt-windows" }
 winreg = "0.56"
 windows-sys = { version = "0.61", features = [
@@ -37,6 +38,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[features]
+# Repassa o dry-run da limpeza (D2, D9); trava no build.rs de nvt-manutencao.
+build-de-teste = ["nvt-manutencao/build-de-teste"]
 
 [lints]
 workspace = true

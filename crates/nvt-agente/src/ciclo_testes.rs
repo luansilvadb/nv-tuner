@@ -758,3 +758,70 @@ fn ausencia_momentanea_da_instalacao_no_upgrade_nao_e_desinstalacao() {
         t += Duration::from_secs(1);
     }
 }
+
+#[cfg(windows)]
+struct SaudeFalsa;
+
+#[cfg(windows)]
+impl crate::saude::FonteSaude for SaudeFalsa {
+    fn inicio(&self) -> Vec<nvt_windows::saude::EntradaInicio> {
+        vec![nvt_windows::saude::EntradaInicio {
+            fonte: nvt_ipc::FonteInicio::RunUsuario,
+            nome: "Steam".into(),
+            executavel: "steam.exe".into(),
+            habilitado: Some(true),
+            comando: r"C:\Users\fulano\steam.exe -silent".into(),
+        }]
+    }
+    fn sinais(&self, _: u64) -> Vec<nvt_ipc::Sinal> {
+        vec![]
+    }
+    fn limpar(
+        &mut self,
+        _: nvt_ipc::ModoLimpeza,
+        portao: &dyn nvt_manutencao::Portao,
+        _: &mut dyn nvt_manutencao::Politica,
+    ) -> Option<nvt_ipc::ResultadoLimpeza> {
+        assert!(!portao.jogo_aberto(), "limpeza só com o portão livre");
+        None
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn saude_vai_no_relato_e_a_base_fica_no_estado() {
+    let (p, mut a, agora) = preparar(ProcessosFalsos::default());
+    a.definir_saude(Box::new(SaudeFalsa));
+    responder(&mut a, [aplicar(1), Resposta::Ok]);
+    a.passo(&p, agora, false).unwrap();
+    let Some(Requisicao::AgenteRelatar {
+        saude: Some(saude), ..
+    }) = a.transporte.chamadas.last()
+    else {
+        panic!("relato sem saúde")
+    };
+    assert_eq!(saude.inicializacao.len(), 1);
+    assert_eq!(
+        saude.inicializacao[0].situacao,
+        nvt_ipc::SituacaoInicio::NaBase
+    );
+    a.transporte.chamadas.last().unwrap().validar().unwrap();
+    assert!(a.saude.as_ref().unwrap().pendente.is_none());
+    let estado = p.carregar().unwrap();
+    assert_eq!(estado.saude.base.unwrap().itens.len(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn saude_adiada_com_jogo_aberto() {
+    let (p, mut a, agora) = preparar(ProcessosFalsos::com_nomes(&["cs2.exe"]));
+    a.definir_saude(Box::new(SaudeFalsa));
+    let mut resposta = plano(1, 0, OperacaoUsuario::Aplicar, vec![]);
+    if let Resposta::PlanoAgente(pl) = &mut resposta {
+        pl.processos_vigiados = ["cs2.exe".into()].into();
+    }
+    responder(&mut a, [resposta]);
+    a.passo(&p, agora, false).unwrap();
+    assert!(a.saude.as_ref().unwrap().pendente.is_none());
+    assert!(p.carregar().unwrap().saude.vazio());
+}

@@ -233,6 +233,21 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
         req: Requisicao,
         agora: Instant,
     ) -> Resposta {
+        if matches!(
+            req,
+            Requisicao::ObterSaude | Requisicao::MarcarInicioVisto { .. }
+        ) {
+            // Só lê o cache da thread de saúde; não entra no ciclo DRS.
+            let maquina = self.integracao.saude_maquina();
+            return crate::saude::atender(
+                self.integracao.usuario.as_mut(),
+                &identidade,
+                &req,
+                &maquina,
+                agora,
+                agora_unix(),
+            );
+        }
         let exclusao = self.integracao.exclusao.clone();
         let _drs = exclusao.ciclo_drs();
         if matches!(req, Requisicao::AplicarRecomendadas)
@@ -438,6 +453,7 @@ pub fn executar(
         let mut integracao = Integracao::abrir(op);
         if !op.config.somente_leitura {
             integracao.iniciar_atualizacao();
+            integracao.iniciar_saude(op.estado_dir.clone());
         }
         let diagnosticos = iniciar_diagnosticos(integracao.diagnosticos.clone());
         executar_com_driver(op, &rx, &mut integracao);
@@ -445,6 +461,7 @@ pub fn executar(
         if let Some(mut t) = integracao.atualizacao.take() {
             t.parar();
         }
+        drop(integracao.saude.take());
         drop(diagnosticos);
     }
 
@@ -613,6 +630,9 @@ pub(crate) struct Integracao {
     aceites_drs: std::collections::BTreeSet<String>,
     /// F3-13 do SID da sessão de console (ver `Coordenador::limites_no_jogo_efetivos`).
     limites_jogo: std::collections::BTreeMap<nvt_core::IdJogo, String>,
+    /// Cache das leituras de máquina (escrito só pela thread de saúde).
+    pub(crate) saude_cache: Arc<Mutex<crate::saude::SaudeMaquina>>,
+    saude: Option<crate::saude::ThreadSaude>,
 }
 
 impl Integracao {
@@ -671,6 +691,28 @@ impl Integracao {
             Ok(t) => self.atualizacao = Some(t),
             Err(e) => error!("atualização automática indisponível: {e}"),
         }
+    }
+
+    /// Sobe a thread de saúde (leituras de máquina e limpeza de `C:\Windows\Temp`).
+    fn iniciar_saude(&mut self, estado_dir: PathBuf) {
+        match crate::saude::ThreadSaude::iniciar(
+            estado_dir,
+            self.portao.clone(),
+            self.extras_portao.clone(),
+            self.exclusao.clone(),
+            self.saude_cache.clone(),
+        ) {
+            Ok(t) => self.saude = Some(t),
+            Err(e) => error!("saúde do PC indisponível: {e}"),
+        }
+    }
+
+    /// Cópia do cache de máquina (vazio sem a thread de saúde).
+    pub(crate) fn saude_maquina(&self) -> crate::saude::SaudeMaquina {
+        self.saude_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Projeção atual da atualização (sem `nao_vista`, que é por SID).
@@ -945,6 +987,8 @@ pub(crate) struct Exclusao {
 struct Ocupacao {
     drs: bool,
     instalacao: bool,
+    /// Passada de limpeza de `C:\Windows\Temp` (thread de saúde).
+    limpeza: bool,
 }
 
 /// Ciclo DRS em curso; ao soltar, libera a instalação que estiver esperando.
@@ -981,7 +1025,7 @@ impl Exclusao {
     /// se `cancelar` foi sinalizado durante a espera.
     pub(crate) fn reservar_instalacao(&self, cancelar: &AtomicBool) -> bool {
         let mut o = self.ocupar();
-        while o.drs {
+        while o.drs || o.limpeza {
             if cancelar.load(Ordering::Relaxed) {
                 return false;
             }
@@ -993,6 +1037,24 @@ impl Exclusao {
         }
         o.instalacao = true;
         true
+    }
+
+    /// Reserva a limpeza sem esperar: `false` se um ciclo DRS ou uma instalação
+    /// estiver em curso. O ciclo DRS não espera a limpeza (o motor não bloqueia);
+    /// a instalação espera a limpeza terminar.
+    pub(crate) fn tentar_limpeza(&self) -> bool {
+        let mut o = self.ocupar();
+        if o.drs || o.instalacao || o.limpeza {
+            return false;
+        }
+        o.limpeza = true;
+        true
+    }
+
+    /// Libera a reserva da limpeza (idempotente).
+    pub(crate) fn liberar_limpeza(&self) {
+        self.ocupar().limpeza = false;
+        self.cv.notify_all();
     }
 
     /// Libera a reserva (idempotente).

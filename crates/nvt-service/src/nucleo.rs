@@ -1172,16 +1172,17 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             | Requisicao::AplicarRecomendadas
             | Requisicao::ReverterAjusteUsuario { .. }
             | Requisicao::ReverterConfigJogo { .. }
-            | Requisicao::MarcarAtualizacaoVista { .. } => {
+            | Requisicao::MarcarAtualizacaoVista { .. }
+            // Saúde: atendidas pela integração com o cache da thread de saúde.
+            | Requisicao::ObterSaude
+            | Requisicao::MarcarInicioVisto { .. } => {
                 return Resposta::erro(
                     CodigoErro::RequisicaoInvalida,
                     "pedido requer coordenador de usuário",
                 );
             }
-            // v8: respostas provisórias até as tarefas de L2/L3/L5.
-            Requisicao::ObterSaude
-            | Requisicao::MarcarInicioVisto { .. }
-            | Requisicao::ListarPartidas { .. }
+            // v8: partidas só existem com `medicao-partidas` (L5).
+            Requisicao::ListarPartidas { .. }
             | Requisicao::ObterPartida { .. }
             | Requisicao::ApagarPartidas => {
                 return Resposta::erro(CodigoErro::RecursoAusente, "recurso ainda não disponível");

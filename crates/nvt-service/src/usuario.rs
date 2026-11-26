@@ -54,6 +54,17 @@ struct DadosSid {
     recibos: BTreeMap<u32, VecDeque<Recibo>>,
     /// Última atualização do nv-tuner já vista por este SID (U-47, U-52).
     atualizacao_vista: Option<String>,
+    /// Programas de inicialização marcados como vistos por este SID (v8).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    inicio_vistos: Vec<MarcaInicio>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MarcaInicio {
+    fonte: nvt_ipc::FonteInicio,
+    nome: String,
+    marcado_unix: u64,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -146,6 +157,8 @@ struct Sessao {
     /// Último relato sem sucesso por destino (falha ou adiamento).
     falhas_jogo: BTreeMap<DestinoJogo, FalhaJogo>,
     em_voo_jogo: Option<TarefaJogo>,
+    /// Último relato de saúde do agente desta sessão (só memória).
+    saude: Option<nvt_ipc::SaudeSessao>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -578,9 +591,12 @@ impl Coordenador {
                 revisao,
                 resultados,
                 resultados_jogo,
-                ..
+                saude,
             } => req.validar().map_err(invalida).and_then(|()| {
-                self.relatar(
+                let saude_recebida = saude
+                    .as_ref()
+                    .is_some_and(|s| self.receber_saude(identidade, s, agora));
+                let r = self.relatar(
                     identidade,
                     ReferenciaTarefa {
                         id_tarefa: *id_tarefa,
@@ -591,7 +607,18 @@ impl Coordenador {
                     resultados_jogo,
                     agora,
                     unix,
-                )
+                );
+                // Relato só de saúde (sem resultados): aceito mesmo sem tarefa em voo.
+                match r {
+                    Err(_)
+                        if saude_recebida
+                            && resultados.is_empty()
+                            && resultados_jogo.is_empty() =>
+                    {
+                        Ok(Resposta::Ok)
+                    }
+                    r => r,
+                }
             }),
             Requisicao::ReverterConfigJogo { destino } => req
                 .validar()
@@ -611,6 +638,109 @@ impl Coordenador {
             _ => return None,
         };
         Some(resultado.unwrap_or_else(|(codigo, mensagem)| Resposta::erro(codigo, mensagem)))
+    }
+
+    /// Guarda o relato de saúde do agente na própria sessão (SID + sessão do
+    /// pipe), filtrado para as fontes da sessão. `false` = sessão desconhecida.
+    fn receber_saude(
+        &mut self,
+        identidade: &IdentidadeCliente,
+        saude: &nvt_ipc::SaudeSessao,
+        agora: Instant,
+    ) -> bool {
+        let Some(s) = self.sessoes.get_mut(identidade) else {
+            return false;
+        };
+        if saude.validar().is_err() {
+            return false;
+        }
+        s.saude = Some(crate::saude::filtrar_relato(saude));
+        s.contato = Some(agora);
+        true
+    }
+
+    fn vistos_inicio(&self, sid: &str) -> crate::saude::Vistos {
+        self.dados
+            .por_sid
+            .get(sid)
+            .map(|d| {
+                d.inicio_vistos
+                    .iter()
+                    .map(|m| ((m.fonte, m.nome.clone()), m.marcado_unix))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn saude_da_sessao(
+        &self,
+        identidade: &IdentidadeCliente,
+        agora: Instant,
+    ) -> Option<&nvt_ipc::SaudeSessao> {
+        self.sessoes
+            .get(identidade)
+            .filter(|s| s.presente(agora))
+            .and_then(|s| s.saude.as_ref())
+    }
+
+    /// `ObterSaude`: máquina + a sessão chamadora, com as marcas do próprio SID.
+    pub(crate) fn obter_saude(
+        &self,
+        identidade: &IdentidadeCliente,
+        maquina: &crate::saude::SaudeMaquina,
+        agora: Instant,
+    ) -> Resposta {
+        Resposta::Saude(crate::saude::projetar(
+            maquina,
+            self.saude_da_sessao(identidade, agora),
+            &self.vistos_inicio(&identidade.sid),
+        ))
+    }
+
+    /// `MarcarInicioVisto`: só programas visíveis à identidade (máquina ou o
+    /// relato da própria sessão); grava em `usuarios.json` no SID chamador.
+    pub(crate) fn marcar_inicio_visto(
+        &mut self,
+        identidade: &IdentidadeCliente,
+        fonte: nvt_ipc::FonteInicio,
+        nome: &str,
+        maquina: &crate::saude::SaudeMaquina,
+        agora: Instant,
+        unix: u64,
+    ) -> Resposta {
+        let r = (|| {
+            nvt_ipc::validar_nome_inicio(nome).map_err(invalida)?;
+            let programa = maquina
+                .inicializacao
+                .iter()
+                .chain(
+                    self.saude_da_sessao(identidade, agora)
+                        .into_iter()
+                        .flat_map(|s| &s.inicializacao),
+                )
+                .find(|p| p.fonte == fonte && p.nome == nome)
+                .ok_or_else(|| invalida("programa de inicialização desconhecido"))?;
+            let marca = MarcaInicio {
+                fonte,
+                nome: nome.to_owned(),
+                marcado_unix: unix.max(programa.detectado_unix),
+            };
+            let mut dados = self.dados.clone();
+            let sid = dados.por_sid.entry(identidade.sid.clone()).or_default();
+            sid.inicio_vistos
+                .retain(|m| !(m.fonte == fonte && m.nome == nome));
+            sid.inicio_vistos.push(marca);
+            if sid.inicio_vistos.len() > crate::saude::VISTOS_MAX {
+                let excesso = sid.inicio_vistos.len() - crate::saude::VISTOS_MAX;
+                sid.inicio_vistos.drain(..excesso);
+            }
+            self.armazenamento
+                .salvar(&dados)
+                .map_err(erro_armazenamento)?;
+            self.dados = dados;
+            Ok::<_, Erro>(Resposta::Ok)
+        })();
+        r.unwrap_or_else(|(codigo, mensagem)| Resposta::erro(codigo, mensagem))
     }
 
     /// R-AR: experimentais Windows e de config de jogo aplicáveis agora à

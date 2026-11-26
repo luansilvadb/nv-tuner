@@ -11,6 +11,8 @@ publish.workspace = true
 [features]
 # Só para o laboratório (U-15a): URL base e chave de ensaio; nunca em release.
 laboratorio = ["nvt-atualizacao/laboratorio"]
+# Build de teste (D2, D9): limpeza em `Simulacao`; trava em nvt-manutencao/build.rs.
+build-de-teste = ["nvt-manutencao/build-de-teste"]
 
 [dependencies]
 nvt-ipc.workspace = true
@@ -19,6 +21,7 @@ nvt-drs = { path = "../nvt-drs" }
 nvt-windows = { path = "../nvt-windows" }
 nvt-engine = { path = "../nvt-engine" }
 nvt-atualizacao = { path = "../nvt-atualizacao" }
+nvt-manutencao = { path = "../nvt-manutencao" }
 serde.workspace = true
 toml = "1"
 serde_json = "1"

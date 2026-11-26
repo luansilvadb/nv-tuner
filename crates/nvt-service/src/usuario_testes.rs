@@ -1515,3 +1515,167 @@ fn sugestoes_experimentais_de_jogo_no_campo_proprio() {
     assert_eq!(s.estado, EstadoExperimental::Aceita);
     assert_eq!(s.destinos, [destino_r6("conta1")]);
 }
+
+// ── Saúde (v8) ─────────────────────────────────────────────────────────────
+
+fn programa_inicio(fonte: nvt_ipc::FonteInicio, nome: &str) -> nvt_ipc::ProgramaInicio {
+    nvt_ipc::ProgramaInicio {
+        fonte,
+        nome: nome.into(),
+        executavel: "x.exe".into(),
+        habilitado: Some(true),
+        situacao: nvt_ipc::SituacaoInicio::Novo,
+        detectado_unix: 5,
+    }
+}
+
+fn relato_saude(programas: Vec<nvt_ipc::ProgramaInicio>) -> Requisicao {
+    Requisicao::AgenteRelatar {
+        id_tarefa: 999,
+        operacao: OperacaoUsuario::Aplicar,
+        revisao: 0,
+        resultados: vec![],
+        resultados_jogo: vec![],
+        saude: Some(nvt_ipc::SaudeSessao {
+            sinais: vec![],
+            inicializacao: programas,
+            limpeza: None,
+        }),
+    }
+}
+
+fn saude_de(
+    c: &Coordenador,
+    id: &IdentidadeCliente,
+    maquina: &crate::saude::SaudeMaquina,
+    agora: Instant,
+) -> nvt_ipc::Saude {
+    let Resposta::Saude(s) = c.obter_saude(id, maquina, agora) else {
+        panic!("esperado Saude");
+    };
+    s.validar().unwrap();
+    s
+}
+
+#[test]
+fn obter_saude_sem_dados_do_agente() {
+    let c = abrir(Memoria::default());
+    let id = cliente("S-1-5-21-1", 1);
+    let vazia = saude_de(
+        &c,
+        &id,
+        &crate::saude::SaudeMaquina::default(),
+        Instant::now(),
+    );
+    assert!(vazia.sinais.is_empty() && vazia.inicializacao.is_empty() && vazia.limpeza.is_empty());
+    assert_eq!(vazia.modo_limpeza, nvt_manutencao::MODO_LIMPEZA);
+    let maquina = crate::saude::SaudeMaquina {
+        inicializacao: vec![programa_inicio(nvt_ipc::FonteInicio::RunMaquina, "M")],
+        ..Default::default()
+    };
+    let s = saude_de(&c, &id, &maquina, Instant::now());
+    assert_eq!(s.inicializacao.len(), 1, "só a máquina");
+}
+
+#[test]
+fn saude_isolada_por_sid_e_sessao() {
+    let mut c = abrir(Memoria::default());
+    let agora = Instant::now();
+    let a = cliente("S-1-5-21-A", 1);
+    let b = cliente("S-1-5-21-B", 2);
+    let a2 = cliente("S-1-5-21-A", 3);
+    for id in [&a, &b, &a2] {
+        consultar(&mut c, id, agora, 0, 0);
+    }
+    let r = c.tratar(
+        &a,
+        &relato_saude(vec![
+            programa_inicio(nvt_ipc::FonteInicio::RunUsuario, "DoA"),
+            // Fonte de máquina vinda do agente é descartada.
+            programa_inicio(nvt_ipc::FonteInicio::RunMaquina, "Falso"),
+        ]),
+        agora,
+        12,
+    );
+    assert_eq!(r, Some(Resposta::Ok));
+    let maquina = crate::saude::SaudeMaquina::default();
+    let nomes = |id: &IdentidadeCliente| -> Vec<String> {
+        saude_de(&c, id, &maquina, agora)
+            .inicializacao
+            .into_iter()
+            .map(|p| p.nome)
+            .collect()
+    };
+    assert_eq!(nomes(&a), vec!["DoA".to_owned()]);
+    assert!(nomes(&b).is_empty(), "outro SID não vê");
+    assert!(nomes(&a2).is_empty(), "outra sessão do mesmo SID não vê");
+    // Relato de quem nunca consultou não é guardado.
+    let estranho = cliente("S-1-5-21-C", 4);
+    assert!(recusado(c.tratar(
+        &estranho,
+        &relato_saude(vec![]),
+        agora,
+        12
+    )));
+}
+
+#[test]
+fn marcar_inicio_visto_valido_e_invalido() {
+    let memoria = Memoria::default();
+    let mut c = abrir(memoria.clone());
+    let agora = Instant::now();
+    let a = cliente("S-1-5-21-A", 1);
+    let b = cliente("S-1-5-21-B", 2);
+    consultar(&mut c, &a, agora, 0, 0);
+    consultar(&mut c, &b, agora, 0, 0);
+    c.tratar(
+        &a,
+        &relato_saude(vec![programa_inicio(
+            nvt_ipc::FonteInicio::RunUsuario,
+            "DoA",
+        )]),
+        agora,
+        12,
+    );
+    let maquina = crate::saude::SaudeMaquina {
+        inicializacao: vec![programa_inicio(nvt_ipc::FonteInicio::RunMaquina, "M")],
+        ..Default::default()
+    };
+    let marcar = |c: &mut Coordenador, id: &IdentidadeCliente, fonte, nome: &str| {
+        c.marcar_inicio_visto(id, fonte, nome, &maquina, agora, 50)
+    };
+    // Inválidos: desconhecido, de outra identidade, nome com caminho.
+    for (id, fonte, nome) in [
+        (&a, nvt_ipc::FonteInicio::RunUsuario, "Outro"),
+        (&b, nvt_ipc::FonteInicio::RunUsuario, "DoA"),
+        (&a, nvt_ipc::FonteInicio::RunMaquina, r"C:\M"),
+        (&a, nvt_ipc::FonteInicio::RunUsuario, "M"),
+    ] {
+        assert!(
+            recusado(Some(marcar(&mut c, id, fonte, nome))),
+            "{nome} deveria ser recusado"
+        );
+    }
+    // Válidos.
+    assert_eq!(
+        marcar(&mut c, &a, nvt_ipc::FonteInicio::RunUsuario, "DoA"),
+        Resposta::Ok
+    );
+    assert_eq!(
+        marcar(&mut c, &a, nvt_ipc::FonteInicio::RunMaquina, "M"),
+        Resposta::Ok
+    );
+    let s = saude_de(&c, &a, &maquina, agora);
+    assert!(
+        s.inicializacao
+            .iter()
+            .all(|p| p.situacao == nvt_ipc::SituacaoInicio::NaBase)
+    );
+    // O outro SID continua vendo o programa da máquina como novo.
+    let s = saude_de(&c, &b, &maquina, agora);
+    assert_eq!(s.inicializacao[0].situacao, nvt_ipc::SituacaoInicio::Novo);
+    // Persistido por SID e recarregado.
+    let c2 = abrir(memoria);
+    let s = saude_de(&c2, &a, &maquina, agora);
+    assert_eq!(s.inicializacao[0].situacao, nvt_ipc::SituacaoInicio::NaBase);
+}
