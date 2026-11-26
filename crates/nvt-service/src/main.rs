@@ -13,6 +13,7 @@ mod laco;
 mod logs;
 mod nomes;
 mod nucleo;
+mod partidas;
 mod recomendadas;
 mod relatorio;
 mod saude;
@@ -35,9 +36,16 @@ use nvt_engine::Armazem;
 use crate::laco::{Evento, Opcoes};
 use crate::nucleo::Config;
 
+/// Versão exibida (`--version`, logs): `X.Y.Z+teste` no build de teste (§8.4, item 4).
+/// O `versao_servico` do IPC fica `X.Y.Z`, comparado pela UI para detectar atualização.
+#[cfg(feature = "medicao-partidas")]
+pub(crate) const VERSAO: &str = concat!(env!("CARGO_PKG_VERSION"), "+teste");
+#[cfg(not(feature = "medicao-partidas"))]
+pub(crate) const VERSAO: &str = env!("CARGO_PKG_VERSION");
+
 /// Serviço privilegiado do nv-tuner (aplica configurações no driver NVIDIA).
 #[derive(Parser, Debug)]
-#[command(name = "nvt-service", version)]
+#[command(name = "nvt-service", version = VERSAO)]
 struct Cli {
     /// Diretório de estado (padrão: %ProgramData%\nv-tuner).
     #[arg(long, global = true, value_name = "DIR")]

@@ -248,16 +248,7 @@ impl Janela {
         match self.secao {
             Secao::Inicio => super::inicio::render(self, cx),
             Secao::Jogos => super::jogos::render(self, cx),
-            Secao::Avancado => {
-                let a = super::avancado::render(self, window, cx);
-                #[cfg(feature = "medicao-partidas")]
-                let a = v_flex()
-                    .gap(px(tema::ESP_8))
-                    .child(a)
-                    .child(super::partidas::grupo_metricas(self, cx))
-                    .into_any_element();
-                a
-            }
+            Secao::Avancado => super::avancado::render(self, window, cx),
             #[cfg(feature = "medicao-partidas")]
             Secao::Partidas => super::partidas::render(self, cx),
         }

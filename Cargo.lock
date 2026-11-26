@@ -4631,6 +4631,7 @@ dependencies = [
  "nvt-engine",
  "nvt-ipc",
  "nvt-manutencao",
+ "nvt-medicao",
  "nvt-windows",
  "serde",
  "serde_json",

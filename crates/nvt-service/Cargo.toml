@@ -12,7 +12,10 @@ publish.workspace = true
 # Só para o laboratório (U-15a): URL base e chave de ensaio; nunca em release.
 laboratorio = ["nvt-atualizacao/laboratorio"]
 # Build de teste (D2, D9): limpeza em `Simulacao`; trava em nvt-manutencao/build.rs.
+# Só ligada por `medicao-partidas` (Q11: um único build de teste).
 build-de-teste = ["nvt-manutencao/build-de-teste"]
+# Build de teste (§4.5, §8.4, D9): gravação de partidas + dry-run da limpeza.
+medicao-partidas = ["dep:nvt-medicao", "nvt-medicao/medicao-partidas", "build-de-teste"]
 
 [dependencies]
 nvt-ipc.workspace = true
@@ -22,6 +25,7 @@ nvt-windows = { path = "../nvt-windows" }
 nvt-engine = { path = "../nvt-engine" }
 nvt-atualizacao = { path = "../nvt-atualizacao" }
 nvt-manutencao = { path = "../nvt-manutencao" }
+nvt-medicao = { path = "../nvt-medicao", optional = true }
 serde.workspace = true
 toml = "1"
 serde_json = "1"
@@ -43,6 +47,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Environment",
     "Win32_System_RemoteDesktop",
     "Win32_System_IO",
+    "Win32_System_Performance",
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
     "Wdk_System_SystemServices",

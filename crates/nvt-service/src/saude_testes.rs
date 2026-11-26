@@ -490,3 +490,24 @@ fn relato_do_agente_so_com_fontes_da_sessao() {
 }
 
 use nvt_ipc::Resposta;
+
+#[test]
+#[cfg(feature = "build-de-teste")]
+fn build_de_teste_so_simula_windows_temp() {
+    assert_eq!(MODO_LIMPEZA, ModoLimpeza::Simulacao);
+    let mut m = montar(MODO_LIMPEZA);
+    m.leitor.passo();
+    assert_eq!(*m.raizes.lock().unwrap(), 1, "resolve a raiz uma vez");
+    assert_eq!(m.exclusoes.get(), 0, "simulação nunca exclui");
+    let Resposta::Saude(s) = atender(
+        None,
+        &cliente("S-1-5-21-1", 1),
+        &nvt_ipc::Requisicao::ObterSaude,
+        &m.cache.lock().unwrap(),
+        std::time::Instant::now(),
+        1,
+    ) else {
+        panic!("esperado Saude");
+    };
+    assert_eq!(s.modo_limpeza, ModoLimpeza::Simulacao);
+}

@@ -42,6 +42,8 @@ windows-sys = { version = "0.61", features = [
 [features]
 # Repassa o dry-run da limpeza (D2, D9); trava no build.rs de nvt-manutencao.
 build-de-teste = ["nvt-manutencao/build-de-teste"]
+# Build de teste (Q11/D9): o agente não grava partidas; só liga o dry-run da limpeza.
+medicao-partidas = ["build-de-teste"]
 
 [lints]
 workspace = true

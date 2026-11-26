@@ -110,6 +110,11 @@ pub(super) fn render(janela: &Janela, window: &mut Window, cx: &mut Context<Jane
         .gap(px(tema::ESP_8))
         .max_w(px(tema::LARGURA_CONTEUDO));
     for (titulo, frase, desenhar) in secoes {
+        // Métricas (build de teste) entra logo antes de "Desfazer tudo", que fecha a página.
+        #[cfg(feature = "medicao-partidas")]
+        if titulo == ta::GRUPO_DESFAZER {
+            v = v.child(super::partidas::grupo_metricas(janela, cx));
+        }
         let corpo = desenhar(janela, window, cx);
         v = v.child(
             v_flex()

@@ -444,7 +444,8 @@ pub fn executar(
     drop(tx);
     ao_iniciar();
     info!(
-        "serviço iniciado (estado em {}, somente leitura: {})",
+        "serviço {} iniciado (estado em {}, somente leitura: {})",
+        crate::VERSAO,
         op.estado_dir.display(),
         op.config.somente_leitura
     );
@@ -454,6 +455,10 @@ pub fn executar(
         if !op.config.somente_leitura {
             integracao.iniciar_atualizacao();
             integracao.iniciar_saude(op.estado_dir.clone());
+            #[cfg(feature = "medicao-partidas")]
+            integracao
+                .partidas
+                .iniciar(&op.estado_dir, integracao.portao.clone());
         }
         let diagnosticos = iniciar_diagnosticos(integracao.diagnosticos.clone());
         executar_com_driver(op, &rx, &mut integracao);
@@ -462,6 +467,8 @@ pub fn executar(
             t.parar();
         }
         drop(integracao.saude.take());
+        #[cfg(feature = "medicao-partidas")]
+        integracao.partidas.parar();
         drop(diagnosticos);
     }
 
@@ -633,6 +640,8 @@ pub(crate) struct Integracao {
     /// Cache das leituras de máquina (escrito só pela thread de saúde).
     pub(crate) saude_cache: Arc<Mutex<crate::saude::SaudeMaquina>>,
     saude: Option<crate::saude::ThreadSaude>,
+    /// Partidas (`medicao-partidas`; sem a feature, só responde `RecursoAusente`).
+    pub(crate) partidas: crate::partidas::Partidas,
 }
 
 impl Integracao {
@@ -766,6 +775,12 @@ impl Integracao {
         estado: &EstadoServico,
         driver: impl FnOnce(Requisicao) -> (Resposta, EstadoServico),
     ) -> Resposta {
+        if let Some(r) = self
+            .partidas
+            .atender(&identidade, self.console.as_ref(), &req)
+        {
+            return r;
+        }
         let limite = match req {
             Requisicao::ListarHistorico { limite } => limite as usize,
             _ => 0,

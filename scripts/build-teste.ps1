@@ -49,17 +49,15 @@ if (-not (Test-Path (Join-Path $Crates 'nvt-medicao\Cargo.toml'))) {
     throw 'crates\nvt-medicao não existe: a gravação de partidas (feature medicao-partidas) ainda não foi implementada; não há build de teste para gerar.'
 }
 
-# Feature de teste de cada pacote, conforme o Cargo.toml: medicao-partidas (preferida) ou
-# build-de-teste.
+# Feature de teste (D9/Q11): 'medicao-partidas' nos três binários; ela liga também o
+# dry-run da limpeza (build-de-teste) no serviço e no agente.
 function Get-FeatureTeste([string]$Pacote) {
     $toml = Get-Content -Raw -Encoding UTF8 (Join-Path $Crates "$Pacote\Cargo.toml")
     $secao = [regex]::Match($toml, '(?ms)^\[features\]\s*$(.*?)(?=^\[|\z)')
-    if ($secao.Success) {
-        foreach ($f in 'medicao-partidas', 'build-de-teste') {
-            if ($secao.Groups[1].Value -match ('(?m)^\s*' + [regex]::Escape($f) + '\s*=')) { return $f }
-        }
+    if ($secao.Success -and $secao.Groups[1].Value -match '(?m)^\s*medicao-partidas\s*=') {
+        return 'medicao-partidas'
     }
-    throw "crates\$Pacote\Cargo.toml não declara 'medicao-partidas' nem 'build-de-teste'."
+    throw "crates\$Pacote\Cargo.toml não declara a feature 'medicao-partidas'."
 }
 
 $Pacotes = 'nvt-service', 'nvt-agente', 'nvt-ui'
