@@ -49,11 +49,11 @@ repositório, em [`instalador/nv-tuner-minisign.pub`](instalador/nv-tuner-minisi
 e é embutida nos binários por `include_str!`; a secreta fica só no secret
 `NV_TUNER_MINISIGN_KEY` do Environment `release` e em backup offline.
 
-> ⚠️ **Hoje o `.pub` contém um marcador provisório (`NVT-CHAVE-PROVISORIA`).**
-> Enquanto ele existir, **todo release falha** (passo “Conferir chave oficial
-> embutida”) e **todo serviço instalado recusa qualquer atualização**. O
-> mantenedor faz os passos abaixo uma vez, antes do primeiro lançamento com
-> atualizador.
+> **Estado atual:** a chave oficial já foi gerada (ID `8F707ABC3095F8DE`) e está em
+> `instalador/nv-tuner-minisign.pub`; o Environment `release` e o secret
+> `NV_TUNER_MINISIGN_KEY` já existem, e a v0.1.0 foi publicada assinada com ela.
+> Os passos abaixo ficam como referência para recuperação (perda da chave) e
+> rotação.
 
 ### Gerar a chave (uma vez, máquina confiável, de preferência offline)
 

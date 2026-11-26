@@ -6,7 +6,7 @@ Ajuste automático do perfil do driver NVIDIA no Windows — global e por jogo �
 a partir de regras declarativas sobre as capacidades da sua GPU, os fatos de
 cada jogo instalado e as suas preferências.
 
-> ⚠️ **Aviso:** o nv-tuner altera configurações do perfil do driver NVIDIA
+> **Aviso:** o nv-tuner altera configurações do perfil do driver NVIDIA
 > (DRS) do seu sistema. Antes da primeira mudança ele guarda um snapshot dos
 > valores originais, e tudo o que alterou pode ser desfeito em
 > **Restaurar original** (veja [Instalação](#instalação)).

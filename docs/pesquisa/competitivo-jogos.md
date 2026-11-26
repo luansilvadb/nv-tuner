@@ -81,7 +81,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - um repositório comunitário relata que algumas chaves de `cs2_video.txt` deixaram de ter efeito [8] [C].
   
   Editar só com CS2 e Steam fechados e conferir as duas pastas (`local` e `remote`).
-- **Veredito:** ✅ seguro. Ganho **moderado**: Reflex e `fps_max` já estão no menu, então o valor do app está em aplicar e manter um perfil consistente.
+- **Veredito:** seguro. Ganho **moderado**: Reflex e `fps_max` já estão no menu, então o valor do app está em aplicar e manter um perfil consistente.
 
 ## 3. Valorant
 
@@ -99,7 +99,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - a Riot só orienta **apagar** a pasta para resetar, nunca editar [13] [O];
   - a resolução esticada por `.ini` é tema controverso, sem posição oficial [16] [C].
 - **Armadilhas:** o servidor sobrescreve, os arquivos são por conta e o Vanguard fica ativo desde o boot (o modo sob demanda também observa o que carrega antes do jogo).
-- **Veredito:** ⛔ **evitar edição de arquivo.** O risco não é comprovado, mas não há fonte oficial favorável e a sincronização com o servidor anula o ganho. Tudo o que importa está no menu. O app pode **recomendar** os valores na interface.
+- **Veredito:** **evitar edição de arquivo.** O risco não é comprovado, mas não há fonte oficial favorável e a sincronização com o servidor anula o ganho. Tudo o que importa está no menu. O app pode **recomendar** os valores na interface.
 
 ## 4. League of Legends
 
@@ -118,7 +118,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - guias mandam marcar como somente leitura porque o cliente sobrescreve, o que a **regra 13 proíbe** [18][19] [C];
   - parte dos ajustes do cliente é sincronizada com a conta [C].
 - **Armadilhas:** o cliente regrava ao abrir. O caminho é configurável (instalação em outro disco).
-- **Veredito:** ⛔ **evitar.** O ganho já é obtido pelo menu e pelo driver (ULLM e energia), sem tocar no arquivo.
+- **Veredito:** **evitar.** O ganho já é obtido pelo menu e pelo driver (ULLM e energia), sem tocar no arquivo.
 
 ## 5. Fortnite
 
@@ -141,7 +141,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - o jogo regrava ao fechar;
   - o modo de renderização às vezes não persiste (a Epic orienta usar argumento de linha de comando) [21] [O];
   - **somente leitura proibido** (quebra o menu, como a própria Epic descreve).
-- **Veredito:** ✅ seguro, com ganho **alto**: Reflex, `FrameRateLimit` e o modo de renderização estão num único arquivo. A troca para o modo Performance só com escolha explícita do usuário.
+- **Veredito:** seguro, com ganho **alto**: Reflex, `FrameRateLimit` e o modo de renderização estão num único arquivo. A troca para o modo Performance só com escolha explícita do usuário.
 
 ## 6. Apex Legends
 
@@ -166,7 +166,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - o jogo regrava `videoconfig.txt` ao mudar qualquer opção de vídeo;
   - guias mandam travar como somente leitura (proibido aqui);
   - a EA app descarta opções de inicialização.
-- **Veredito:** ⚠️ **parcial.** Só `+fps_max` pela opção de inicialização documentada pela EA. **Não editar `videoconfig.txt`**: não há aval oficial, há relatos de punição e o histórico de uso do arquivo para tirar sombras e efeitos o torna sensível.
+- **Veredito:** **parcial.** Só `+fps_max` pela opção de inicialização documentada pela EA. **Não editar `videoconfig.txt`**: não há aval oficial, há relatos de punição e o histórico de uso do arquivo para tirar sombras e efeitos o torna sensível.
 
 ## 7. Overwatch 2
 
@@ -187,7 +187,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - há relatos de arquivo ausente ou não salvo;
   - OneDrive;
   - o perfil do servidor reaplica o que não é vídeo.
-- **Veredito:** ⚠️ **possível, mas sem aval oficial.** Ganho baixo, porque tudo já está no menu. Recomendação: começar só **informando** os valores na interface e deixar a gravação para quando houver fonte oficial.
+- **Veredito:** **possível, mas sem aval oficial.** Ganho baixo, porque tudo já está no menu. Recomendação: começar só **informando** os valores na interface e deixar a gravação para quando houver fonte oficial.
 
 ## 8. Rainbow Six Siege (Siege X)
 
@@ -203,7 +203,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
 - **Armadilhas:**
   - várias contas criam várias pastas, e é preciso identificar a conta certa;
   - editar só com o jogo fechado.
-- **Veredito:** ✅ seguro, com ganho **alto em CPUs fracas** (o `FPSLimit` resolve o 100% de CPU). Melhor caso documentado.
+- **Veredito:** seguro, com ganho **alto em CPUs fracas** (o `FPSLimit` resolve o 100% de CPU). Melhor caso documentado.
 
 ## 9. Call of Duty (Warzone / Black Ops 6 / Black Ops 7)
 
@@ -221,7 +221,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - em recurso de banimento negado, a Activision já citou "manipulação de dados do jogo" [42] [C];
   - o Ricochet teve banimentos indevidos que depois foram revertidos [42] [C].
 - **Armadilhas:** os nomes de arquivo mudam por título, o jogo regrava e há valores fora do menu.
-- **Veredito:** ⛔ **evitar.** O anticheat é agressivo, não há aval oficial, o ganho específico do arquivo (`RendererWorkerCount`) está fora do menu e os formatos mudam a cada lançamento.
+- **Veredito:** **evitar.** O anticheat é agressivo, não há aval oficial, o ganho específico do arquivo (`RendererWorkerCount`) está fora do menu e os formatos mudam a cada lançamento.
 
 ## 10. Rocket League
 
@@ -239,7 +239,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - o jogo regrava ao fechar;
   - somente leitura quebra o salvamento (a própria Epic diz isso);
   - possível duplicata na pasta de instalação.
-- **Veredito:** ✅ seguro, com ganho **moderado a alto**. É onde o ajuste de driver (ULLM) mais compensa, porque o jogo não tem Reflex.
+- **Veredito:** seguro, com ganho **moderado a alto**. É onde o ajuste de driver (ULLM) mais compensa, porque o jogo não tem Reflex.
 
 ## 11. PUBG: Battlegrounds
 
@@ -259,7 +259,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - houve manchetes (não confirmadas) de banimento por config [51] [C];
   - o uso histórico do arquivo para tirar folhagem e efeitos o torna sensível.
 - **Armadilhas:** o jogo regrava, e guias mandam usar somente leitura.
-- **Veredito:** ⚠️ **cauteloso.** Na prática, edição de valores do menu provavelmente é inócua, mas não há fonte oficial. Recomendação: começar só **informando** (Reflex, limite e modo no menu) e não gravar o arquivo até haver aval da Krafton.
+- **Veredito:** **cauteloso.** Na prática, edição de valores do menu provavelmente é inócua, mas não há fonte oficial. Recomendação: começar só **informando** (Reflex, limite e modo no menu) e não gravar o arquivo até haver aval da Krafton.
 
 ## 12. Dota 2
 
@@ -275,7 +275,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   O Dota 2 não tem Reflex [4] [O]. O fallback é o ULLM do driver.
 - **Segurança da edição:** opções de inicialização da Steam são o mecanismo oficial do cliente. Os arquivos `cfg` ficam na pasta do jogo (regra 7).
 - **Armadilhas:** a Steam precisa estar fechada para gravar o `localconfig.vdf` [5] [C], e o jogo regrava `video.txt`.
-- **Veredito:** ✅ seguro **só pelas opções de inicialização** (`+fps_max`, API). Não editar `video.txt` nem `boot.vcfg`. Ganho **moderado**, porque o limite padrão de 120 FPS realmente segura máquinas boas.
+- **Veredito:** seguro **só pelas opções de inicialização** (`+fps_max`, API). Não editar `video.txt` nem `boot.vcfg`. Ganho **moderado**, porque o limite padrão de 120 FPS realmente segura máquinas boas.
 
 ## 13. Marvel Rivals
 
@@ -288,7 +288,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - **modo:** tela cheia;
   - **V-Sync** desligado.
 - **Segurança da edição:** **proibido pela publisher.** A lista oficial de software e hardware proibidos (2025-02-26) inclui, entre as ações proibidas com o jogo aberto, *"Unauthorized modification of client configuration files"* e *"Modifying various 'xxx.ini' files related to graphics rendering to alter the game's display"*, com risco de *"removal from the game or stricter penalties"* [58] [O]. Antes disso, a NetEase já tinha pedido para não modificar nenhum arquivo, inclusive config [59] [O/C]. Jogadores também usavam o INI para cancelar partidas [60] [C].
-- **Veredito:** ⛔ **não tocar.** Nem para valores do menu. O app só informa.
+- **Veredito:** **não tocar.** Nem para valores do menu. O app só informa.
 
 ## 14. Deadlock
 
@@ -302,7 +302,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - **V-Sync** desligado.
 - **Segurança da edição:** o jogo ainda está em acesso antecipado e o mecanismo de inicialização da Steam é oficial. Os arquivos `cfg` ficam na pasta de instalação (regra 7). Há guias que trocam o `gameinfo.gi`, que é **arquivo do jogo**, proibido.
 - **Armadilhas:** jogo em desenvolvimento (chaves mudam), Steam precisa estar fechada e o jogo regrava `video.txt`.
-- **Veredito:** ✅ seguro **só pelas opções de inicialização**. Ganho **baixo a moderado**, porque Reflex e limite estão no menu.
+- **Veredito:** seguro **só pelas opções de inicialização**. Ganho **baixo a moderado**, porque Reflex e limite estão no menu.
 
 ## 15. The Finals
 
@@ -316,7 +316,7 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
   - **V-Sync** desligado;
   - **DX12** é o padrão.
 - **Segurança da edição:** não há aval oficial. O anticheat está em mudança e houve falsos positivos.
-- **Veredito:** ⚠️ **evitar por ora.** O arquivo é do usuário, mas o anticheat está em transição e não há fonte oficial favorável.
+- **Veredito:** **evitar por ora.** O arquivo é do usuário, mas o anticheat está em transição e não há fonte oficial favorável.
 
 ---
 
@@ -324,22 +324,22 @@ API gráfica (DX11, DX12 ou Vulkan) e "modo desempenho" vêm em seguida, mas var
 
 | Jogo | Anticheat | Arquivo de vídeo (por quê) | Onde | Reflex | Editar com o app? | Ganho |
 |---|---|---|---|---|---|---|
-| CS2 | VAC/Trusted Mode | `cs2_video.txt`, `*.vcfg` (KV) | `userdata\<id>\730\local` ou `remote` (conta Steam) | sim | ✅ jogo e Steam fechados | moderado |
-| Valorant | Vanguard | `GameUserSettings.ini` | `%LOCALAPPDATA%\VALORANT\Saved\Config\<conta>` (servidor sincroniza) | sim | ⛔ só informar | baixo |
-| League of Legends | Vanguard | `game.cfg`, `PersistedSettings.json` | **pasta de instalação** | não | ⛔ | baixo |
-| Fortnite | EAC + BattlEye | `GameUserSettings.ini` | `%LOCALAPPDATA%\FortniteGame\...\WindowsClient` | sim | ✅ (Epic reconhece o arquivo) | alto |
-| Apex Legends | EAC | `videoconfig.txt` | `Saved Games\Respawn\Apex\local` | sim | ⚠️ só `+fps_max` (oficial EA) | moderado |
-| Overwatch 2 | Blizzard | `Settings_v0.ini` | `Documents\Overwatch\Settings` (OneDrive) | sim + Reduce Buffering | ⚠️ só informar por ora | baixo |
-| Rainbow Six Siege | BattlEye + QArC | `GameSettings.ini` | `Documents\My Games\Rainbow Six - Siege\<conta>` | sim | ✅ (Ubisoft manda editar `FPSLimit`) | alto (CPU) |
-| CoD Warzone/BO6/BO7 | Ricochet | `s.1.0.cod2x.txt`, `options.*` | `Documents\Call of Duty\players` | sim | ⛔ | — |
-| Rocket League | EAC (2026) | `TASystemSettings.ini` | `Documents\My Games\Rocket League\TAGame\Config` | **não** | ✅ (Epic reconhece o arquivo) | moderado/alto |
-| PUBG | BattlEye + Zakynthos | `GameUserSettings.ini` | `%LOCALAPPDATA%\TslGame\...\WindowsNoEditor` | sim | ⚠️ só informar | moderado |
-| Dota 2 | VAC | `video.txt`, `boot.vcfg` | **pasta de instalação** | não | ✅ só opções de inicialização | moderado |
-| Marvel Rivals | NetEase | `GameUserSettings.ini`, `Engine.ini` | `%LOCALAPPDATA%\Marvel\Saved\Config\Windows` | sim | ⛔ **proibido pela publisher** | — |
-| Deadlock | VAC | `video.txt` | **pasta de instalação** | sim | ✅ só opções de inicialização | baixo/moderado |
-| The Finals | EAC + próprio/kernel | `GameUserSettings.ini` | `%LOCALAPPDATA%\Discovery\...\WindowsClient` | sim | ⚠️ evitar por ora | moderado |
+| CS2 | VAC/Trusted Mode | `cs2_video.txt`, `*.vcfg` (KV) | `userdata\<id>\730\local` ou `remote` (conta Steam) | sim | sim, jogo e Steam fechados | moderado |
+| Valorant | Vanguard | `GameUserSettings.ini` | `%LOCALAPPDATA%\VALORANT\Saved\Config\<conta>` (servidor sincroniza) | sim | não, só informar | baixo |
+| League of Legends | Vanguard | `game.cfg`, `PersistedSettings.json` | **pasta de instalação** | não | não | baixo |
+| Fortnite | EAC + BattlEye | `GameUserSettings.ini` | `%LOCALAPPDATA%\FortniteGame\...\WindowsClient` | sim | sim (Epic reconhece o arquivo) | alto |
+| Apex Legends | EAC | `videoconfig.txt` | `Saved Games\Respawn\Apex\local` | sim | parcial: só `+fps_max` (oficial EA) | moderado |
+| Overwatch 2 | Blizzard | `Settings_v0.ini` | `Documents\Overwatch\Settings` (OneDrive) | sim + Reduce Buffering | parcial: só informar por ora | baixo |
+| Rainbow Six Siege | BattlEye + QArC | `GameSettings.ini` | `Documents\My Games\Rainbow Six - Siege\<conta>` | sim | sim (Ubisoft manda editar `FPSLimit`) | alto (CPU) |
+| CoD Warzone/BO6/BO7 | Ricochet | `s.1.0.cod2x.txt`, `options.*` | `Documents\Call of Duty\players` | sim | não | — |
+| Rocket League | EAC (2026) | `TASystemSettings.ini` | `Documents\My Games\Rocket League\TAGame\Config` | **não** | sim (Epic reconhece o arquivo) | moderado/alto |
+| PUBG | BattlEye + Zakynthos | `GameUserSettings.ini` | `%LOCALAPPDATA%\TslGame\...\WindowsNoEditor` | sim | parcial: só informar | moderado |
+| Dota 2 | VAC | `video.txt`, `boot.vcfg` | **pasta de instalação** | não | sim, só opções de inicialização | moderado |
+| Marvel Rivals | NetEase | `GameUserSettings.ini`, `Engine.ini` | `%LOCALAPPDATA%\Marvel\Saved\Config\Windows` | sim | não, **proibido pela publisher** | — |
+| Deadlock | VAC | `video.txt` | **pasta de instalação** | sim | sim, só opções de inicialização | baixo/moderado |
+| The Finals | EAC + próprio/kernel | `GameUserSettings.ini` | `%LOCALAPPDATA%\Discovery\...\WindowsClient` | sim | parcial: evitar por ora | moderado |
 
-Regras de implementação que valem para todos os ✅:
+Regras de implementação que valem para todos os casos seguros:
 
 1. Detectar por nome de processo (sem handle) que o jogo **e** o launcher (Steam, Epic, Ubisoft Connect) estão fechados.
 2. Fazer backup do arquivo original, com hash, antes de gravar.

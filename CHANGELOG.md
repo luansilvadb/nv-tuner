@@ -17,58 +17,24 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 > O MSI e os executáveis ainda **não** têm assinatura digital Authenticode (o SmartScreen pode avisar); as atualizações são verificadas com Minisign.
 
-*Fase competitiva 2: camada Windows*
-
 ### Adicionado
 
-- **Ajustes do Windows do seu usuário**, todos **experimentais**: taxa de atualização no máximo compatível (mesma resolução e profundidade), aceleração do mouse desligada (sensibilidade intocada), otimizações para jogos em janela (Windows 11, build 22000+) e captura histórica do Game Bar desligada (só se estiver ligada). Regras em `regras/windows.toml`.
-- **Aceite por regra experimental.** Na aba **Windows** (e em **Mudanças**, para o driver), cada experimental aparece com **Aceitar**; aceita, mostra “experimental aceita por você” e pode ser **Retirada**, voltando ao valor de antes da gestão. O aceite é por usuário do Windows e vale também para as regras experimentais de driver da Fase 1; como o perfil do driver é compartilhado, só os aceites de quem está na sessão de console ativa entram no plano do driver.
-- **Agente do usuário** (`nvt-agente`), sem privilégios, iniciado no logon de cada usuário. Só ele grava a camada Windows; o serviço continua sendo o único avaliador. O agente guarda o valor original de cada ajuste, relê após gravar, detecta mudanças manuais (que viram escolha sua) e confere deriva a cada 10 minutos.
-- **Nada é gravado no Windows com jogo ou anticheat aberto**, inclusive reversão, restauração e desinstalação: o agente usa o mesmo portão do serviço, conferido imediatamente antes de cada escrita.
-- Aba **Windows** na interface: **O que o app fez** com reversão individual, **Experimentais** e **Diagnóstico**; mudanças e histórico identificam a camada (driver ou Windows).
-- **Diagnóstico somente leitura**: Game Mode, VRR do Windows, otimizações por jogo e polling do mouse (orientação) na sessão; HAGS, MPO, plano de energia, CPU X3D, modo MSI da GPU, VBS/HVCI/IOMMU, TPM, Secure Boot e build do Windows na máquina. O app nunca altera TPM, Secure Boot, VBS nem o BCD.
-- Desinstalação com `RESTAURAR_PERFIL=1` restaura também os ajustes do Windows do usuário que desinstala; outros usuários devem usar **Restaurar original** antes.
+- **Base curada de 14 jogos competitivos** (Counter-Strike 2, VALORANT, League of Legends, Fortnite, Apex Legends, Overwatch 2, Rainbow Six Siege, Call of Duty, Rocket League, PUBG: Battlegrounds, Dota 2, Marvel Rivals, Deadlock e THE FINALS), com Reflex, limitador próprio e anticheat de cada um; esses fatos valem mais que os lidos do disco. Os jogos da base ganham o selo **competitivo** e, se estavam abertos na última varredura, o selo **aberto**.
+- **Orientações "Faça no jogo"** na tela Jogos (ex.: Reflex em *On + Boost*, limitador do jogo, tela cheia). O app não as aplica: são ajustes para você fazer no menu do jogo.
+- **Taxa de atualização e VRR (G-SYNC)** do monitor principal na **Visão geral**, com os avisos "G-SYNC sem VRR" e "VRR desligado no painel". Regras novas de G-SYNC (limite de FPS logo abaixo da taxa do monitor; sem limite do driver em competitivos com Reflex).
+- **Ajustes do Windows do seu usuário**: taxa de atualização no máximo compatível, aceleração do mouse desligada (sensibilidade intocada), otimizações para jogos em janela (Windows 11) e captura histórica do Game Bar desligada. Ficam na nova aba **Windows**, com **O que o app fez** (reversão individual), **Experimentais** e **Diagnóstico** somente leitura (Game Mode, VRR, HAGS, MPO, plano de energia, VBS/HVCI, TPM, Secure Boot e outros; o app nunca altera TPM, Secure Boot, VBS nem o BCD).
+- **Regras experimentais exigem Aceitar.** Driver e Windows: cada experimental aparece como sugestão, sem efeito até você clicar em **Aceitar**, e pode ser **Retirada**, voltando ao valor anterior. O aceite é por usuário do Windows.
+- **Agente do usuário** (`nvt-agente`), sem privilégios, iniciado no logon. Só ele grava a camada Windows; guarda o valor original, respeita mudanças manuais e confere deriva a cada 10 minutos.
+- **Nada é gravado com jogo ou anticheat aberto**, no driver ou no Windows, inclusive reaplicação, **Restaurar original** e desinstalação. A ação fica pendente, aparece na faixa **Jogo aberto** e roda quando o jogo fecha; uma restauração pendente sobrevive ao reinício do serviço. A detecção usa só a lista de processos, por nome, sem abrir os processos.
+- **Atualização automática, obrigatória e silenciosa.** O serviço verifica a release Latest do GitHub alguns minutos após iniciar e depois a cada ~6 h, e instala com `msiexec /qn /norestart`, sem reiniciar o Windows e sem apagar ajustes. Só aceita versão maior, com manifesto assinado com Minisign e MSI conferido por tamanho e SHA-256; nunca instala com jogo aberto; sem internet, nada bloqueia. A **Visão geral** e `nvt-service status` mostram o estado da atualização.
 
 ### Alterado
 
-- Protocolo entre interface, agente e serviço atualizado para a **v5** (sem compatibilidade com a v4; o MSI instala tudo junto). A identidade de quem chama vem do token do cliente do pipe, nunca do corpo da mensagem.
-- **Restaurar original** cobre o driver e o Windows; a restauração tem uma geração persistida no serviço, e um agente que estava fora (logoff, reinício) restaura quando voltar. A interface separa “driver concluído” de “usuário pendente”.
-- Instalador: inclui `nvt-agente.exe` e a entrada de inicialização no logon (removida na desinstalação); o Restart Manager fecha o agente de forma cooperativa na atualização e na remoção.
-
-*Atualização automática*
-
-### Adicionado
-
-- **Atualização automática, obrigatória e silenciosa.** O serviço verifica a release Latest do GitHub entre 5 e 15 min após iniciar e depois a cada ~6 h, baixa o MSI para `%ProgramData%\nv-tuner\atualizacao` (pasta só SYSTEM/Administradores) e instala com `msiexec /qn /norestart`, sem reiniciar o Windows e sem restaurar nem apagar ajustes. Sem opção de desligar.
-- **Só versão assinada e maior:** manifesto `atualizacao.json` assinado com Minisign (pré-hash, comentário confiável com a versão), MSI amarrado por tamanho e SHA-256, proteção contra downgrade e replay pela maior versão já vista; a chave pública vem de `instalador/nv-tuner-minisign.pub`.
-- **Nunca com jogo aberto:** o portão de processos é consultado imediatamente antes de lançar o instalador, em exclusão mútua com o ciclo DRS; adiamento reavaliado a cada 60 s. Outra instalação do Windows em andamento adia 30 min.
-- **Sem internet, nada bloqueia:** espera crescente de 30 min até 6 h; `Retry-After` respeitado. Três falhas de instalação da mesma versão a abandonam até surgir outra maior.
-- Depois do upgrade, o serviço novo lê o resultado no log do instalador, relança o agente uma vez nas sessões (do mesmo usuário) que o tinham aberto, e a **Visão geral** mostra a versão, a última verificação, pendências e “Atualizado para a vX.Y.Z” uma vez por usuário. `nvt-service status` mostra o estado da atualização.
-- Ferramenta do mantenedor `nvt-assinar` (`gerar-chave`, `assinar`, `verificar`), fora do MSI.
-- Release: secret de assinatura só no Environment `release` (tags `v*`), rascunho, verificação dos arquivos baixados com o mesmo verificador do serviço, espera do CI verde na `main` e só então Latest.
-
-### Alterado
-
-- Protocolo entre interface, agente e serviço atualizado para a **v6** (`estado.atualizacao` e requisição `marcar_atualizacao_vista`; sem compatibilidade com a v5). O agente trata serviço de outra versão como indisponível temporário durante o upgrade.
-- Exceção auditada à regra “nenhum processo externo”: só `nvt-service::atualizacao::lancador` cria processos (msiexec e o relançamento do agente), vigiado por teste com contagem exata.
-- Instalador: `REBOOT=ReallySuppress`, `ARPURLINFOABOUT`, e o SCM reinicia o serviço também a partir da 3ª falha (sem serviço não há atualizador).
-
-*Fase competitiva 1: driver e fatos dos jogos*
-
-### Adicionado
-
-- **Base curada de 14 jogos competitivos** (Counter-Strike 2, VALORANT, League of Legends, Fortnite, Apex Legends, Overwatch 2, Rainbow Six Siege, Call of Duty, Rocket League, PUBG: Battlegrounds, Dota 2, Marvel Rivals, Deadlock e THE FINALS), com Reflex, limitador próprio e anticheat de cada um. Esses fatos valem mais que os lidos do disco.
-- **Orientações “Faça no jogo”** por jogo da base (ex.: Reflex em *On + Boost*, limitador do jogo, tela cheia), mostradas na seção **Faça no jogo** da tela Jogos. O app não as aplica: são ajustes para você fazer no menu do jogo. Os jogos da base ganham o selo **competitivo** e, se estavam em execução na última varredura, o selo **aberto**.
-- **Taxa de atualização e VRR (G-SYNC)** do monitor principal lidos pela NVAPI e mostrados na **Visão geral**, com os avisos “G-SYNC sem VRR” e “VRR desligado no painel”.
-- **Gravação adiada com jogo aberto.** Enquanto um jogo detectado, um jogo da base ou um anticheat (EasyAntiCheat, BattlEye) estiver em execução, nada é gravado no driver, nem a reaplicação por deriva nem o **Restaurar original**: a ação fica pendente (conferida a cada 15 s) e roda quando o jogo fecha, e a interface mostra a faixa **Jogo aberto** com o que ficou pendente, inclusive depois de salvar preferências ou devolver uma setting ao automático (em vez de “feito”). A pendência só sai depois que a ação dá certo: se falhar, é tentada de novo a cada 15 s, até 3 vezes, e então vira um aviso. Uma **restauração pendente é gravada e sobrevive ao reinício do serviço**; uma aplicação pendente fica só na memória (o próximo ciclo a refaz). Se a lista de processos não puder ser lida, a gravação também fica pendente e a interface diz “Não foi possível verificar se há jogo aberto; as alterações ficam pendentes”. Com o serviço em execução, `apply`/`restore-original` adiados saem com código 3 e dizem que nada foi feito agora; na desinstalação com `RESTAURAR_PERFIL=1` e jogo aberto, o log do MSI registra que a restauração não foi feita (feche os jogos e desinstale de novo, ou use **Restaurar original** antes). Sem o serviço em execução, `apply`/`restore-original` pela linha de comando são recusados com jogo aberto. A detecção usa só a lista de processos, por nome, sem abrir os processos.
-- Regras novas de G-SYNC: limite de FPS logo abaixo da taxa do monitor (ex.: 224 FPS a 240 Hz) e, em jogos competitivos com Reflex, sem limite do driver. Entram como **experimentais**: aparecem como sugestão e não têm efeito até a validação em laboratório.
-
-### Alterado
-
-- **Energia em desempenho máximo saiu do perfil global** e passa a valer só no perfil de cada jogo competitivo. O perfil global volta ao valor que tinha antes do nv-tuner.
-- Os executáveis dos jogos são lidos com compartilhamento total e sem mapeamento, e a pasta de um jogo em execução não é lida (valem os dados da varredura anterior).
-- Protocolo entre interface e serviço atualizado para a **v4**: interface e serviço precisam ser da mesma versão (o MSI instala os dois juntos).
-
+- **Energia em desempenho máximo saiu do perfil global** e passa a valer só no perfil de cada jogo competitivo; o perfil global volta ao valor de antes do nv-tuner.
+- **Restaurar original** cobre o driver e o Windows; um agente que estava fora (logoff, reinício) restaura quando voltar. Com `RESTAURAR_PERFIL=1`, a desinstalação restaura também os ajustes do Windows de quem desinstala.
+- Os executáveis dos jogos são lidos com compartilhamento total, e a pasta de um jogo em execução não é lida.
+- Protocolo **v6**: interface, serviço e agente precisam ser da mesma versão; o MSI instala tudo junto.
+- Instalador: inclui o agente e sua inicialização no logon, fecha o agente de forma cooperativa na atualização e o SCM reinicia o serviço em qualquer falha.
 ## [0.0.2] - 2026-11-25
 
 *O que o app fez em cada jogo*

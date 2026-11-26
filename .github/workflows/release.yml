@@ -289,7 +289,7 @@ jobs:
             while ($secao.Count -gt 0 -and $secao[0].Trim() -eq '') { $secao.RemoveAt(0) }
           }
           if ($secao.Count -eq 0) { throw "A seção '## [$versao]' do CHANGELOG.md está vazia." }
-          # Subtítulos do Keep a Changelog descem um nível, abaixo de "## ✨ Novidades".
+          # Subtítulos do Keep a Changelog descem um nível, abaixo de "## Novidades".
           $novidades = ($secao | ForEach-Object { $_ -replace '^### ', '#### ' }) -join "`n"
 
           # Tag anterior: a maior versão abaixo da atual.
