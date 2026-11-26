@@ -740,7 +740,13 @@ mod testes {
 
     #[test]
     fn pasta_preparada_tem_dacl_privada() {
-        let t = Temp::novo("pasta");
+        // Nome único por execução: sem privilégio a pasta com DACL restrita
+        // não pode ser apagada e não pode atrapalhar a próxima rodada.
+        let unico = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let t = Temp::novo(&format!("pasta-{unico}"));
         let dir = t.0.join("atualizacao");
         match preparar_pasta(&dir) {
             Ok(c) => {
@@ -749,9 +755,12 @@ mod testes {
                 assert_eq!(preparar_pasta(&dir).unwrap(), dir);
             }
             Err(e) => {
-                // Sem privilégio, só o dono (o próprio usuário) é recusado.
+                // Sem privilégio: o dono (o próprio usuário) é recusado, ou a
+                // releitura da pasta só-SYSTEM/Administradores é negada.
                 assert!(!crate::diretorio::processo_privilegiado(), "{e}");
-                assert!(e.to_string().contains("pertence a"), "{e}");
+                let negado =
+                    e.kind() == io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(5);
+                assert!(negado || e.to_string().contains("pertence a"), "{e}");
             }
         }
         // Pasta comum (herda permissões do temp) é recusada.

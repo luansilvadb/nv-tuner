@@ -13,7 +13,7 @@ cada jogo instalado e as suas preferências.
 
 ## Status
 
-**Pré-alfa (v0.1.0).** Serviço, interface, motor de regras e instalador já
+**Pré-alfa (v0.2.0).** Serviço, interface, motor de regras e instalador já
 funcionam, mas o projeto foi testado em pouquíssimas máquinas (uma GPU Turing,
 um driver). Espere bugs, mudanças de formato entre versões e regras ainda
 `experimental`. Use por sua conta e risco, de preferência sabendo restaurar o
