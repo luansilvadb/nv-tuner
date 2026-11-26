@@ -520,9 +520,12 @@ caminho de instalação e instala os três binários juntos).
   `.msi.sha256`, `.msi.minisig`, `atualizacao.json`, `atualizacao.json.minisig`; baixa
   todos de volta (`gh release download`) para pasta vazia e roda `nvt-assinar verificar`.
   **I**.
-- **U-64** Antes de publicar, espera o workflow `CI` do mesmo commit (`gh run list
-  --workflow ci.yml --commit $GITHUB_SHA`, `gh run watch`) concluir com sucesso; sem
-  execução de CI (commit fora da `main`) ou falha → mantém rascunho e falha o job. **I**.
+- **U-64** Antes de qualquer compilação ou acesso ao secret (job `verificar`, sem
+  Environment, D-10): o commit da tag precisa ser ancestral de (ou igual a) `origin/main`
+  (`git merge-base --is-ancestor`) e o workflow `CI` de push na `main` do mesmo SHA
+  (`gh run list --workflow ci.yml --commit $GITHUB_SHA --event push --branch main`,
+  `gh run watch`, até 30 min) precisa concluir com `success`; commit fora da `main`, sem
+  execução de CI ou com falha → o job falha e nada é compilado, assinado nem publicado. **I**.
 - **U-65** Publica com `gh release edit vX.Y.Z --draft=false --latest --prerelease=false`. **I**.
 - **U-66** A versão da tag é maior que a da release Latest atual (comparação `X.Y.Z`),
   senão falha antes de compilar (como o orquestrador, O§2). **I**.
@@ -647,22 +650,26 @@ Requisição: `MarcarAtualizacaoVista { versao }`. `usuarios.json` ganha
 
 ### 11.2 `.github/workflows/release.yml`
 
-Ordem nova: (1) conferir tag × `Cargo.toml`; (2) **conferir secret** (U-62); (3) conferir
-versão > Latest (U-66); (4) compilar `nvt-service nvt-ui nvt-agente nvt-assinar`; (5)
-MSI; (6) SHA-256; (7) `nvt-assinar assinar --versao X.Y.Z --msi <msi>` (manifesto e as
-duas assinaturas; antes, (4b) `nvt-assinar verificar` numa pasta vazia falha o job se a
-chave embutida for a provisória); (8) notas;
-(9) `gh release create --draft` com os cinco arquivos; (10) `gh release download` para
-pasta nova + `nvt-assinar verificar`; (11) esperar CI verde (U-64; `permissions:
-actions: read`); (12) `gh release edit --draft=false --latest`. O secret entra só nos
-passos 2 e 7, via `env:`. `concurrency` mantido.
+Dois jobs (D-10). Job `verificar` (sem Environment, sem secret): (1) commit da tag
+ancestral de (ou igual a) `origin/main` (U-64); (2) esperar CI de push verde do mesmo SHA
+(U-64; `permissions: actions: read`); (3) conferir tag × `Cargo.toml`; (4) conferir
+versão > Latest (U-66); (5) feature `laboratorio` desligada (U-15a); (6) compilar
+`nvt-assinar` e falhar se a chave embutida for a provisória. Job `msi` (Environment
+`release`, `needs: verificar`): (7) checkout do SHA verificado e conferência de que a tag
+ainda aponta para ele; (8) **conferir secret** (U-62); (9) compilar `nvt-service nvt-ui
+nvt-agente nvt-assinar` e reconferir a chave; (10) MSI; (11) SHA-256; (12) `nvt-assinar
+assinar --versao X.Y.Z --msi <msi>` (manifesto e as duas assinaturas); (13) notas;
+(14) `gh release create --draft` com os cinco arquivos; (15) `gh release download` para
+pasta nova + `nvt-assinar verificar`; (16) `gh release edit --draft=false --latest`. O
+secret entra só nos passos 8 e 12, via `env:`. `concurrency` mantido.
 
 Endurecimento obrigatório: `NV_TUNER_MINISIGN_KEY` é secret de **Environment** `release`
-com regra de implantação só para tags `v*` (sem aprovação manual, então não contraria
-“sem ninguém fazer nada”); sem isso qualquer workflow alterado num branch com permissão
-de push leria o secret. O job de release não usa `Swatinem/rust-cache` (cache
+com **revisores obrigatórios** (o mantenedor aprova cada lançamento) e regra de
+implantação só para tags `v*`, somados à `main` protegida e às tags `v*` restritas por
+ruleset (D-10, CONTRIBUTING.md); sem isso qualquer workflow alterado num branch com
+permissão de push leria o secret. O job de release não usa `Swatinem/rust-cache` (cache
 compartilhado pode ser envenenado por outro ref e entraria no binário assinado). Passo
-(1b): falha se a feature `laboratorio` estiver ativa (U-15a).
+(5): falha se a feature `laboratorio` estiver ativa (U-15a).
 
 ### 11.3 `CONTRIBUTING.md` (“Chave de assinatura” e “Como lançar”)
 
@@ -749,7 +756,7 @@ lote) e as demais implementam.
 | Tarefa | Escreve | Pronto quando |
 |---|---|---|
 | 5.1 `nvt-assinar` | `crates/nvt-assinar/**` | U-60, U-61: teste gera chave temporária em memória, assina, verifica (com chave injetada no teste) e recusa adulteração |
-| 5.2 Workflow | `.github/workflows/release.yml` | §11.2; `actionlint` limpo; ensaio em fork com tag `v0.0.99`: sem secret falha (U-62), com secret fica em rascunho até CI verde e publica |
+| 5.2 Workflow | `.github/workflows/release.yml` | §11.2; `actionlint` limpo; ensaio em fork com tag `v0.0.99`: tag fora da `main` ou sem CI verde falha no job `verificar` sem compilar nem tocar no secret (U-64), sem secret falha no job `msi` (U-62), com secret cria o rascunho, verifica e publica |
 | 5.3 WiX | `instalador/nv-tuner.wxs`, `instalador/nv-tuner-minisign.pub` | §11.1; `build-msi.ps1` gera MSI com ICE limpo |
 | 5.4 Documentação | `docs/arquitetura.md`, `docs/servico.md`, `docs/ipc.md`, `docs/ui.md`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, esta spec (§4.1) e `docs/spec/atualizacao-laboratorio.md` (roteiro, sem resultados) | U-54 (se 1.2 já não cobriu), U-67, §9.7 |
 
@@ -803,10 +810,10 @@ detalhado, com campos de resultado: [`atualizacao-laboratorio.md`](atualizacao-l
    release nova (máquinas ficariam presas: considerar aceitar `*.githubusercontent.com`
    com TLS válido?).
 4. **Q4 — chave sem senha (`-W`) protegida só pelo secret**: aceita por A9; avaliar
-   Environment `release` com aprovação manual (P§4), que contraria “sem ninguém fazer
-   nada” no lançamento.
+   Environment `release` com aprovação manual (P§4): **resolvido** por D-10, com revisores
+   obrigatórios no Environment (o mantenedor aprova cada lançamento).
 5. **Q5 — CI do commit da tag**: o `ci.yml` só roda em `push` na `main` e em PR; tag
-   feita em commit que não passou pela `main` nunca publica (U-64). Aceitar ou acrescentar
+   feita em commit que não passou pela `main` falha no job `verificar`, antes de compilar ou de acessar o secret (U-64, D-10). Aceitar ou acrescentar
    `push: tags` ao CI?
 6. **Q6 — 3010 com arquivo em uso**: se o agente não fechar, a troca fica para o reboot
    e o serviço novo pode rodar com binários mistos até reiniciar; tratar como sucesso
