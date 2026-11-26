@@ -33,12 +33,13 @@ use std::time::{Duration, Instant};
 
 use nvt_drs::NvApi;
 use nvt_engine::{DriverStore, DrsReal, jogos_da_maquina};
-use nvt_ipc::pipe::{ConfigServidor, Parada, Servidor};
+use nvt_ipc::pipe::{ConfigServidor, IdentidadeCliente, Parada, Servidor};
 use nvt_ipc::{CodigoErro, Requisicao, Resposta};
 use tracing::{error, info, warn};
 
 use crate::diretorio::{self, Situacao};
 use crate::nucleo::{Config, Nucleo};
+use crate::usuario::{ArquivoUsuarios, Coordenador};
 use crate::vigia;
 
 /// Espera máxima de um pedido na fila antes de ser cancelado com `ocupado`.
@@ -62,6 +63,7 @@ const CANCELADO: u8 = 2;
 /// troca atômica: ou a principal começa a executar, ou a thread do IPC
 /// cancela e responde `ocupado` — nunca os dois.
 pub struct Chamado {
+    identidade: IdentidadeCliente,
     req: Requisicao,
     estado: Arc<AtomicU8>,
     resposta: SyncSender<Resposta>,
@@ -70,7 +72,7 @@ pub struct Chamado {
 impl Chamado {
     /// Executa `f` se o pedido não foi cancelado e envia a resposta.
     /// `false` se foi descartado.
-    pub fn atender(self, f: impl FnOnce(Requisicao) -> Resposta) -> bool {
+    pub fn atender(self, f: impl FnOnce(IdentidadeCliente, Requisicao) -> Resposta) -> bool {
         if self
             .estado
             .compare_exchange(PENDENTE, INICIADO, Ordering::AcqRel, Ordering::Acquire)
@@ -79,7 +81,7 @@ impl Chamado {
             info!("pedido IPC cancelado por tempo de espera; descartado sem executar");
             return false;
         }
-        let r = f(self.req);
+        let r = f(self.identidade, self.req);
         let _ = self.resposta.send(r);
         true
     }
@@ -87,7 +89,7 @@ impl Chamado {
 
 /// Evento para a thread principal.
 pub enum Evento {
-    Ipc(Chamado),
+    Ipc(Box<Chamado>),
     MudancaDrs,
     Parar,
 }
@@ -108,6 +110,7 @@ pub struct Opcoes {
 /// responde `ocupado`; se já começou, espera até `espera_total`.
 pub fn encaminhar(
     tx: &Sender<Evento>,
+    identidade: IdentidadeCliente,
     req: Requisicao,
     espera_inicio: Duration,
     espera_total: Duration,
@@ -115,11 +118,12 @@ pub fn encaminhar(
     let (rtx, rrx) = mpsc::sync_channel(1);
     let estado = Arc::new(AtomicU8::new(PENDENTE));
     let chamado = Chamado {
+        identidade,
         req,
         estado: estado.clone(),
         resposta: rtx,
     };
-    if tx.send(Evento::Ipc(chamado)).is_err() {
+    if tx.send(Evento::Ipc(Box::new(chamado))).is_err() {
         return Resposta::erro(CodigoErro::Interno, "serviço encerrando");
     }
     let sem_resposta = || Resposta::erro(CodigoErro::Interno, "falha interna do serviço");
@@ -158,7 +162,8 @@ pub fn iniciar_ipc(nome: &str, tx: Sender<Evento>) -> std::io::Result<(Parada, J
         .name("nvt-ipc".into())
         .spawn(move || {
             info!("IPC ouvindo em {nome}");
-            let mut tratador = |req: Requisicao| encaminhar(&tx, req, ESPERA_INICIO, ESPERA_TOTAL);
+            let mut tratador =
+                |identidade, req| encaminhar(&tx, identidade, req, ESPERA_INICIO, ESPERA_TOTAL);
             if let Err(e) = servidor.executar(&mut tratador) {
                 error!("servidor IPC parou: {e}");
             }
@@ -206,22 +211,54 @@ fn protegido<R>(onde: &str, f: impl FnOnce() -> R) -> Option<R> {
 
 /// O que o [`laco_principal`] aciona (o [`Nucleo`]; nos testes, um falso).
 pub trait Atendente {
-    fn tratar(&mut self, req: Requisicao, agora: Instant) -> Resposta;
+    fn tratar(
+        &mut self,
+        _identidade: IdentidadeCliente,
+        req: Requisicao,
+        agora: Instant,
+    ) -> Resposta;
     fn notificar_mudanca_drs(&mut self, agora: Instant);
     fn tick(&mut self, agora: Instant);
 }
 
-impl<S: DriverStore> Atendente for Nucleo<'_, S> {
-    fn tratar(&mut self, req: Requisicao, agora: Instant) -> Resposta {
-        Nucleo::tratar(self, req, agora)
+pub(crate) struct Atendimento<'a, 'b, S: DriverStore> {
+    pub nucleo: &'a mut Nucleo<'b, S>,
+    pub usuario: Option<&'a mut Coordenador>,
+}
+
+impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
+    fn tratar(
+        &mut self,
+        identidade: IdentidadeCliente,
+        req: Requisicao,
+        agora: Instant,
+    ) -> Resposta {
+        let Some(usuario) = self.usuario.as_deref_mut() else {
+            return self.nucleo.tratar(req, agora);
+        };
+        if matches!(req, Requisicao::AgenteConsultar { .. }) {
+            usuario.atualizar_processos(self.nucleo.processos_vigiados());
+        }
+        if let Some(resposta) =
+            usuario.tratar(&identidade, &req, agora, crate::nucleo::agora_unix())
+        {
+            return resposta;
+        }
+        let limite = match req {
+            Requisicao::ListarHistorico { limite } => limite as usize,
+            _ => 0,
+        };
+        let mut resposta = self.nucleo.tratar(req, agora);
+        usuario.projetar(&identidade, &mut resposta, limite, agora);
+        resposta
     }
 
     fn notificar_mudanca_drs(&mut self, agora: Instant) {
-        Nucleo::notificar_mudanca_drs(self, agora);
+        self.nucleo.notificar_mudanca_drs(agora);
     }
 
     fn tick(&mut self, agora: Instant) {
-        Nucleo::tick(self, agora);
+        self.nucleo.tick(agora);
     }
 }
 
@@ -232,12 +269,14 @@ pub fn laco_principal(nucleo: &mut impl Atendente, rx: &Receiver<Evento>) -> Fim
         match rx.recv_timeout(PASSO) {
             Ok(Evento::Ipc(chamado)) => {
                 let mut panico = false;
-                chamado.atender(|req| {
-                    protegido("requisição IPC", || nucleo.tratar(req, Instant::now()))
-                        .unwrap_or_else(|| {
-                            panico = true;
-                            Resposta::erro(CodigoErro::Interno, "falha interna do serviço")
-                        })
+                chamado.atender(|identidade, req| {
+                    protegido("requisição IPC", || {
+                        nucleo.tratar(identidade, req, Instant::now())
+                    })
+                    .unwrap_or_else(|| {
+                        panico = true;
+                        Resposta::erro(CodigoErro::Interno, "falha interna do serviço")
+                    })
                 });
                 if panico {
                     return Fim::Panico;
@@ -268,7 +307,7 @@ fn esperar_com_erro(rx: &Receiver<Evento>, d: Duration, codigo: CodigoErro, moti
     while Instant::now() < fim {
         match rx.recv_timeout(PASSO) {
             Ok(Evento::Ipc(chamado)) => {
-                chamado.atender(|_| Resposta::erro(codigo, motivo));
+                chamado.atender(|_, _| Resposta::erro(codigo, motivo));
             }
             Ok(Evento::MudancaDrs) | Err(RecvTimeoutError::Timeout) => {}
             Ok(Evento::Parar) | Err(RecvTimeoutError::Disconnected) => return false,
@@ -369,6 +408,23 @@ fn esperar_diretorio_seguro(op: &Opcoes, rx: &Receiver<Evento>) -> bool {
 }
 
 fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
+    let mut usuario =
+        if !op.config.somente_leitura && diretorio::verificar(&op.estado_dir).is_empty() {
+            let abrir = || {
+                let drs = nvt_core::ConjuntoRegras::embutido()?;
+                Coordenador::abrir(
+                    ArquivoUsuarios(op.estado_dir.clone()),
+                    &drs,
+                    build_windows(),
+                    0,
+                )
+            };
+            abrir()
+                .map_err(|e| error!("coordenador de usuário indisponível: {e}"))
+                .ok()
+        } else {
+            None
+        };
     let api = loop {
         match NvApi::load() {
             Ok(a) => break a,
@@ -420,7 +476,13 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
             }
         };
         let fim = match protegido("início do ciclo", || nucleo.iniciar(Instant::now())) {
-            Some(()) => laco_principal(&mut nucleo, rx),
+            Some(()) => laco_principal(
+                &mut Atendimento {
+                    nucleo: &mut nucleo,
+                    usuario: usuario.as_mut(),
+                },
+                rx,
+            ),
             None => Fim::Panico,
         };
         drop(nucleo);
@@ -441,15 +503,35 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
     }
 }
 
+fn build_windows() -> Option<u32> {
+    use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+    use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+    let mut versao = OSVERSIONINFOW {
+        dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: estrutura gravável com tamanho indicado no primeiro campo.
+    (unsafe { RtlGetVersion(&mut versao) } == 0).then_some(versao.dwBuildNumber)
+}
+
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    fn identidade_teste() -> IdentidadeCliente {
+        IdentidadeCliente {
+            sid: "S-1-5-21-1".into(),
+            sessao: 42,
+        }
+    }
 
     #[test]
     fn ocupado_cancela_o_pedido() {
         let (tx, rx) = mpsc::channel();
         let r = encaminhar(
             &tx,
+            identidade_teste(),
             Requisicao::RestaurarOriginal,
             Duration::from_millis(50),
             Duration::from_millis(100),
@@ -466,7 +548,7 @@ mod testes {
             panic!("esperava o pedido na fila");
         };
         let mut executou = false;
-        assert!(!ch.atender(|_| {
+        assert!(!ch.atender(|_, _| {
             executou = true;
             Resposta::Ok
         }));
@@ -481,13 +563,14 @@ mod testes {
                 panic!("esperava pedido");
             };
             // Começa logo, mas demora mais que a espera de início.
-            ch.atender(|_| {
+            ch.atender(|_, _| {
                 thread::sleep(Duration::from_millis(150));
                 Resposta::Ok
             })
         });
         let r = encaminhar(
             &tx,
+            identidade_teste(),
             Requisicao::AplicarAgora,
             Duration::from_millis(50),
             Duration::from_secs(5),
@@ -503,10 +586,14 @@ mod testes {
             let Ok(Evento::Ipc(ch)) = rx.recv() else {
                 panic!("esperava pedido");
             };
-            ch.atender(|_| Resposta::Ok)
+            ch.atender(|identidade, _| {
+                assert_eq!(identidade, identidade_teste());
+                Resposta::Ok
+            })
         });
         let r = encaminhar(
             &tx,
+            identidade_teste(),
             Requisicao::ObterPlano,
             Duration::from_secs(5),
             Duration::from_secs(5),
@@ -522,6 +609,7 @@ mod testes {
         assert!(matches!(
             encaminhar(
                 &tx,
+                identidade_teste(),
                 Requisicao::ObterEstado,
                 Duration::from_millis(10),
                 Duration::from_millis(10)
@@ -540,7 +628,12 @@ mod testes {
     }
 
     impl Atendente for Instavel {
-        fn tratar(&mut self, req: Requisicao, _agora: Instant) -> Resposta {
+        fn tratar(
+            &mut self,
+            _identidade: IdentidadeCliente,
+            req: Requisicao,
+            _agora: Instant,
+        ) -> Resposta {
             self.tratadas += 1;
             match req {
                 Requisicao::ReescanearJogos => panic!("pânico proposital do tratador"),
@@ -570,11 +663,23 @@ mod testes {
         });
         let espera = Duration::from_secs(5);
         assert_eq!(
-            encaminhar(&tx, Requisicao::ObterPlano, espera, espera),
+            encaminhar(
+                &tx,
+                identidade_teste(),
+                Requisicao::ObterPlano,
+                espera,
+                espera
+            ),
             Resposta::Ok
         );
         assert!(matches!(
-            encaminhar(&tx, Requisicao::ReescanearJogos, espera, espera),
+            encaminhar(
+                &tx,
+                identidade_teste(),
+                Requisicao::ReescanearJogos,
+                espera,
+                espera
+            ),
             Resposta::Erro {
                 codigo: CodigoErro::Interno,
                 ..
@@ -594,7 +699,13 @@ mod testes {
             laco_principal(&mut a, &rx)
         });
         assert_eq!(
-            encaminhar(&tx, Requisicao::ObterEstado, espera, espera),
+            encaminhar(
+                &tx,
+                identidade_teste(),
+                Requisicao::ObterEstado,
+                espera,
+                espera
+            ),
             Resposta::Ok
         );
         tx.send(Evento::Parar).unwrap();

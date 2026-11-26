@@ -12,14 +12,16 @@
 //! travadas pelo usuário nunca entram no plano.
 
 use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::capabilities::Capabilities;
 use crate::catalogo::{Catalogo, PreferenciaGovernante};
 use crate::explicacao::{MotivoNaoAplicada, RegraAplicada, RegraNaoAplicada, ResumoJogo};
 use crate::facts::GameFacts;
 use crate::jogos::filtrar_orientacoes;
-use crate::plan::{AvisoPlano, Descarte, Origem, Plan, Respeitada, SettingChange, Sugestao};
+use crate::plan::{
+    AvisoPlano, Descarte, EstadoExperimental, Origem, Plan, Respeitada, SettingChange, Sugestao,
+};
 use crate::preferences::{Alvo, Preferences, Sincronismo};
 use crate::rules::{ConjuntoRegras, Escopo, Rule, Status, ValorAcao};
 
@@ -53,7 +55,7 @@ fn avisos(caps: &Capabilities, prefs: &Preferences) -> Vec<AvisoPlano> {
 }
 
 /// Chave de precedência; maior vence.
-type Chave = (u8, u8, usize, i32, Reverse<String>);
+pub(crate) type Chave = (u8, u8, usize, i32, Reverse<String>);
 
 struct Candidato {
     chave: Chave,
@@ -66,6 +68,17 @@ pub fn avaliar(
     jogos: &[GameFacts],
     prefs: &Preferences,
     conjunto: &ConjuntoRegras,
+) -> Plan {
+    avaliar_com_aceites(caps, jogos, prefs, conjunto, &BTreeSet::new())
+}
+
+/// Gera o plano DRS com os aceites da sessão de console elegível.
+pub fn avaliar_com_aceites(
+    caps: &Capabilities,
+    jogos: &[GameFacts],
+    prefs: &Preferences,
+    conjunto: &ConjuntoRegras,
+    aceites: &BTreeSet<String>,
 ) -> Plan {
     let catalogo = &conjunto.catalogo;
     let teto = prefs.qualidade.impacto_maximo();
@@ -90,6 +103,11 @@ pub fn avaliar(
     };
 
     for regra in &conjunto.regras {
+        let aceita = regra.status == Status::Experimental && aceites.contains(&regra.id);
+        if aceita {
+            plan.estado_experimental
+                .insert(regra.id.clone(), EstadoExperimental::Aceita);
+        }
         let alvos: Vec<(Alvo, Option<&GameFacts>)> = match regra.escopo {
             Escopo::Global => vec![(Alvo::Global, None)],
             Escopo::PorJogo => jogos
@@ -143,8 +161,15 @@ pub fn avaliar(
                 );
             }
             match regra.status {
-                Status::Experimental => {
+                Status::Experimental if !aceita => {
                     if !mudancas.is_empty() {
+                        if mudancas
+                            .iter()
+                            .any(|(_, m)| !prefs.travada(&alvo, &m.setting))
+                        {
+                            plan.estado_experimental
+                                .insert(regra.id.clone(), EstadoExperimental::Aceitavel);
+                        }
                         nao(&alvo, &regra.id, MotivoNaoAplicada::Experimental);
                         plan.experimentais.push(Sugestao {
                             regra: regra.id.clone(),
@@ -153,7 +178,7 @@ pub fn avaliar(
                         });
                     }
                 }
-                Status::Estavel => {
+                Status::Estavel | Status::Experimental => {
                     for (classe, mudanca) in mudancas {
                         let chave = (
                             classe,

@@ -551,6 +551,8 @@ mod testes {
     #[test]
     fn aplicacao_adiada_e_lista_indisponivel_tambem_nao_saem_com_zero() {
         let mut p = Plano {
+            sistema: Default::default(),
+            sugestoes_driver: Vec::new(),
             gerado_unix: 1,
             perfis: vec![],
             reversoes: vec![],

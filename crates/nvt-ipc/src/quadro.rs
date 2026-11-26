@@ -8,8 +8,9 @@
 
 use std::io::{self, Read, Write};
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use crate::{ErroIpc, PROTOCOL_VERSION};
 
@@ -33,31 +34,45 @@ pub fn codificar<T: Serialize>(msg: &T) -> Result<Vec<u8>, ErroIpc> {
 
 /// Interpreta um payload: confere a versão e só então desserializa o corpo.
 pub fn decodificar<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ErroIpc> {
-    let valor: serde_json::Value = serde_json::from_slice(payload)?;
-    let serde_json::Value::Object(mut obj) = valor else {
+    #[derive(Deserialize)]
+    struct Cabecalho<'a> {
+        #[serde(borrow)]
+        versao: &'a RawValue,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Envelope<'a> {
+        #[serde(borrow, rename = "versao")]
+        _versao: &'a RawValue,
+        #[serde(borrow)]
+        corpo: &'a RawValue,
+    }
+
+    fn erro_envelope(erro: serde_json::Error) -> ErroIpc {
+        if erro.is_data() {
+            ErroIpc::EnvelopeInvalido(erro.to_string())
+        } else {
+            erro.into()
+        }
+    }
+
+    // Mapas estruturados do Serde também aceitam arrays posicionais.
+    if payload.iter().copied().find(|b| !b.is_ascii_whitespace()) == Some(b'[') {
         return Err(ErroIpc::EnvelopeInvalido(
             "o payload não é um objeto".into(),
         ));
-    };
-    let versao = obj
-        .get("versao")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| ErroIpc::EnvelopeInvalido("campo `versao` ausente ou inválido".into()))?;
+    }
+    let cabecalho: Cabecalho<'_> = serde_json::from_slice(payload).map_err(erro_envelope)?;
+    let versao: u64 = serde_json::from_str(cabecalho.versao.get()).map_err(erro_envelope)?;
     if versao != u64::from(PROTOCOL_VERSION) {
         return Err(ErroIpc::VersaoIncompativel {
             recebida: versao,
             esperada: PROTOCOL_VERSION,
         });
     }
-    let corpo = obj
-        .remove("corpo")
-        .ok_or_else(|| ErroIpc::EnvelopeInvalido("campo `corpo` ausente".into()))?;
-    if obj.len() != 1 {
-        return Err(ErroIpc::EnvelopeInvalido(
-            "campos desconhecidos no envelope".into(),
-        ));
-    }
-    Ok(serde_json::from_value(corpo)?)
+    let envelope: Envelope<'_> = serde_json::from_slice(payload).map_err(erro_envelope)?;
+    Ok(serde_json::from_str(envelope.corpo.get())?)
 }
 
 /// Escreve um quadro (cabeçalho de tamanho + payload).
@@ -230,10 +245,10 @@ mod testes {
     #[test]
     fn versao_conferida_antes_do_corpo() {
         // Corpo desconhecido para nós, mas a versão é o que importa reportar.
-        let payload = br#"{"versao":5,"corpo":{"tipo":"algo_do_futuro","x":1}}"#;
+        let payload = br#"{"versao":4,"corpo":{"tipo":"algo_do_futuro","x":1}}"#;
         assert!(matches!(
             decodificar::<Resposta>(payload),
-            Err(ErroIpc::VersaoIncompativel { recebida: 5, .. })
+            Err(ErroIpc::VersaoIncompativel { recebida: 4, .. })
         ));
     }
 
@@ -242,8 +257,8 @@ mod testes {
         for p in [
             &br#"{"corpo":{"tipo":"obter_estado"}}"#[..],
             br#"{"versao":"1","corpo":{"tipo":"obter_estado"}}"#,
-            br#"{"versao":4}"#,
-            br#"{"versao":4,"corpo":{"tipo":"obter_estado"},"extra":0}"#,
+            br#"{"versao":5}"#,
+            br#"{"versao":5,"corpo":{"tipo":"obter_estado"},"extra":0}"#,
             br#"[1,2]"#,
         ] {
             assert!(
@@ -260,7 +275,7 @@ mod testes {
             Err(ErroIpc::Json(_))
         ));
         assert!(matches!(
-            decodificar::<Requisicao>(br#"{"versao":4,"corpo":{"tipo":"formatar_disco"}}"#),
+            decodificar::<Requisicao>(br#"{"versao":5,"corpo":{"tipo":"formatar_disco"}}"#),
             Err(ErroIpc::Json(_))
         ));
     }

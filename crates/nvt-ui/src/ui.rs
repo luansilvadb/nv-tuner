@@ -10,6 +10,7 @@ use std::time::Duration;
 use gpui_kit::component::Theme;
 use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::link::Link;
 use gpui_kit::component::radio::{Radio, RadioGroup};
 use gpui_kit::component::sidebar::{
     Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
@@ -22,13 +23,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use nvt_ipc::{
-    Aviso, ImpactoVisual, Jogo, JogoIgnorado, LIMITE_FPS_MAX, LIMITE_FPS_MIN, NivelAviso,
-    Qualidade, Reversao, Sincronismo, StatusMudanca,
+    Aviso, EstadoExperimental, ImpactoVisual, Jogo, JogoIgnorado, LIMITE_FPS_MAX, LIMITE_FPS_MIN,
+    NivelAviso, Qualidade, Reversao, Sincronismo, StatusMudanca, SugestaoExperimental,
 };
 
 use crate::modelo::{
     Comando, Conexao, EstadoUi, Evento, GrupoMudancas, ItemMudanca, Tela, TipoMensagem,
-    formatar_data, linha_setting,
+    destino_usuario, formatar_data, linha_setting,
 };
 use crate::servico::Canal;
 use crate::textos as t;
@@ -190,6 +191,7 @@ impl Janela {
             Tela::VisaoGeral => self.visao_geral(cx).into_any_element(),
             Tela::Jogos => self.jogos(cx).into_any_element(),
             Tela::Mudancas => self.mudancas(cx).into_any_element(),
+            Tela::Windows => self.windows(cx).into_any_element(),
             Tela::Preferencias => self.preferencias(cx).into_any_element(),
             Tela::Historico => self.historico(cx).into_any_element(),
             Tela::Restaurar => self.restaurar(cx).into_any_element(),
@@ -736,7 +738,7 @@ impl Janela {
     fn mudancas(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tema = cx.theme().clone();
         let mut v = v_flex().gap_4();
-        if self.ui.dados.grupos.is_empty() {
+        if self.ui.dados.grupos.is_empty() && self.ui.dados.sistema.mudancas.is_empty() {
             v = v.child(
                 div()
                     .text_color(tema.muted_foreground)
@@ -745,6 +747,27 @@ impl Janela {
         }
         for g in &self.ui.dados.grupos {
             v = v.child(grupo(g, &tema));
+        }
+        if !self.ui.dados.sistema.mudancas.is_empty() {
+            let ajustes = self
+                .ui
+                .dados
+                .sistema
+                .mudancas
+                .iter()
+                .map(|m| item(&ItemMudanca::from(m), &tema));
+            v = v.child(cartao(t::TELA_WINDOWS, v_flex().children(ajustes), &tema));
+        }
+        if !self.ui.dados.sugestoes_driver.is_empty() {
+            let corpo = v_flex()
+                .gap_2()
+                .child(explicacao(t::EXPERIMENTAIS_DRIVER, &tema))
+                .when(
+                    self.ui.conexao == Conexao::Servico && !sessao_console_ativa(),
+                    |v| v.child(explicacao(t::ACEITE_DRIVER_INATIVO, &tema)),
+                )
+                .child(self.experimentais(&self.ui.dados.sugestoes_driver, &tema, cx));
+            v = v.child(cartao(t::SECAO_EXPERIMENTAIS, corpo, &tema));
         }
         let pode = self.ui.pode_escrever();
         let respeitadas = &self.ui.dados.respeitadas;
@@ -765,12 +788,12 @@ impl Janela {
                         .justify_between()
                         .child(
                             v_flex()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .font_semibold()
-                                        .child(format!("{} · {}", r.nome_perfil, r.nome_legivel)),
-                                )
+                                .child(div().text_sm().font_semibold().child(format!(
+                                    "{} · {} · {}",
+                                    t::CAMADA_DRIVER,
+                                    r.nome_perfil,
+                                    r.nome_legivel
+                                )))
                                 .child(
                                     div()
                                         .text_xs()
@@ -816,6 +839,151 @@ impl Janela {
             .when(!ignorados.is_empty(), |v| {
                 v.child(cartao_ignorados(ignorados, &tema))
             })
+    }
+
+    // -----------------------------------------------------------------------
+    // Windows
+    // -----------------------------------------------------------------------
+
+    fn windows(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let tema = cx.theme().clone();
+        let mut ajustes = v_flex().gap_2();
+        for (i, mudanca) in self.ui.dados.sistema.mudancas.iter().enumerate() {
+            let destino = destino_usuario(&mudanca.setting, self.ui.dados.alvo_tela.as_deref());
+            let pode = self.ui.pode_escrever() && destino.is_some();
+            ajustes = ajustes.child(
+                h_flex()
+                    .gap_3()
+                    .justify_between()
+                    .child(item(&ItemMudanca::from(mudanca), &tema).flex_1().min_w_0())
+                    .child(
+                        Button::new(("reverter-usuario", i))
+                            .small()
+                            .outline()
+                            .label(t::BOTAO_REVERTER)
+                            .disabled(!pode)
+                            .when(destino.is_none(), |b| {
+                                b.tooltip(t::DESTINO_REVERTER_INDISPONIVEL)
+                            })
+                            .when_some(destino, |b, destino| {
+                                b.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.enviar(
+                                        Comando::ReverterAjusteUsuario {
+                                            destino: destino.clone(),
+                                        },
+                                        cx,
+                                    )
+                                }))
+                            }),
+                    ),
+            );
+        }
+        if self.ui.dados.sistema.mudancas.is_empty() {
+            ajustes = ajustes.child(explicacao(t::SEM_AJUSTES_USUARIO, &tema));
+        }
+
+        let diagnosticos = self
+            .ui
+            .dados
+            .estado
+            .as_ref()
+            .map_or(&[][..], |e| e.diagnosticos.as_slice());
+        let diagnostico = v_flex()
+            .gap_3()
+            .when(diagnosticos.is_empty(), |v| {
+                v.child(explicacao(t::SEM_DIAGNOSTICOS, &tema))
+            })
+            .children(diagnosticos.iter().enumerate().map(|(i, d)| {
+                let info = t::diagnostico(&d.codigo);
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div().text_sm().font_semibold().child(
+                            info.map_or(d.codigo.as_str(), |(titulo, _, _)| titulo)
+                                .to_owned(),
+                        ),
+                    )
+                    .child(div().text_sm().child(t::estado_diagnostico(d)))
+                    .when_some(info, |v, (_, orientacao, url)| {
+                        v.when(t::mostrar_orientacao_diagnostico(d), |v| {
+                            v.child(explicacao(orientacao, &tema))
+                        })
+                        .child(
+                            Link::new(("diagnostico-fonte", i))
+                                .href(url)
+                                .child(t::LINK_OFICIAL),
+                        )
+                    })
+            }));
+
+        v_flex()
+            .gap_4()
+            .child(cartao(t::SECAO_WINDOWS_FEITO, ajustes, &tema))
+            .child(cartao(
+                t::SECAO_EXPERIMENTAIS,
+                self.experimentais(&self.ui.dados.sistema.sugestoes, &tema, cx),
+                &tema,
+            ))
+            .child(cartao(t::SECAO_DIAGNOSTICO, diagnostico, &tema))
+    }
+
+    fn experimentais(
+        &self,
+        sugestoes: &[SugestaoExperimental],
+        tema: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let pode = self.ui.pode_escrever();
+        v_flex()
+            .gap_2()
+            .when(sugestoes.is_empty(), |v| {
+                v.child(explicacao(t::SEM_EXPERIMENTAIS, tema))
+            })
+            .children(sugestoes.iter().enumerate().filter_map(|(i, s)| {
+                let regra = s.regra.clone();
+                let (rotulo, aceito) = match s.estado {
+                    EstadoExperimental::Aceitavel => (t::BOTAO_ACEITAR, true),
+                    EstadoExperimental::Aceita => (t::BOTAO_RETIRAR, false),
+                    EstadoExperimental::Estavel => return None,
+                };
+                Some(
+                    h_flex()
+                        .gap_3()
+                        .justify_between()
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(div().text_sm().font_semibold().child(s.descricao.clone()))
+                                .child(div().text_xs().text_color(tema.muted_foreground).child(
+                                    format!(
+                                        "{} · {} · {}",
+                                        t::camada(s.camada),
+                                        t::experimental(s.estado),
+                                        s.regra
+                                    ),
+                                )),
+                        )
+                        .child(
+                            Button::new(("aceite-experimental", i))
+                                .small()
+                                .outline()
+                                .label(rotulo)
+                                .disabled(!pode)
+                                .when(!pode, |b| b.tooltip(t::SO_COM_SERVICO))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.enviar(
+                                        Comando::DefinirAceiteExperimental {
+                                            regra: regra.clone(),
+                                            aceito,
+                                        },
+                                        cx,
+                                    )
+                                })),
+                        ),
+                )
+            }))
     }
 
     // -----------------------------------------------------------------------
@@ -1050,10 +1218,13 @@ impl Janela {
                             }),
                     )
                     .child(
-                        div()
-                            .w(px(124.))
-                            .flex_shrink_0()
-                            .child(Tag::secondary().small().child(t::acao_historico(e.acao))),
+                        div().w(px(124.)).flex_shrink_0().child(
+                            v_flex()
+                                .gap_1()
+                                .items_start()
+                                .child(Tag::secondary().small().child(t::camada(e.camada)))
+                                .child(Tag::secondary().small().child(t::acao_historico(e.acao))),
+                        ),
                     )
                     .child(
                         v_flex()
@@ -1163,7 +1334,31 @@ impl Render for Janela {
                             .border_color(tema.border)
                             .justify_between()
                             .child(div().text_xl().font_semibold().child(self.ui.tela.titulo()))
-                            .child(self.selo_conexao()),
+                            .child(
+                                v_flex()
+                                    .items_end()
+                                    .gap_1()
+                                    .child(self.selo_conexao())
+                                    .child(
+                                        div().text_xs().text_color(tema.muted_foreground).child(
+                                            self.ui
+                                                .dados
+                                                .estado
+                                                .as_ref()
+                                                .filter(|_| self.ui.conexao == Conexao::Servico)
+                                                .map_or(t::AGENTE_INDISPONIVEL, |e| {
+                                                    if e.agente.presente {
+                                                        t::AGENTE_ATIVO
+                                                    } else {
+                                                        t::AGENTE_AUSENTE
+                                                    }
+                                                }),
+                                        ),
+                                    )
+                                    .when(self.ui.restauracao_usuario_pendente(), |v| {
+                                        v.child(explicacao(t::RESTAURACAO_USUARIO_PENDENTE, &tema))
+                                    }),
+                            ),
                     )
                     .child(
                         div()
@@ -1187,11 +1382,29 @@ impl Render for Janela {
 // Peças
 // ---------------------------------------------------------------------------
 
+fn sessao_console_ativa() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::RemoteDesktop::{
+            ProcessIdToSessionId, WTSGetActiveConsoleSessionId,
+        };
+        let mut sessao = 0;
+        // SAFETY: a saída aponta para um u32 gravável e o PID é o deste processo.
+        unsafe {
+            ProcessIdToSessionId(std::process::id(), &mut sessao) != 0
+                && sessao == WTSGetActiveConsoleSessionId()
+        }
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 fn icone(tela: Tela) -> IconName {
     match tela {
         Tela::VisaoGeral => IconName::LayoutDashboard,
         Tela::Jogos => IconName::GalleryVerticalEnd,
         Tela::Mudancas => IconName::Replace,
+        Tela::Windows => IconName::Settings2,
         Tela::Preferencias => IconName::Settings2,
         Tela::Historico => IconName::Calendar,
         Tela::Restaurar => IconName::Undo2,
@@ -1271,12 +1484,12 @@ fn reversao(r: &Reversao, tema: &Theme) -> Div {
         .child(
             h_flex()
                 .gap_2()
-                .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .child(format!("{} · {}", r.nome_perfil, r.nome_legivel)),
-                )
+                .child(div().text_sm().font_semibold().child(format!(
+                    "{} · {} · {}",
+                    t::CAMADA_DRIVER,
+                    r.nome_perfil,
+                    r.nome_legivel
+                )))
                 .child(tag.small().child(t::status_reversao(r.status))),
         )
         .child(div().text_sm().child(format!(
@@ -1370,11 +1583,12 @@ fn item(m: &ItemMudanca, tema: &Theme) -> Div {
                         .child(m.nome_legivel.clone()),
                 )
                 .child(tag_status(m.status))
-                .child(if m.experimental {
-                    Tag::secondary().small().outline().child(t::EXPERIMENTAL)
-                } else {
-                    Tag::secondary().small().child(t::ESTAVEL)
-                }),
+                .child(Tag::secondary().small().child(t::camada(m.camada)))
+                .child(
+                    Tag::secondary()
+                        .small()
+                        .child(t::experimental(m.experimental)),
+                ),
         )
         .child(div().text_sm().child(format!(
             "{} → {}",

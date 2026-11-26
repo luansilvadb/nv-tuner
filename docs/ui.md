@@ -1,8 +1,9 @@
 # Interface (`nvt-ui`)
 
 A interface é um processo comum, **sem privilégios de administrador**. Ela
-nunca grava no driver: toda alteração é pedida ao serviço (`nvt-service`)
-pelo named pipe, conforme `docs/ipc.md`. Feita em GPUI com
+encaminha pedidos de alteração ao serviço (`nvt-service`)
+pelo named pipe (IPC v5, conforme `docs/ipc.md`). As gravações no Windows
+cabem ao agente interativo. Feita em GPUI com
 `gpui-component` (`gpui-kit = "=0.11.0"`, ver `docs/pesquisa/gpui-windows.md`),
 em tema escuro.
 
@@ -17,7 +18,7 @@ target\release\nvt-ui.exe [opções]
 | Opção | Efeito |
 |---|---|
 | `--pipe <nome>` | usa outro named pipe (testes); padrão `\\.\pipe\nv-tuner` |
-| `--tela <chave>` | tela inicial: `visao-geral`, `jogos`, `mudancas`, `preferencias`, `historico`, `restaurar` |
+| `--tela <chave>` | tela inicial: `visao-geral`, `jogos`, `mudancas`, `windows`, `preferencias`, `historico`, `restaurar` |
 | `--sair-apos <s>` | fecha sozinha depois de `s` segundos (capturas automatizadas) |
 | `--expandir <jogo>` | abre já expandida, na tela Jogos, a linha do jogo com esse nome ou perfil (repetível; capturas) |
 
@@ -77,7 +78,10 @@ release.
    snapshot legível entra no armazém em memória para as reversões mostrarem
    o valor original certo.
 4. Comandos de escrita recebidos sem serviço são recusados pela própria
-   thread de comunicação, antes de qualquer E/S.
+   thread de comunicação, antes de qualquer E/S. Aceites, ajustes, diagnósticos
+   e histórico da camada Windows vêm da projeção do serviço para o SID que
+   abriu o pipe. Ao perder a conexão, a UI descarta esses dados mesmo se a
+   leitura local do driver falhar.
 
 A lista de jogos vem do serviço (`plano.jogos`, protocolo v3) quando
 conectado; no modo de visualização, do cálculo local, convertido para os
@@ -212,9 +216,10 @@ pipe inexistente, `--tela jogos --expandir WARDOGS`), sem gravar nada.
 
 ### Mudanças (`mudancas.png`)
 
-Plano agrupado por perfil (global primeiro). Cada item: nome legível da
-setting, situação (pendente, aplicada, já no valor, falhou…), estável ou
-experimental (experimentais são só sugestões), **antes → depois**, motivo,
+O plano do driver é agrupado por perfil (global primeiro). Os ajustes do
+usuário ficam em um cartão Windows. Cada item apresenta o nome legível da
+setting, camada (Driver ou Windows), situação (pendente, aplicada, já no
+valor, falhou…) e estado experimental, além dos valores **antes → depois**, motivo,
 regra de origem e impacto visual. Abaixo, **Saíram do plano (voltam ao
 original)**: settings que o app gravou e o plano não quer mais, com perfil,
 situação (a reverter, revertida, falhou), **atual → o que acontece** (volta
@@ -222,6 +227,32 @@ a um valor, sai do perfil ou só deixa de ser vigiada) e por que saiu do
 plano. Depois, **Respeitadas por escolha sua**: settings travadas (mudança
 manual detectada), com botão **Destravar** (só com serviço), que devolve a
 setting ao automático. Por fim, se houver, **Ignorados pelo plano**.
+
+As regras experimentais do driver aparecem nesta tela. **Aceitar** e
+**Retirar** enviam `DefinirAceiteExperimental` com o ID da regra. O aceite
+é por usuário. Só os aceites de quem estiver na sessão de console ativa
+entram no plano do driver, cujos efeitos valem para todos na máquina.
+Fora do console ativo, a tela informa que o aceite fica inativo.
+
+### Windows
+
+- **O que o app fez** mostra ajustes da camada do usuário. **Reverter** envia
+  `ReverterAjusteUsuario` para o destino do ajuste. A reversão usa o valor
+  anterior à gestão pelo aplicativo. Para a taxa de atualização, a UI lê o
+  caminho estável do monitor primário da sessão e desabilita o botão se esse
+  destino estiver indisponível.
+- **Experimentais** mostra as sugestões para o usuário. **Aceitar** e
+  **Retirar** usam o mesmo pedido que a tela de Mudanças. Regras aceitas
+  exibem “experimental aceita por você”. Ao retirar o aceite, se o ajuste
+  sair do plano, o serviço coordena a reversão ao valor anterior à gestão.
+- **Diagnóstico** mostra valores disponíveis, leituras indisponíveis e
+  orientações, com textos em português e documentação oficial por código.
+  Códigos novos são exibidos como recebidos. A seção é somente leitura.
+
+O cabeçalho informa se o agente está ativo na sessão e sinaliza quando
+a restauração dos ajustes do usuário está pendente. Ao concluir a
+restauração do driver, a interface indica separadamente a pendência do
+usuário, quando houver.
 
 ### Preferências (`preferencias.png`)
 
@@ -245,7 +276,7 @@ alterado.
 
 Lista (mais recentes primeiro) com data no fuso local, ação (aplicação,
 restauração, rollback, travamento, destravamento, preferências, deriva
-detectada), perfil e setting, antes → depois e motivo.
+detectada), camada (Driver ou Windows), perfil e setting, antes → depois e motivo.
 
 ### Restaurar original (`restaurar.png`)
 

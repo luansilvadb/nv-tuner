@@ -4,8 +4,9 @@
 //! incorpora. A renderização só lê o estado e emite [`Comando`]s.
 
 use nvt_ipc::{
-    Adiamento, AlertaDeriva, Aviso, EntradaHistorico, Estado, ImpactoVisual, Jogo, JogoIgnorado,
-    Plano, Preferencias, Qualidade, Resposta, Reversao, Sincronismo, StatusMudanca, codigo_aviso,
+    Adiamento, AlertaDeriva, Aviso, Camada, EntradaHistorico, Estado, EstadoExperimental,
+    ImpactoVisual, Jogo, JogoIgnorado, Plano, Preferencias, Qualidade, Resposta, ResumoSistema,
+    Reversao, SettingUsuario, Sincronismo, StatusMudanca, SugestaoExperimental, codigo_aviso,
 };
 
 use crate::textos;
@@ -16,16 +17,18 @@ pub enum Tela {
     VisaoGeral,
     Jogos,
     Mudancas,
+    Windows,
     Preferencias,
     Historico,
     Restaurar,
 }
 
 impl Tela {
-    pub const TODAS: [Tela; 6] = [
+    pub const TODAS: [Tela; 7] = [
         Tela::VisaoGeral,
         Tela::Jogos,
         Tela::Mudancas,
+        Tela::Windows,
         Tela::Preferencias,
         Tela::Historico,
         Tela::Restaurar,
@@ -36,6 +39,7 @@ impl Tela {
             Tela::VisaoGeral => textos::TELA_VISAO_GERAL,
             Tela::Jogos => textos::TELA_JOGOS,
             Tela::Mudancas => textos::TELA_MUDANCAS,
+            Tela::Windows => textos::TELA_WINDOWS,
             Tela::Preferencias => textos::TELA_PREFERENCIAS,
             Tela::Historico => textos::TELA_HISTORICO,
             Tela::Restaurar => textos::TELA_RESTAURAR,
@@ -48,6 +52,7 @@ impl Tela {
             Tela::VisaoGeral => "visao-geral",
             Tela::Jogos => "jogos",
             Tela::Mudancas => "mudancas",
+            Tela::Windows => "windows",
             Tela::Preferencias => "preferencias",
             Tela::Historico => "historico",
             Tela::Restaurar => "restaurar",
@@ -81,8 +86,25 @@ pub struct ItemMudanca {
     pub regra: String,
     pub impacto: ImpactoVisual,
     pub status: StatusMudanca,
-    /// Regra experimental: sugestão, nunca aplicada automaticamente.
-    pub experimental: bool,
+    pub camada: Camada,
+    pub experimental: EstadoExperimental,
+}
+
+impl From<&nvt_ipc::Mudanca> for ItemMudanca {
+    fn from(m: &nvt_ipc::Mudanca) -> Self {
+        Self {
+            setting: m.setting.clone(),
+            nome_legivel: m.nome_legivel.clone(),
+            antes: m.antes.clone(),
+            depois: m.depois.clone(),
+            motivo: m.motivo.clone(),
+            regra: m.regra.clone(),
+            impacto: m.impacto_visual,
+            status: m.status,
+            camada: m.camada,
+            experimental: m.experimental,
+        }
+    }
 }
 
 /// Mudanças de um perfil.
@@ -98,7 +120,7 @@ impl GrupoMudancas {
     pub fn resumo(&self) -> (usize, usize, usize, usize) {
         let mut r = (0, 0, 0, 0);
         for i in &self.itens {
-            if i.experimental {
+            if i.experimental == EstadoExperimental::Aceitavel {
                 r.3 += 1;
                 continue;
             }
@@ -127,6 +149,9 @@ pub struct Respeitada {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Dados {
     pub estado: Option<Estado>,
+    pub sistema: ResumoSistema,
+    pub sugestoes_driver: Vec<SugestaoExperimental>,
+    pub alvo_tela: Option<String>,
     pub grupos: Vec<GrupoMudancas>,
     pub respeitadas: Vec<Respeitada>,
     pub historico: Vec<EntradaHistorico>,
@@ -147,6 +172,20 @@ pub enum Comando {
     Reescanear,
     DefinirPreferencias(Preferencias),
     Destravar { perfil: String, setting: String },
+    DefinirAceiteExperimental { regra: String, aceito: bool },
+    ReverterAjusteUsuario { destino: SettingUsuario },
+}
+
+pub fn destino_usuario(setting: &str, alvo_tela: Option<&str>) -> Option<SettingUsuario> {
+    match setting {
+        "tela_refresh" => Some(SettingUsuario::Refresh {
+            alvo: alvo_tela?.into(),
+        }),
+        "mouse_aceleracao" => Some(SettingUsuario::MouseAceleracao),
+        "dx_swap_effect_upgrade" => Some(SettingUsuario::DxSwapEffectUpgrade),
+        "gamedvr_captura_historica" => Some(SettingUsuario::GameDvrCapturaHistorica),
+        _ => None,
+    }
 }
 
 impl Comando {
@@ -163,6 +202,8 @@ impl Comando {
             Comando::Reescanear => Some(textos::OK_REESCANEADO),
             Comando::DefinirPreferencias(_) => Some(textos::OK_PREFS),
             Comando::Destravar { .. } => Some(textos::OK_DESTRAVADO),
+            Comando::DefinirAceiteExperimental { .. } => Some(textos::OK_ACEITE),
+            Comando::ReverterAjusteUsuario { .. } => Some(textos::OK_REVERSAO_USUARIO),
         }
     }
 }
@@ -237,7 +278,7 @@ impl Conformidade {
         for i in grupos
             .iter()
             .flat_map(|g| &g.itens)
-            .filter(|i| !i.experimental)
+            .filter(|i| i.experimental != EstadoExperimental::Aceitavel)
         {
             match i.status {
                 StatusMudanca::Pendente => c.pendentes += 1,
@@ -395,6 +436,13 @@ impl EstadoUi {
         }
     }
 
+    pub fn restauracao_usuario_pendente(&self) -> bool {
+        self.dados
+            .estado
+            .as_ref()
+            .is_some_and(|e| e.agente.restauracao_pendente)
+    }
+
     /// O botão “Restaurar original” pode ser usado?
     pub fn pode_restaurar(&self) -> bool {
         self.pode_escrever() && self.restauracao_bloqueada().is_none()
@@ -430,7 +478,10 @@ impl EstadoUi {
                         self.dados = d;
                         self.erro_local = None;
                     }
-                    Err(e) => self.erro_local = Some(e),
+                    Err(e) => {
+                        self.dados = Dados::default();
+                        self.erro_local = Some(e);
+                    }
                 }
                 if rascunho_limpo {
                     self.rascunho = self.preferencias_atuais();
@@ -444,6 +495,18 @@ impl EstadoUi {
             Evento::Concluido { comando, resultado } => {
                 self.ocupado = None;
                 self.mensagem = match resultado {
+                    Ok(Desfecho::Feito)
+                        if comando == Comando::RestaurarOriginal
+                            && self.restauracao_usuario_pendente() =>
+                    {
+                        Some((TipoMensagem::Sucesso, textos::DRIVER_RESTAURADO.into()))
+                    }
+                    Ok(Desfecho::Feito)
+                        if comando == Comando::RestaurarOriginal
+                            && self.conexao != Conexao::Servico =>
+                    {
+                        Some((TipoMensagem::Sucesso, textos::RESTAURACAO_SOLICITADA.into()))
+                    }
                     Ok(Desfecho::Feito) => comando
                         .mensagem_sucesso()
                         .map(|m| (TipoMensagem::Sucesso, m.to_string())),
@@ -469,7 +532,7 @@ pub fn item_no_perfil<'a>(
         .iter()
         .filter(|g| g.perfil.eq_ignore_ascii_case(perfil))
         .flat_map(|g| &g.itens)
-        .find(|i| !i.experimental && i.setting == setting)
+        .find(|i| i.experimental != EstadoExperimental::Aceitavel && i.setting == setting)
 }
 
 /// Linha de uma setting aplicada: “Nome: valor (situação)”.
@@ -502,17 +565,7 @@ pub fn grupos_do_plano(plano: &Plano) -> (Vec<GrupoMudancas>, Vec<Respeitada>) {
                     motivo: m.motivo.clone(),
                 });
             } else {
-                itens.push(ItemMudanca {
-                    setting: m.setting.clone(),
-                    nome_legivel: m.nome_legivel.clone(),
-                    antes: m.antes.clone(),
-                    depois: m.depois.clone(),
-                    motivo: m.motivo.clone(),
-                    regra: m.regra.clone(),
-                    impacto: m.impacto_visual,
-                    status: m.status,
-                    experimental: false,
-                });
+                itens.push(ItemMudanca::from(m));
             }
         }
         if !itens.is_empty() {
@@ -603,6 +656,8 @@ mod testes {
 
     fn mudanca(setting: &str, status: StatusMudanca) -> Mudanca {
         Mudanca {
+            camada: Camada::Driver,
+            experimental: EstadoExperimental::Estavel,
             setting: setting.into(),
             nome_legivel: format!("Nome {setting}"),
             antes: None,
@@ -616,6 +671,8 @@ mod testes {
 
     fn plano() -> Plano {
         Plano {
+            sistema: Default::default(),
+            sugestoes_driver: vec![],
             gerado_unix: 0,
             perfis: vec![
                 PlanoPerfil {
@@ -650,6 +707,8 @@ mod testes {
 
     fn estado(prefs: Preferencias) -> Estado {
         Estado {
+            agente: Default::default(),
+            diagnosticos: vec![],
             versao_servico: "0.0.1".into(),
             driver: None,
             gpu: None,
@@ -707,7 +766,7 @@ mod testes {
     fn experimentais_nao_contam_na_conformidade() {
         let (mut g, _) = grupos_do_plano(&plano());
         for i in &mut g[0].itens {
-            i.experimental = true;
+            i.experimental = EstadoExperimental::Aceitavel;
         }
         let c = Conformidade::de(&g, 0);
         assert_eq!((c.pendentes, c.conformes), (0, 1));
@@ -1338,6 +1397,71 @@ mod testes {
             }
             .escreve()
         );
+    }
+
+    #[test]
+    fn dados_de_usuario_sao_descartados_se_a_leitura_local_falhar() {
+        let mut ui = EstadoUi::new(Tela::Windows);
+        let mut e = estado(preferencias_padrao());
+        e.agente.presente = true;
+        e.agente.restauracao_pendente = true;
+        let mut ajuste = mudanca("mouse_aceleracao", StatusMudanca::Aplicada);
+        ajuste.camada = Camada::Usuario;
+        ajuste.experimental = EstadoExperimental::Aceita;
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(e),
+            sistema: ResumoSistema {
+                mudancas: vec![ajuste],
+                sugestoes: vec![],
+            },
+            ..Dados::default()
+        }));
+        assert!(ui.restauracao_usuario_pendente());
+        ui.aplicar(Evento::Concluido {
+            comando: Comando::RestaurarOriginal,
+            resultado: Ok(Desfecho::Feito),
+        });
+        assert_eq!(ui.mensagem_visivel().unwrap().1, textos::DRIVER_RESTAURADO);
+
+        let reverter = Comando::ReverterAjusteUsuario {
+            destino: SettingUsuario::MouseAceleracao,
+        };
+        let aceite = Comando::DefinirAceiteExperimental {
+            regra: "regra.x".into(),
+            aceito: true,
+        };
+        assert!(ui.pode_executar(&reverter));
+        assert!(ui.pode_executar(&aceite));
+        ui.aplicar(Evento::Visualizacao(Err("sem driver".into())));
+        assert_eq!(ui.dados, Dados::default());
+        assert!(!ui.restauracao_usuario_pendente());
+        assert!(!ui.pode_executar(&reverter));
+        assert!(!ui.pode_executar(&aceite));
+    }
+
+    #[test]
+    fn destinos_windows_e_diagnostico_desconhecido() {
+        assert_eq!(destino_usuario("tela_refresh", None), None);
+        assert_eq!(
+            destino_usuario("tela_refresh", Some("monitor")),
+            Some(SettingUsuario::Refresh {
+                alvo: "monitor".into(),
+            })
+        );
+        assert_eq!(
+            destino_usuario("mouse_aceleracao", None),
+            Some(SettingUsuario::MouseAceleracao)
+        );
+        assert_eq!(
+            destino_usuario("dx_swap_effect_upgrade", None),
+            Some(SettingUsuario::DxSwapEffectUpgrade)
+        );
+        assert_eq!(
+            destino_usuario("gamedvr_captura_historica", None),
+            Some(SettingUsuario::GameDvrCapturaHistorica)
+        );
+        assert_eq!(destino_usuario("nova_setting", None), None);
+        assert!(textos::diagnostico("novo_codigo").is_none());
     }
 
     #[test]

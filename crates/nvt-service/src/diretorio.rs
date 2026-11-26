@@ -41,12 +41,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_OWNER, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    CloseHandle, ERROR_INVALID_OWNER, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -54,15 +54,16 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CreateWellKnownSid, DACL_SECURITY_INFORMATION, GetAce,
-    INHERIT_ONLY_ACE, IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
-    TOKEN_OWNER, TOKEN_QUERY, TokenOwner, WinBuiltinAdministratorsSid, WinCreatorOwnerSid,
-    WinLocalSystemSid,
+    GetSecurityDescriptorControl, INHERIT_ONLY_ACE, IsWellKnownSid, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_MAX_SID_SIZE,
+    SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_OWNER, TOKEN_QUERY, TokenOwner,
+    WinBuiltinAdministratorsSid, WinCreatorOwnerSid, WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, FILE_ATTRIBUTE_DIRECTORY,
-    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FindClose, FindFirstFileNameW, FindNextFileNameW, GetFileInformationByHandle,
+    BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FindClose, FindFirstFileNameW,
+    FindNextFileNameW, GetFileInformationByHandle,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -225,7 +226,7 @@ fn privilegiado(sid: PSID) -> bool {
 }
 
 /// Confere dono e DACL de um item aberto.
-fn conferir_seguranca(f: &File, p: &Path, problemas: &mut Vec<Problema>) {
+fn conferir_seguranca(f: &File, p: &Path, problemas: &mut Vec<Problema>, privado: bool) {
     let mut dono: PSID = null_mut();
     let mut dacl: *mut ACL = null_mut();
     let mut sd: PSECURITY_DESCRIPTOR = null_mut();
@@ -257,6 +258,19 @@ fn conferir_seguranca(f: &File, p: &Path, problemas: &mut Vec<Problema>) {
         };
         problemas.push(Problema::Dono(p.to_owned(), s));
     }
+    if privado {
+        let mut controle = 0;
+        let mut revisao = 0;
+        // SAFETY: sd permanece válido até LocalFree.
+        if unsafe { GetSecurityDescriptorControl(sd, &mut controle, &mut revisao) } == 0
+            || controle & SE_DACL_PROTECTED == 0
+        {
+            problemas.push(Problema::Io(
+                p.to_owned(),
+                "DACL privada sem proteção de herança".into(),
+            ));
+        }
+    }
     if dacl.is_null() {
         problemas.push(Problema::DaclNula(p.to_owned()));
     } else {
@@ -266,6 +280,9 @@ fn conferir_seguranca(f: &File, p: &Path, problemas: &mut Vec<Problema>) {
             let mut ace: *mut core::ffi::c_void = null_mut();
             // SAFETY: índice dentro de AceCount.
             if unsafe { GetAce(dacl, i, &mut ace) } == 0 || ace.is_null() {
+                if privado {
+                    problemas.push(Problema::Io(p.to_owned(), "ACE privada ilegível".into()));
+                }
                 continue;
             }
             // SAFETY: toda ACE começa com ACE_HEADER.
@@ -276,14 +293,17 @@ fn conferir_seguranca(f: &File, p: &Path, problemas: &mut Vec<Problema>) {
                     let a = ace as *const ACCESS_ALLOWED_ACE;
                     let mascara = unsafe { (*a).Mask };
                     let sid: PSID = unsafe { (&raw const (*a).SidStart) as PSID };
-                    if mascara & DIREITOS_ESCRITA == 0 || privilegiado(sid) {
+                    if (!privado && mascara & DIREITOS_ESCRITA == 0) || privilegiado(sid) {
                         continue;
                     }
                     // CREATOR OWNER só herdável vira o dono do filho (SYSTEM
                     // ou Administradores, pois só eles criam itens aqui).
                     let herdavel_so = u32::from(cab.AceFlags) & INHERIT_ONLY_ACE != 0;
                     // SAFETY: `sid` válido.
-                    if herdavel_so && unsafe { IsWellKnownSid(sid, WinCreatorOwnerSid) } != 0 {
+                    if !privado
+                        && herdavel_so
+                        && unsafe { IsWellKnownSid(sid, WinCreatorOwnerSid) } != 0
+                    {
                         continue;
                     }
                     problemas.push(Problema::Escrita(p.to_owned(), sid_texto(sid)));
@@ -404,7 +424,7 @@ fn verificar_com(dir: &Path, mut antes_de_abrir: impl FnMut(&Path)) -> Vec<Probl
         {
             problemas.push(Problema::VariosVinculos(p.clone()));
         }
-        conferir_seguranca(&f, &p, &mut problemas);
+        conferir_seguranca(&f, &p, &mut problemas, false);
         drop(f);
         if eh_dir {
             match fs::read_dir(&p) {
@@ -436,6 +456,20 @@ pub fn criar_seguro(dir: &Path) -> io::Result<()> {
 }
 
 fn criar_com(dir: &Path, sddl: &str) -> io::Result<()> {
+    com_descritor(sddl, |sa| {
+        let nome = utf16(dir);
+        // SAFETY: os ponteiros são válidos durante a chamada.
+        if unsafe { CreateDirectoryW(nome.as_ptr(), sa) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    })
+}
+
+fn com_descritor<T>(
+    sddl: &str,
+    criar: impl FnOnce(&SECURITY_ATTRIBUTES) -> io::Result<T>,
+) -> io::Result<T> {
     let sddl16: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
     let mut sd: PSECURITY_DESCRIPTOR = null_mut();
     // SAFETY: SDDL terminado em zero; `sd` recebe memória LocalAlloc.
@@ -455,14 +489,49 @@ fn criar_com(dir: &Path, sddl: &str) -> io::Result<()> {
         lpSecurityDescriptor: sd,
         bInheritHandle: 0,
     };
-    let nome = utf16(dir);
-    // SAFETY: ponteiros válidos durante a chamada. Falha se já existir
-    // (inclusive como junção ou link): nada pré-existente é reaproveitado.
-    let ok = unsafe { CreateDirectoryW(nome.as_ptr(), &sa) } != 0;
-    let erro = io::Error::last_os_error();
-    // SAFETY: alocado por ConvertStringSecurityDescriptor…
+    let resultado = criar(&sa);
+    // SAFETY: alocado pela conversão de SDDL.
     unsafe { LocalFree(sd) };
-    if ok { Ok(()) } else { Err(erro) }
+    resultado
+}
+
+/// Cria um arquivo novo já com DACL protegida, antes de escrever dados.
+pub fn criar_arquivo_privado(p: &Path) -> io::Result<File> {
+    com_descritor("D:P(A;;FA;;;SY)(A;;FA;;;BA)", |sa| {
+        let nome = utf16(p);
+        // SAFETY: nome e descritor vivem durante a chamada. CREATE_NEW recusa
+        // qualquer entrada existente, inclusive um link.
+        let h = unsafe {
+            CreateFileW(
+                nome.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                sa,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: handle válido e de posse exclusiva deste File.
+        Ok(unsafe { File::from_raw_handle(h) })
+    })
+}
+
+pub fn abrir_arquivo_privado(p: &Path) -> io::Result<File> {
+    let f = abrir_sem_reparse(p, OpenOptions::new().read(true))?;
+    let mut problemas = Vec::new();
+    conferir_seguranca(&f, p, &mut problemas, true);
+    if problemas.is_empty() {
+        Ok(f)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            resumo(&problemas),
+        ))
+    }
 }
 
 fn quarentena_para(dir: &Path) -> PathBuf {
@@ -849,6 +918,23 @@ mod testes {
             p.iter()
                 .any(|x| matches!(x, Problema::Dono(..) | Problema::Escrita(..))),
             "{p:?}"
+        );
+    }
+
+    #[test]
+    fn arquivo_privado_restringe_a_dacl_desde_a_criacao() {
+        let t = Temp::novo("privado");
+        let p = t.0.join("usuarios.json");
+        let f = criar_arquivo_privado(&p).unwrap();
+        let mut problemas = Vec::new();
+        conferir_seguranca(&f, &p, &mut problemas, true);
+        assert!(
+            problemas.iter().all(|p| matches!(p, Problema::Dono(..))),
+            "{problemas:?}"
+        );
+        assert_eq!(
+            criar_arquivo_privado(&p).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
         );
     }
 

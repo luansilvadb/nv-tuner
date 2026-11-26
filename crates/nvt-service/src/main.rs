@@ -14,6 +14,7 @@ mod nomes;
 mod nucleo;
 mod relatorio;
 mod scm;
+mod usuario;
 mod vigia;
 
 #[cfg(test)]

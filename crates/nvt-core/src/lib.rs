@@ -14,11 +14,12 @@ pub mod jogos;
 pub mod plan;
 pub mod preferences;
 pub mod rules;
+pub mod usuario;
 pub mod versao;
 
 pub use capabilities::{Arquitetura, Capabilities, EstadoVrr};
 pub use catalogo::{Catalogo, DefSetting, Faixa, PreferenciaGovernante};
-pub use evaluator::{avaliar, limite_vrr};
+pub use evaluator::{avaliar, avaliar_com_aceites, limite_vrr};
 pub use explicacao::{
     Falha, MotivoDeclarado, MotivoNaoAplicada, RegraAplicada, RegraNaoAplicada, ResumoJogo,
     TipoMotivo,
@@ -28,7 +29,10 @@ pub use jogos::{
     Anticheat, BaseJogos, ErroJogo, ErrosJogos, IdJogo, JOGOS_TOML, JogoCurado, Orientacao,
     PoliticaConfig, filtrar_orientacoes,
 };
-pub use plan::{AvisoPlano, Descarte, Origem, Plan, Respeitada, SettingChange, Sugestao};
+pub use plan::{
+    AvisoPlano, CodigoExplicacao, Descarte, EstadoExperimental, Origem, Plan, Respeitada,
+    SettingChange, Sugestao,
+};
 pub use preferences::{Alvo, EscolhaUsuario, Preferences, Qualidade, Sincronismo};
 pub use rules::{
     Condicoes, ConjuntoRegras, ErroRegra, ErrosRegras, Escopo, ImpactoVisual, Rule, Status,

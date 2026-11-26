@@ -609,6 +609,13 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         self.assinatura_propria = (self.assinador)();
     }
 
+    pub fn processos_vigiados(&self) -> std::collections::BTreeSet<String> {
+        self.portao
+            .vigiados(self.engine.base_jogos(), &[])
+            .into_iter()
+            .collect()
+    }
+
     /// Varre os jogos instalados.
     /// Os exes encontrados passam a ser vigiados pelo portão de gravação.
     pub fn varrer(&mut self, agora: Instant) {
@@ -973,6 +980,15 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             );
         }
         let r = match req {
+            Requisicao::AgenteConsultar { .. }
+            | Requisicao::AgenteRelatar { .. }
+            | Requisicao::DefinirAceiteExperimental { .. }
+            | Requisicao::ReverterAjusteUsuario { .. } => {
+                return Resposta::erro(
+                    CodigoErro::RequisicaoInvalida,
+                    "pedido requer coordenador de usuário",
+                );
+            }
             Requisicao::ObterEstado => self.obter_estado(),
             Requisicao::ObterPlano => self.obter_plano(),
             Requisicao::AplicarAgora => self.aplicar_agora(agora),
@@ -1036,6 +1052,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             }
         };
         Ok(Resposta::Estado(nvt_ipc::Estado {
+            agente: Default::default(),
+            diagnosticos: Vec::new(),
             versao_servico: env!("CARGO_PKG_VERSION").to_owned(),
             driver,
             gpu,
@@ -1350,6 +1368,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                     OrigemRegistro::Restauracao => AcaoHistorico::Restauracao,
                 };
                 EntradaHistorico {
+                    camada: nvt_ipc::Camada::Driver,
                     id: i as u64 + 1,
                     quando_unix: iso_para_unix(&r.data),
                     acao,
@@ -1398,6 +1417,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             let def = cat.get(&c.setting);
             let regra = c.origem.regra();
             Mudanca {
+                camada: nvt_ipc::Camada::Driver,
+                experimental: Default::default(),
                 setting: c.setting.clone(),
                 nome_legivel: def.map_or_else(|| c.setting.clone(), nomes::nome_setting),
                 antes: nomes::valor(def, antes),
@@ -1483,6 +1504,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             })
             .collect();
         Plano {
+            sistema: Default::default(),
+            sugestoes_driver: Vec::new(),
             gerado_unix: agora_unix(),
             perfis,
             reversoes,

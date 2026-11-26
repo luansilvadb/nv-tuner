@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use nvt_core::{Alvo, ImpactoVisual as ImpactoRegra, Origem, Status as StatusRegra};
+use nvt_core::{Alvo, ImpactoVisual as ImpactoRegra, Origem};
 use nvt_drs::{
     DriverVersion, Error as ErroDrs, GpuInfo, NvApi, ProfileRef, Result as ResultadoDrs, Setting,
     SettingValue, Snapshot, Status as StatusNvapi,
@@ -512,7 +512,12 @@ fn item<S: DriverStore>(
         },
         impacto: regra.map_or(ImpactoVisual::Nenhum, |r| impacto_ipc(r.impacto_visual)),
         status,
-        experimental: experimental || regra.is_some_and(|r| r.status == StatusRegra::Experimental),
+        camada: nvt_ipc::Camada::Driver,
+        experimental: if experimental {
+            nvt_ipc::EstadoExperimental::Aceitavel
+        } else {
+            nvt_ipc::EstadoExperimental::Estavel
+        },
     }
 }
 
@@ -579,6 +584,7 @@ fn montar_dados<S: DriverStore>(
         .rev()
         .take(HISTORICO_EXIBIDO)
         .map(|(i, h)| EntradaHistorico {
+            camada: nvt_ipc::Camada::Driver,
             id: i as u64 + 1,
             quando_unix: ler_iso(&h.data).unwrap_or(0),
             acao: acao_de_origem(&h.origem),
@@ -603,6 +609,8 @@ fn montar_dados<S: DriverStore>(
         });
 
     let estado = Estado {
+        agente: Default::default(),
+        diagnosticos: Vec::new(),
         versao_servico: String::new(),
         driver: Some(Driver {
             versao: c.driver_version.to_string(),
@@ -633,8 +641,31 @@ fn montar_dados<S: DriverStore>(
         adiamento: None,
     };
 
+    // O modo local só lê o estado compartilhado do driver.
+    let sugestoes_driver = diff
+        .plano
+        .experimentais
+        .iter()
+        .map(|s| &s.regra)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|id| {
+            let regra = e.regras().regras.iter().find(|r| &r.id == id)?;
+            Some(nvt_ipc::SugestaoExperimental {
+                regra: id.clone(),
+                descricao: regra.descricao.clone(),
+                camada: nvt_ipc::Camada::Driver,
+                impacto_visual: impacto_ipc(regra.impacto_visual),
+                estado: nvt_ipc::EstadoExperimental::Aceitavel,
+            })
+        })
+        .collect();
+
     Dados {
         estado: Some(estado),
+        sistema: Default::default(),
+        alvo_tela: None,
+        sugestoes_driver,
         grupos,
         respeitadas,
         historico,

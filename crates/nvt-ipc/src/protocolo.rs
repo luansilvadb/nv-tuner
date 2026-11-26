@@ -7,6 +7,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::usuario::{
+    Camada, Diagnostico, EstadoAgente, EstadoExperimental, EstadoTarefa, FatosUsuario,
+    OperacaoUsuario, PlanoAgente, ResultadoUsuario, ResumoSistema, SettingUsuario,
+    SugestaoExperimental, validar_texto,
+};
+
 /// Limite inferior aceito para o limitador de FPS.
 pub const LIMITE_FPS_MIN: u32 = 20;
 /// Limite superior aceito para o limitador de FPS.
@@ -24,7 +30,7 @@ pub const SETTING_MAX: usize = 64;
 
 /// Requisição enviada pela UI ao serviço.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "tipo", rename_all = "snake_case")]
+#[serde(tag = "tipo", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Requisicao {
     /// Resumo do estado atual.
     ObterEstado,
@@ -42,13 +48,39 @@ pub enum Requisicao {
         limite_fps: Option<u32>,
     },
     /// Últimas `limite` entradas do histórico (mais recentes primeiro).
-    ListarHistorico { limite: u32 },
+    ListarHistorico {
+        limite: u32,
+    },
     /// Marca uma setting como escolha do usuário: o avaliador não a altera.
-    TravarSetting { perfil: String, setting: String },
+    TravarSetting {
+        perfil: String,
+        setting: String,
+    },
     /// Devolve uma setting travada ao controle do avaliador.
-    DestravarSetting { perfil: String, setting: String },
+    DestravarSetting {
+        perfil: String,
+        setting: String,
+    },
     /// Refaz a varredura de jogos instalados.
     ReescanearJogos,
+    AgenteConsultar {
+        fatos: FatosUsuario,
+        ultima_tarefa: Option<EstadoTarefa>,
+        geracao_restaurada: u64,
+    },
+    AgenteRelatar {
+        id_tarefa: u64,
+        operacao: OperacaoUsuario,
+        revisao: u64,
+        resultados: Vec<ResultadoUsuario>,
+    },
+    DefinirAceiteExperimental {
+        regra: String,
+        aceito: bool,
+    },
+    ReverterAjusteUsuario {
+        destino: SettingUsuario,
+    },
 }
 
 impl Requisicao {
@@ -72,6 +104,43 @@ impl Requisicao {
                 validar_perfil(perfil)?;
                 validar_setting(setting)
             }
+            Self::DefinirAceiteExperimental { regra, .. } => {
+                if regra.is_empty()
+                    || regra.len() > 128
+                    || !regra.bytes().all(|b| {
+                        b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || matches!(b, b'-' | b'_' | b'.')
+                    })
+                {
+                    return Err("identificador de regra inválido".into());
+                }
+                Ok(())
+            }
+            Self::AgenteConsultar { fatos, .. } => fatos.validar(),
+            Self::AgenteRelatar { resultados, .. } => {
+                if resultados.len() > 256 {
+                    return Err("muitos resultados da tarefa".into());
+                }
+                let mut destinos = std::collections::BTreeSet::new();
+                for resultado in resultados {
+                    resultado.destino.validar()?;
+                    if !destinos.insert(&resultado.destino) {
+                        return Err("destino repetido no relato".into());
+                    }
+                    if let Some(mudanca) = &resultado.mudanca {
+                        mudanca.validar()?;
+                        if mudanca.destino() != resultado.destino {
+                            return Err("mudança de destino incompatível com o relato".into());
+                        }
+                    }
+                    if let Some(detalhe) = &resultado.detalhe {
+                        validar_texto(detalhe, 1024)?;
+                    }
+                }
+                Ok(())
+            }
+            Self::ReverterAjusteUsuario { destino } => destino.validar(),
             _ => Ok(()),
         }
     }
@@ -167,6 +236,8 @@ pub enum Resposta {
     Adiada {
         adiamento: Adiamento,
     },
+    PlanoAgente(PlanoAgente),
+    Encerrar,
     Ok,
     Erro {
         codigo: CodigoErro,
@@ -196,6 +267,7 @@ pub enum CodigoErro {
     MensagemInvalida,
     /// Campos fora de faixa ou com formato inválido.
     RequisicaoInvalida,
+    IdentidadeIndisponivel,
     /// Setting fora da lista permitida do serviço.
     SettingNaoPermitida,
     /// Perfil inexistente no driver.
@@ -212,6 +284,8 @@ pub enum CodigoErro {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Estado {
+    pub agente: EstadoAgente,
+    pub diagnosticos: Vec<Diagnostico>,
     pub versao_servico: String,
     /// `None` se o driver não pôde ser lido.
     pub driver: Option<Driver>,
@@ -550,6 +624,8 @@ pub struct AlertaDeriva {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plano {
+    pub sistema: ResumoSistema,
+    pub sugestoes_driver: Vec<SugestaoExperimental>,
     pub gerado_unix: u64,
     pub perfis: Vec<PlanoPerfil>,
     /// Settings que o app gravou e que saíram do plano: voltam ao original.
@@ -732,6 +808,8 @@ pub struct PlanoPerfil {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mudanca {
+    pub camada: Camada,
+    pub experimental: EstadoExperimental,
     pub setting: String,
     pub nome_legivel: String,
     /// `None` = não definida no perfil.
@@ -776,6 +854,7 @@ pub enum StatusMudanca {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EntradaHistorico {
+    pub camada: Camada,
     pub id: u64,
     pub quando_unix: u64,
     pub acao: AcaoHistorico,
@@ -814,6 +893,24 @@ mod testes {
 
     /// Um exemplar de cada requisição. O `match` garante (em tempo de
     /// compilação) que nenhuma variante nova fique sem teste.
+    fn consulta() -> Requisicao {
+        use crate::Fato;
+        Requisicao::AgenteConsultar {
+            fatos: FatosUsuario {
+                tela: Fato::Desconhecido,
+                mouse: Fato::Desconhecido,
+                swap_effect_upgrade: Fato::Ausente,
+                captura_historica: Fato::Conhecido(1),
+                diagnosticos: vec![Diagnostico {
+                    codigo: "drr".into(),
+                    estado: crate::EstadoDiagnostico::Indisponivel,
+                }],
+            },
+            ultima_tarefa: None,
+            geracao_restaurada: 0,
+        }
+    }
+
     fn todas_requisicoes() -> Vec<Requisicao> {
         let v = vec![
             Requisicao::ObterEstado,
@@ -840,6 +937,28 @@ mod testes {
                 setting: "vsync".into(),
             },
             Requisicao::ReescanearJogos,
+            consulta(),
+            Requisicao::AgenteRelatar {
+                id_tarefa: 1,
+                operacao: OperacaoUsuario::Aplicar,
+                revisao: 7,
+                resultados: vec![ResultadoUsuario {
+                    destino: SettingUsuario::GameDvrCapturaHistorica,
+                    status: StatusMudanca::Aplicada,
+                    detalhe: None,
+                    mudanca: Some(crate::AjusteUsuario::GameDvrCapturaHistorica {
+                        antes: Some(1),
+                        depois: Some(0),
+                    }),
+                }],
+            },
+            Requisicao::DefinirAceiteExperimental {
+                regra: "sincronismo-gsync-limite".into(),
+                aceito: true,
+            },
+            Requisicao::ReverterAjusteUsuario {
+                destino: SettingUsuario::MouseAceleracao,
+            },
         ];
         for r in &v {
             match r {
@@ -851,7 +970,11 @@ mod testes {
                 | Requisicao::ListarHistorico { .. }
                 | Requisicao::TravarSetting { .. }
                 | Requisicao::DestravarSetting { .. }
-                | Requisicao::ReescanearJogos => {}
+                | Requisicao::ReescanearJogos
+                | Requisicao::AgenteConsultar { .. }
+                | Requisicao::AgenteRelatar { .. }
+                | Requisicao::DefinirAceiteExperimental { .. }
+                | Requisicao::ReverterAjusteUsuario { .. } => {}
             }
         }
         v
@@ -995,6 +1118,8 @@ mod testes {
     fn todas_respostas() -> Vec<Resposta> {
         let v = vec![
             Resposta::Estado(Estado {
+                agente: EstadoAgente::default(),
+                diagnosticos: vec![],
                 versao_servico: "0.0.1".into(),
                 driver: Some(Driver {
                     versao: "581.57".into(),
@@ -1047,6 +1172,8 @@ mod testes {
                 adiamento: Some(adiamento(AcaoAdiada::TratarDeriva)),
             }),
             Resposta::Estado(Estado {
+                agente: EstadoAgente::default(),
+                diagnosticos: vec![],
                 versao_servico: "0.0.1".into(),
                 driver: None,
                 gpu: None,
@@ -1058,6 +1185,8 @@ mod testes {
                 adiamento: None,
             }),
             Resposta::Plano(Plano {
+                sistema: ResumoSistema::default(),
+                sugestoes_driver: vec![],
                 gerado_unix: 1,
                 perfis: vec![],
                 reversoes: vec![],
@@ -1066,11 +1195,15 @@ mod testes {
                 adiada: Some(adiamento(AcaoAdiada::AplicarPlano)),
             }),
             Resposta::Plano(Plano {
+                sistema: ResumoSistema::default(),
+                sugestoes_driver: vec![],
                 gerado_unix: 1_790_000_000,
                 perfis: vec![PlanoPerfil {
                     perfil: "global".into(),
                     nome_legivel: "Perfil global".into(),
                     mudancas: vec![Mudanca {
+                        camada: Camada::Driver,
+                        experimental: EstadoExperimental::Estavel,
                         setting: "vsync".into(),
                         nome_legivel: "Sincronização vertical".into(),
                         antes: Some("Controlado pelo aplicativo".into()),
@@ -1106,6 +1239,7 @@ mod testes {
             },
             Resposta::Historico {
                 entradas: vec![EntradaHistorico {
+                    camada: Camada::Driver,
                     id: 1,
                     quando_unix: 1_790_000_000,
                     acao: AcaoHistorico::Aplicacao,
@@ -1128,6 +1262,23 @@ mod testes {
                     lista_indisponivel: true,
                 },
             },
+            Resposta::PlanoAgente(PlanoAgente {
+                revisao: 7,
+                geracao_restauracao: 2,
+                tarefa: Some(crate::TarefaUsuario {
+                    tarefa: crate::ReferenciaTarefa {
+                        id_tarefa: 1,
+                        operacao: OperacaoUsuario::Aplicar,
+                        revisao: 7,
+                    },
+                    acoes: ajustes_exemplo()
+                        .into_iter()
+                        .map(|ajuste| crate::AcaoUsuario::Aplicar { ajuste })
+                        .collect(),
+                }),
+                processos_vigiados: ["cs2.exe".into()].into(),
+            }),
+            Resposta::Encerrar,
             Resposta::Ok,
             Resposta::erro(CodigoErro::SettingNaoPermitida, "setting fora da lista"),
         ];
@@ -1138,11 +1289,50 @@ mod testes {
                 | Resposta::Historico { .. }
                 | Resposta::Restauracao { .. }
                 | Resposta::Adiada { .. }
+                | Resposta::PlanoAgente(_)
+                | Resposta::Encerrar
                 | Resposta::Ok
                 | Resposta::Erro { .. } => {}
             }
         }
         v
+    }
+
+    fn ajustes_exemplo() -> [crate::AjusteUsuario; 4] {
+        use crate::{AjusteUsuario, MouseSpi, RefreshRacional};
+        [
+            AjusteUsuario::Refresh {
+                alvo: "alvo-estavel".into(),
+                antes: RefreshRacional {
+                    numerador: 60,
+                    denominador: 1,
+                },
+                depois: RefreshRacional {
+                    numerador: 144_000,
+                    denominador: 1001,
+                },
+            },
+            AjusteUsuario::MouseAceleracao {
+                antes: MouseSpi {
+                    limiar1: 6,
+                    limiar2: 10,
+                    aceleracao: 1,
+                },
+                depois: MouseSpi {
+                    limiar1: 6,
+                    limiar2: 10,
+                    aceleracao: 0,
+                },
+            },
+            AjusteUsuario::DxSwapEffectUpgrade {
+                antes: None,
+                depois: Some("1".into()),
+            },
+            AjusteUsuario::GameDvrCapturaHistorica {
+                antes: Some(1),
+                depois: Some(0),
+            },
+        ]
     }
 
     fn adiamento(acao: AcaoAdiada) -> Adiamento {
@@ -1241,21 +1431,21 @@ mod testes {
     }
 
     #[test]
-    fn mensagem_da_v3_e_recusada() {
+    fn mensagem_da_v4_e_recusada() {
         for payload in [
-            &br#"{"versao":3,"corpo":{"tipo":"obter_estado"}}"#[..],
-            br#"{"versao":3,"corpo":{"tipo":"ok"}}"#,
+            &br#"{"versao":4,"corpo":{"tipo":"obter_estado"}}"#[..],
+            br#"{"versao":4,"corpo":{"tipo":"ok"}}"#,
         ] {
             assert!(matches!(
                 decodificar::<Requisicao>(payload),
                 Err(crate::ErroIpc::VersaoIncompativel {
-                    recebida: 3,
-                    esperada: 4
+                    recebida: 4,
+                    esperada: 5
                 })
             ));
             assert!(matches!(
                 decodificar::<Resposta>(payload),
-                Err(crate::ErroIpc::VersaoIncompativel { recebida: 3, .. })
+                Err(crate::ErroIpc::VersaoIncompativel { recebida: 4, .. })
             ));
         }
     }
@@ -1284,6 +1474,7 @@ mod testes {
             CodigoErro::MensagemGrande,
             CodigoErro::MensagemInvalida,
             CodigoErro::RequisicaoInvalida,
+            CodigoErro::IdentidadeIndisponivel,
             CodigoErro::SettingNaoPermitida,
             CodigoErro::PerfilNaoEncontrado,
             CodigoErro::DriverIndisponivel,
@@ -1344,10 +1535,10 @@ mod testes {
         .unwrap();
         assert_eq!(
             json,
-            r#"{"versao":4,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
+            r#"{"versao":5,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
         );
         let json = String::from_utf8(codificar(&Resposta::Ok).unwrap()).unwrap();
-        assert_eq!(json, r#"{"versao":4,"corpo":{"tipo":"ok"}}"#);
+        assert_eq!(json, r#"{"versao":5,"corpo":{"tipo":"ok"}}"#);
     }
 
     #[test]
@@ -1443,6 +1634,29 @@ mod testes {
             assert_eq!(r.validar(), Ok(()), "{r:?}");
         }
         let invalidas = [
+            Requisicao::DefinirAceiteExperimental {
+                regra: "regra/1".into(),
+                aceito: true,
+            },
+            Requisicao::ReverterAjusteUsuario {
+                destino: SettingUsuario::Refresh {
+                    alvo: String::new(),
+                },
+            },
+            Requisicao::AgenteRelatar {
+                id_tarefa: 1,
+                operacao: OperacaoUsuario::Aplicar,
+                revisao: 7,
+                resultados: vec![ResultadoUsuario {
+                    destino: SettingUsuario::MouseAceleracao,
+                    status: StatusMudanca::Aplicada,
+                    detalhe: None,
+                    mudanca: Some(crate::AjusteUsuario::GameDvrCapturaHistorica {
+                        antes: Some(1),
+                        depois: Some(0),
+                    }),
+                }],
+            },
             Requisicao::ListarHistorico { limite: 0 },
             Requisicao::ListarHistorico {
                 limite: HISTORICO_MAX + 1,

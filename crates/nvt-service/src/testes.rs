@@ -393,7 +393,13 @@ fn laco_atende_ipc_pelo_pipe_e_para() {
         )
         .unwrap();
         n.iniciar(Instant::now());
-        laco::laco_principal(&mut n, &rx);
+        laco::laco_principal(
+            &mut laco::Atendimento {
+                nucleo: &mut n,
+                usuario: None,
+            },
+            &rx,
+        );
     });
     let cfg_cli = ConfigCliente {
         exigir_dono_privilegiado: false,
@@ -404,7 +410,10 @@ fn laco_atende_ipc_pelo_pipe_e_para() {
         panic!("esperava estado");
     };
     assert_eq!(e.jogos, 2);
-    let r = c.requisitar(&Requisicao::AplicarAgora).unwrap();
+    let r = Cliente::conectar(&pipe, &cfg_cli)
+        .unwrap()
+        .requisitar(&Requisicao::AplicarAgora)
+        .unwrap();
     assert!(matches!(r, Resposta::Erro { .. }), "somente leitura recusa");
     drop(c);
     tx.send(Evento::Parar).unwrap();

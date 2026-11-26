@@ -9,6 +9,20 @@ use serde::{Deserialize, Serialize};
 use crate::explicacao::ResumoJogo;
 use crate::preferences::Alvo;
 
+/// Ação disponível para uma regra experimental.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EstadoExperimental {
+    Aceitavel,
+    Aceita,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodigoExplicacao {
+    ExperimentalAceitaPorVoce,
+}
+
 /// De onde veio uma mudança.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Origem {
@@ -97,6 +111,9 @@ pub struct Plan {
     pub por_jogo: BTreeMap<String, Vec<SettingChange>>,
     /// Regras experimentais que casaram (não aplicadas).
     pub experimentais: Vec<Sugestao>,
+    /// Aceites persistidos e sugestões elegíveis, indexados por ID de regra.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub estado_experimental: BTreeMap<String, EstadoExperimental>,
     /// Mudanças suprimidas por escolhas do usuário.
     pub respeitadas: Vec<Respeitada>,
     /// Regras ou mudanças descartadas (teto de qualidade, conflito etc.).
@@ -112,6 +129,13 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Código adicional da explicação de uma mudança vencedora.
+    pub fn codigo_explicacao(&self, alvo: &Alvo, setting: &str) -> Option<CodigoExplicacao> {
+        let id = self.mudanca(alvo, setting)?.origem.regra()?;
+        (self.estado_experimental.get(id) == Some(&EstadoExperimental::Aceita))
+            .then_some(CodigoExplicacao::ExperimentalAceitaPorVoce)
+    }
+
     /// Mudanças de um alvo.
     pub fn mudancas(&self, alvo: &Alvo) -> &[SettingChange] {
         match alvo {

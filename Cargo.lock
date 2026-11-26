@@ -4484,6 +4484,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvt-agente"
+version = "0.0.2"
+dependencies = [
+ "nvt-core",
+ "nvt-detect",
+ "nvt-engine",
+ "nvt-ipc",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "nvt-core"
 version = "0.0.2"
 dependencies = [
@@ -4568,6 +4581,19 @@ dependencies = [
  "nvt-ipc",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nvt-windows"
+version = "0.0.2"
+dependencies = [
+ "nvt-core",
+ "nvt-detect",
+ "nvt-ipc",
+ "serde",
+ "windows 0.58.0",
+ "windows-sys 0.61.2",
+ "winreg",
 ]
 
 [[package]]

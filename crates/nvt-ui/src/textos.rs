@@ -101,6 +101,161 @@ pub const SECAO_RESPEITADAS: &str = "Respeitadas por escolha sua";
 pub const SEM_RESPEITADAS: &str = "Nenhuma setting travada.";
 pub const BOTAO_DESTRAVAR: &str = "Destravar";
 pub const ESTAVEL: &str = "estável";
+pub const TELA_WINDOWS: &str = "Windows";
+pub const CAMADA_DRIVER: &str = "Driver";
+pub const SECAO_WINDOWS_FEITO: &str = "O que o app fez";
+pub const SECAO_EXPERIMENTAIS: &str = "Experimentais";
+pub const SECAO_DIAGNOSTICO: &str = "Diagnóstico";
+pub const SEM_AJUSTES_USUARIO: &str = "Nenhum ajuste do Windows para mostrar.";
+pub const SEM_EXPERIMENTAIS: &str = "Nenhuma regra experimental disponível.";
+pub const SEM_DIAGNOSTICOS: &str = "Nenhum diagnóstico disponível.";
+pub const BOTAO_ACEITAR: &str = "Aceitar";
+pub const BOTAO_RETIRAR: &str = "Retirar";
+pub const BOTAO_REVERTER: &str = "Reverter";
+pub const LINK_OFICIAL: &str = "Documentação oficial";
+pub const EXPERIMENTAL_ACEITA: &str = "experimental aceita por você";
+pub const EXPERIMENTAIS_DRIVER: &str = "O efeito no driver vale para todos os usuários da máquina. Só valem os aceites de quem está na sessão de console ativa.";
+pub const ACEITE_DRIVER_INATIVO: &str = "Seu aceite fica inativo fora da sessão de console ativa.";
+pub const AGENTE_ATIVO: &str = "Ajustes do seu usuário: ativos";
+pub const AGENTE_AUSENTE: &str = "Ajustes do seu usuário: agente não está em execução";
+pub const AGENTE_INDISPONIVEL: &str = "Ajustes do seu usuário: status indisponível sem o serviço";
+pub const RESTAURACAO_USUARIO_PENDENTE: &str = "Restauração dos ajustes do seu usuário pendente.";
+pub const DRIVER_RESTAURADO: &str = "Restauração do driver concluída.";
+pub const OK_ACEITE: &str = "Preferência experimental atualizada.";
+pub const OK_REVERSAO_USUARIO: &str = "Reversão do ajuste do Windows solicitada.";
+pub const DESTINO_REVERTER_INDISPONIVEL: &str = "O destino deste ajuste está indisponível.";
+pub const RESTAURACAO_SOLICITADA: &str = "Restauração solicitada ao serviço.";
+
+pub fn camada(camada: nvt_ipc::Camada) -> &'static str {
+    match camada {
+        nvt_ipc::Camada::Driver => CAMADA_DRIVER,
+        nvt_ipc::Camada::Usuario => TELA_WINDOWS,
+    }
+}
+
+pub fn experimental(estado: nvt_ipc::EstadoExperimental) -> &'static str {
+    match estado {
+        nvt_ipc::EstadoExperimental::Estavel => ESTAVEL,
+        nvt_ipc::EstadoExperimental::Aceitavel => EXPERIMENTAL,
+        nvt_ipc::EstadoExperimental::Aceita => EXPERIMENTAL_ACEITA,
+    }
+}
+
+pub fn estado_diagnostico(d: &nvt_ipc::Diagnostico) -> String {
+    use nvt_ipc::EstadoDiagnostico::*;
+    let valor = match &d.estado {
+        Conhecido { valor } => valor.as_str(),
+        Indisponivel => return "Leitura indisponível".into(),
+        Orientacao => return "Orientação".into(),
+    };
+    match (d.codigo.as_str(), valor) {
+        ("game_mode_desligado" | "vrr_windows", "0") => "Desligado".into(),
+        ("game_mode_desligado" | "vrr_windows", "1") => "Ligado".into(),
+        ("hags", "1") => "Desligado".into(),
+        ("hags", "2") => "Ligado".into(),
+        ("secure_boot" | "iommu" | "msi_gpu", "0") => "Desativado".into(),
+        ("secure_boot" | "iommu" | "msi_gpu", "1") => "Ativado".into(),
+        ("fso_por_jogo", _) => match valor.split_once(',') {
+            Some(("0", exe)) => format!("Padrão do Windows · {exe}"),
+            Some(("1", exe)) => format!("Desativadas · {exe}"),
+            _ => valor.into(),
+        },
+        _ => valor.into(),
+    }
+}
+
+pub fn mostrar_orientacao_diagnostico(d: &nvt_ipc::Diagnostico) -> bool {
+    d.codigo != "game_mode_desligado"
+        || matches!(&d.estado, nvt_ipc::EstadoDiagnostico::Conhecido { valor } if valor == "0")
+}
+
+pub fn diagnostico(codigo: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    const SEGURANCA_FACEIT: &str = "https://support.faceit.com/hc/en-us/articles/23117181142556-Windows-Security-Requirements-FAQ";
+    Some(match codigo {
+        "game_mode_desligado" => (
+            "Modo de Jogo",
+            "Considere religá-lo. O Modo de Jogo é necessário para o gerenciamento dos Ryzen X3D com dois CCDs.",
+            "https://support.xbox.com/pt-BR/help/games-apps/game-setup-and-play/use-game-mode-gaming-on-pc",
+        ),
+        "hags" => (
+            "Agendamento de GPU com aceleração de hardware",
+            "Mantenha o padrão do Windows.",
+            "https://devblogs.microsoft.com/directx/hardware-accelerated-gpu-scheduling/",
+        ),
+        "vrr_windows" => (
+            "Taxa de atualização variável (VRR) do Windows",
+            "Se o VRR estiver ativo, a opção em Configurações > Sistema > Tela > Gráficos pode ajudar jogos DirectX 11 em tela cheia sem suporte nativo.",
+            "https://devblogs.microsoft.com/directx/os-variable-refresh-rate/",
+        ),
+        "drr" => (
+            "Taxa de atualização dinâmica (DRR)",
+            "Considere desligá-la se ela limitar a taxa de atualização de jogos sem VRR.",
+            "https://support.microsoft.com/en-us/windows/hardware/display-graphics/change-the-refresh-rate-on-your-monitor-in-windows",
+        ),
+        "mpo" => (
+            "Sobreposição multiplano (MPO)",
+            "Consulte o suporte da NVIDIA se houver cintilação ou engasgos em aplicativos de desktop.",
+            "https://nvidia.custhelp.com/app/answers/detail/a_id/5157",
+        ),
+        "fso_por_jogo" => (
+            "Otimizações de tela inteira por jogo",
+            "A leitura mostra os ajustes de compatibilidade dos jogos detectados.",
+            "https://devblogs.microsoft.com/directx/demystifying-full-screen-optimizations/",
+        ),
+        "plano_energia" => (
+            "Plano e modo de energia",
+            "O estado mostrado é o que está em uso no Windows.",
+            "https://support.microsoft.com/en-us/windows/experience/change-the-power-mode-for-your-windows-pc",
+        ),
+        "cpu_x3d_dual_ccd" => (
+            "Ryzen X3D com dois CCDs",
+            "O Windows usa o Modo de Jogo e o driver de chipset da AMD para direcionar os jogos ao CCD adequado.",
+            "https://www.amd.com/en/resources/support-articles/release-notes/RN-RYZEN-CHIPSET-5-08-02-027.html",
+        ),
+        "msi_gpu" => (
+            "Interrupções sinalizadas por mensagem (MSI) da GPU",
+            "O valor indica a configuração do dispositivo.",
+            "https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/enabling-message-signaled-interrupts-in-the-registry",
+        ),
+        "vbs_hvci" => (
+            "Segurança baseada em virtualização e integridade de memória",
+            "Vanguard ou FACEIT podem exigir a integridade de memória.",
+            SEGURANCA_FACEIT,
+        ),
+        "tpm" => (
+            "Módulo de Plataforma Confiável (TPM)",
+            "Vanguard ou FACEIT podem exigir TPM 2.0.",
+            SEGURANCA_FACEIT,
+        ),
+        "secure_boot" => (
+            "Inicialização Segura",
+            "Vanguard ou FACEIT podem exigir a Inicialização Segura.",
+            SEGURANCA_FACEIT,
+        ),
+        "iommu" => (
+            "IOMMU e proteção contra acesso direto à memória",
+            "Verifique os requisitos do FACEIT e do Vanguard On-Demand.",
+            SEGURANCA_FACEIT,
+        ),
+        "windows_11" => (
+            "Versão do Windows",
+            "Confira os requisitos atuais do FACEIT para a versão do Windows.",
+            SEGURANCA_FACEIT,
+        ),
+        "useplatformclock" => (
+            "Relógio de plataforma (useplatformclock)",
+            "A Microsoft reserva essa opção do BCD para depuração.",
+            "https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/bcdedit--set",
+        ),
+        "polling_mouse" => (
+            "Taxa de consulta do mouse",
+            "Considere 1.000 Hz ou mais no software do mouse, se o dispositivo oferecer essa opção.",
+            "https://dl.razer.com/master-guides/Mamba/MambaOMG-ENG.pdf",
+        ),
+        _ => return None,
+    })
+}
+
 pub const EXPERIMENTAL: &str = "experimental (não aplicada)";
 pub const ROTULO_REGRA: &str = "Regra";
 pub const ROTULO_IMPACTO: &str = "Impacto visual";
@@ -120,14 +275,13 @@ pub const PREFS_NAO_SALVAS: &str = "Há alterações não salvas.";
 pub const SEM_HISTORICO: &str = "Nenhum registro ainda.";
 
 // Restaurar ---------------------------------------------------------------
-pub const RESTAURAR_EXPLICACAO: &str = "Devolve ao driver os valores originais de tudo o que o \
-     nv-tuner alterou (snapshot feito antes da primeira mudança). Settings que o app nunca \
-     tocou não são alteradas. Depois de restaurar, a aplicação automática fica desligada até \
-     você pedir “Aplicar agora”.";
+pub const RESTAURAR_EXPLICACAO: &str = "Devolve os valores originais dos ajustes gerenciados no driver \
+     e no Windows. Se os ajustes do seu usuário ficarem pendentes, o agente retoma a restauração \
+     no próximo contato com o serviço. A aplicação automática fica desligada até você pedir \
+     “Aplicar agora”.";
 pub const BOTAO_RESTAURAR: &str = "Restaurar original…";
 pub const CONFIRMAR_TITULO: &str = "Restaurar os valores originais?";
-pub const CONFIRMAR_TEXTO: &str =
-    "Todas as mudanças feitas pelo nv-tuner serão desfeitas no driver. Deseja continuar?";
+pub const CONFIRMAR_TEXTO: &str = "Os ajustes gerenciados no driver e no seu usuário do Windows serão restaurados. Deseja continuar?";
 pub const CONFIRMAR_OK: &str = "Restaurar";
 pub const CONFIRMAR_CANCELAR: &str = "Cancelar";
 
@@ -227,6 +381,7 @@ pub fn codigo_erro(c: CodigoErro) -> &'static str {
         CodigoErro::VersaoIncompativel => "a versão do serviço é incompatível com esta interface",
         CodigoErro::MensagemGrande => "mensagem grande demais",
         CodigoErro::MensagemInvalida => "mensagem inválida",
+        CodigoErro::IdentidadeIndisponivel => "não foi possível identificar seu usuário do Windows",
         CodigoErro::RequisicaoInvalida => "pedido inválido",
         CodigoErro::SettingNaoPermitida => "setting fora da lista permitida",
         CodigoErro::PerfilNaoEncontrado => "perfil não encontrado no driver",

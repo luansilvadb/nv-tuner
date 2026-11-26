@@ -8,7 +8,7 @@
 //!
 //! - `--pipe <nome>`: outro named pipe (testes); padrão `\\.\pipe\nv-tuner`.
 //! - `--tela <chave>`: tela inicial (`visao-geral`, `jogos`, `mudancas`,
-//!   `preferencias`, `historico`, `restaurar`).
+//!   `windows`, `preferencias`, `historico`, `restaurar`).
 //! - `--sair-apos <segundos>`: fecha sozinha (capturas automatizadas).
 //! - `--expandir <jogo>`: abre já expandida a linha do jogo com esse nome ou perfil
 //!   na tela Jogos (repetível; para capturas).

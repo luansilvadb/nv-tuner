@@ -1,0 +1,63 @@
+versao_schema = 2
+
+[catalogo.tela_refresh]
+maximo_nativo = "maximo_nativo"
+original = "original"
+
+[catalogo.mouse_aceleracao]
+off = [0, 0, 0]
+original = "original"
+
+[catalogo.dx_swap_effect_upgrade]
+on = "1"
+off = "0"
+ausente = "ausente"
+
+[catalogo.gamedvr_captura_historica]
+off = 0
+on = 1
+ausente = "ausente"
+
+[[regra]]
+id = "windows-refresh-maximo"
+descricao = "Usar a maior taxa de atualização compatível"
+status = "experimental"
+escopo = "usuario"
+quando = { refresh_abaixo_do_maximo = true }
+aplicar = { tela_refresh = "maximo_nativo" }
+impacto_visual = "nenhum"
+motivo = "Uma taxa mais alta reduz o intervalo entre atualizações. O ajuste corrige quedas de taxa, como o retorno a 60 Hz após uma atualização."
+evidencia = "Física do display e Microsoft Support, Alterar a taxa de atualização (spec competitiva §8.2 e revisão §1a)."
+
+[[regra]]
+id = "windows-mouse-sem-aceleracao"
+descricao = "Desligar a aceleração do mouse"
+status = "experimental"
+escopo = "usuario"
+quando = { mouse_aceleracao_ligada = true }
+aplicar = { mouse_aceleracao = "off" }
+impacto_visual = "nenhum"
+motivo = "Mantém a relação entre deslocamento do mouse e do cursor em menus e jogos que usam a curva do Windows."
+evidencia = "Microsoft Learn, SystemParametersInfoW (SPI_SETMOUSE). Raw input ignora a curva (spec competitiva §8.2 e revisão §1b)."
+
+[[regra]]
+id = "windows-otimizacoes-janela"
+descricao = "Habilitar otimizações para jogos em janela"
+status = "experimental"
+escopo = "usuario"
+quando = { windows_build_min = 22000, swap_effect_upgrade = ["off", "ausente"] }
+aplicar = { dx_swap_effect_upgrade = "on" }
+impacto_visual = "nenhum"
+motivo = "Permite ao Windows 11 usar o flip model, que pode reduzir a latência em jogos compatíveis em janela ou sem bordas."
+evidencia = "DirectX Dev Blog (fev/2022) e Microsoft Support, Optimizations for windowed games. Chave documentada por ElevenForum e TheWindowsClub (spec competitiva §8.2 e revisão §1e)."
+
+[[regra]]
+id = "windows-captura-historica-off"
+descricao = "Desligar a captura histórica"
+status = "experimental"
+escopo = "usuario"
+quando = { captura_historica_ligada = true }
+aplicar = { gamedvr_captura_historica = "off" }
+impacto_visual = "nenhum"
+motivo = "Evita o custo de manter a gravação em segundo plano quando a captura histórica foi habilitada."
+evidencia = "Xbox Wire (2016), sobre o custo de desempenho da gravação em segundo plano e o padrão desligado (spec competitiva §8.2 e revisão §1d)."

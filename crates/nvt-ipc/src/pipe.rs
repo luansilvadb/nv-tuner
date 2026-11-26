@@ -28,11 +28,13 @@ use windows_sys::Win32::Foundation::{
     GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-    SE_KERNEL_OBJECT,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+    SDDL_REVISION_1, SE_KERNEL_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+    GetTokenInformation, IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    RevertToSelf, SECURITY_ATTRIBUTES, SecurityAnonymous, TOKEN_QUERY, TOKEN_USER,
+    TokenImpersonationLevel, TokenSessionId, TokenUser, WinAnonymousSid,
     WinBuiltinAdministratorsSid, WinLocalSystemSid,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -42,14 +44,15 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, WaitNamedPipeW,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, ImpersonateNamedPipeClient,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    CreateEventW, GetCurrentThread, INFINITE, OpenThreadToken, SetEvent, WaitForMultipleObjects,
+    WaitForSingleObject,
 };
 
-use crate::quadro::{self, TAMANHO_MAXIMO};
+use crate::quadro;
 use crate::{CodigoErro, ErroIpc, Requisicao, Resposta};
 
 /// Descritor de segurança do pipe, em SDDL.
@@ -301,32 +304,113 @@ impl Write for Pipe {
 // Servidor
 // ---------------------------------------------------------------------------
 
-/// Tratador de requisições do serviço.
-///
-/// Recebe apenas requisições que passaram por [`Requisicao::validar`].
-pub trait Tratador {
-    fn tratar(&mut self, req: Requisicao) -> Resposta;
+/// Identidade do token Windows, lida pelo servidor após receber o quadro.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IdentidadeCliente {
+    pub sid: String,
+    pub sessao: u32,
 }
 
-impl<F: FnMut(Requisicao) -> Resposta> Tratador for F {
-    fn tratar(&mut self, req: Requisicao) -> Resposta {
-        self(req)
+struct ReverterImpersonacao;
+
+impl Drop for ReverterImpersonacao {
+    fn drop(&mut self) {
+        // SAFETY: a guarda é criada somente após impersonação nesta thread.
+        if unsafe { RevertToSelf() } == 0 {
+            // O processo não pode continuar sob uma identidade desconhecida.
+            std::process::abort();
+        }
+    }
+}
+
+fn identidade_cliente(pipe: &Handle) -> io::Result<IdentidadeCliente> {
+    // SAFETY: o pipe está conectado e o quadro foi lido nesta thread.
+    if unsafe { ImpersonateNamedPipeClient(pipe.0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let _reverter = ReverterImpersonacao;
+    let mut token = null_mut();
+    // SAFETY: a saída é gravável. OpenAsSelf permite consultar um token
+    // de identificação sem pedir ao cliente direitos de impersonação.
+    if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = Handle(token);
+    let ler_u32 = |classe| {
+        let mut valor = 0u32;
+        let mut tamanho = 0;
+        // SAFETY: as classes consultadas aqui retornam um valor de 32 bits.
+        if unsafe { GetTokenInformation(token.0, classe, (&raw mut valor).cast(), 4, &mut tamanho) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(valor)
+    };
+    if ler_u32(TokenImpersonationLevel)? == SecurityAnonymous as u32 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    let sessao = ler_u32(TokenSessionId)?;
+    // TOKEN_USER seguido por um SID de até SECURITY_MAX_SID_SIZE (68 bytes).
+    let mut buffer = [0usize; 32];
+    let mut tamanho = 0;
+    // SAFETY: buffer alinhado para TOKEN_USER, com espaço para o SID.
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            size_of_val(&buffer) as u32,
+            &mut tamanho,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: o buffer preenchido contém TOKEN_USER com SID válido.
+    let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    if unsafe { IsWellKnownSid(sid, WinAnonymousSid) } != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    let mut texto = null_mut();
+    // SAFETY: o SID continua válido e a saída é gravável.
+    if unsafe { ConvertSidToStringSidW(sid, &mut texto) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a conversão retorna uma cadeia terminada em zero, alocada
+    // com LocalAlloc. Sua memória é liberada após copiarmos o SID.
+    let sid = unsafe {
+        let mut len = 0;
+        while *texto.add(len) != 0 {
+            len += 1;
+        }
+        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(texto, len));
+        LocalFree(texto.cast());
+        sid
+    };
+    Ok(IdentidadeCliente { sid, sessao })
+}
+
+/// Tratador de requisições validadas, executado após reverter a impersonação.
+pub trait Tratador {
+    fn tratar(&mut self, identidade: IdentidadeCliente, req: Requisicao) -> Resposta;
+}
+
+impl<F: FnMut(IdentidadeCliente, Requisicao) -> Resposta> Tratador for F {
+    fn tratar(&mut self, identidade: IdentidadeCliente, req: Requisicao) -> Resposta {
+        self(identidade, req)
     }
 }
 
 /// Tempos limite e limites de uso do servidor.
 #[derive(Debug, Clone, Copy)]
 pub struct ConfigServidor {
-    /// Espera máxima por cada leitura (inclui o intervalo ocioso entre
-    /// requisições da mesma conexão).
+    /// Espera máxima por cada leitura da requisição.
     pub timeout_leitura: Duration,
     pub timeout_escrita: Duration,
     /// Duração máxima de uma conexão: depois dela nenhuma leitura nova é
     /// aceita e a conexão é encerrada (um cliente não monopoliza o pipe).
     pub duracao_maxima_conexao: Duration,
-    /// Requisições atendidas por conexão; a seguinte recebe `ocupado` (sem
-    /// chamar o tratador) e a conexão fecha.
-    pub requisicoes_por_conexao: u32,
     /// Taxa sustentada de requisições por segundo (balde de fichas do
     /// servidor, que não se renova ao reconectar). Acima dela a resposta é
     /// `ocupado`, sem chamar o tratador.
@@ -341,7 +425,6 @@ impl Default for ConfigServidor {
             timeout_leitura: Duration::from_secs(30),
             timeout_escrita: Duration::from_secs(5),
             duracao_maxima_conexao: Duration::from_secs(5 * 60),
-            requisicoes_por_conexao: 1000,
             requisicoes_por_segundo: 10,
             rajada: 20,
         }
@@ -489,78 +572,57 @@ impl Servidor {
 
     fn atender<T: Tratador>(&mut self, tratador: &mut T) {
         self.pipe.prazo_leitura = Some(Instant::now() + self.config.duracao_maxima_conexao);
-        let mut recebidas = 0u32;
-        loop {
-            let payload = match quadro::ler_quadro(&mut self.pipe) {
-                Ok(p) => p,
-                Err(ErroIpc::Grande { tamanho, limite }) => {
-                    let r = Resposta::erro(
-                        CodigoErro::MensagemGrande,
-                        format!("mensagem de {tamanho} bytes excede o limite de {limite}"),
-                    );
-                    // O fluxo perdeu o alinhamento: responde, descarta o resto e encerra.
-                    if quadro::enviar(&mut self.pipe, &r).is_ok() {
-                        self.drenar();
-                    }
-                    return;
-                }
-                Err(_) => return,
-            };
-            recebidas = recebidas.saturating_add(1);
-            if recebidas > self.config.requisicoes_por_conexao.max(1) {
-                let r = Resposta::erro(
-                    CodigoErro::Ocupado,
-                    "limite de requisições por conexão atingido; reconecte",
-                );
-                // Responde e espera o cliente fechar (com teto de volume e de
-                // tempo): desconectar já descartaria a resposta ainda no buffer.
-                if quadro::enviar(&mut self.pipe, &r).is_ok() {
-                    self.drenar();
-                }
-                return;
-            }
-            if !self.balde.consumir(Instant::now()) {
-                let r = Resposta::erro(
-                    CodigoErro::Ocupado,
-                    "muitas requisições; tente de novo em instantes",
-                );
-                if quadro::enviar(&mut self.pipe, &r).is_err() {
-                    return;
-                }
-                continue;
-            }
-            let resposta = match quadro::decodificar::<Requisicao>(&payload) {
-                Ok(req) => match req.validar() {
-                    Ok(()) => tratar_protegido(tratador, req),
-                    Err(m) => Resposta::erro(CodigoErro::RequisicaoInvalida, m),
-                },
-                Err(e @ ErroIpc::VersaoIncompativel { .. }) => {
-                    Resposta::erro(CodigoErro::VersaoIncompativel, e.to_string())
-                }
-                Err(e) => Resposta::erro(CodigoErro::MensagemInvalida, e.to_string()),
-            };
-            if quadro::enviar(&mut self.pipe, &resposta).is_err() {
-                return;
-            }
+        let resposta = match quadro::ler_quadro(&mut self.pipe) {
+            Ok(payload) => self.responder(tratador, &payload),
+            Err(ErroIpc::Grande { tamanho, limite }) => Resposta::erro(
+                CodigoErro::MensagemGrande,
+                format!("mensagem de {tamanho} bytes excede o limite de {limite}"),
+            ),
+            Err(_) => return,
+        };
+        if quadro::enviar(&mut self.pipe, &resposta).is_ok() {
+            // DisconnectNamedPipe descarta bytes ainda no buffer. Damos ao
+            // cliente um prazo curto para ler a resposta e fechar. Qualquer
+            // byte extra encerra a conexão sem despachar outro quadro.
+            self.pipe.prazo_leitura = Some(Instant::now() + self.config.timeout_escrita);
+            let _ = self.pipe.read(&mut [0u8; 1]);
         }
     }
 
-    /// Lê e descarta até o cliente fechar, com teto de volume e de tempo.
-    fn drenar(&mut self) {
-        let mut buf = vec![0u8; 64 * 1024];
-        let mut total = 0usize;
-        while total < 4 * TAMANHO_MAXIMO as usize {
-            match self.pipe.read(&mut buf) {
-                Ok(0) | Err(_) => return,
-                Ok(n) => total += n,
+    fn responder<T: Tratador>(&mut self, tratador: &mut T, payload: &[u8]) -> Resposta {
+        let req = match quadro::decodificar::<Requisicao>(payload) {
+            Ok(req) => req,
+            Err(e @ ErroIpc::VersaoIncompativel { .. }) => {
+                return Resposta::erro(CodigoErro::VersaoIncompativel, e.to_string());
             }
+            Err(e) => return Resposta::erro(CodigoErro::MensagemInvalida, e.to_string()),
+        };
+        if !self.balde.consumir(Instant::now()) {
+            return Resposta::erro(
+                CodigoErro::Ocupado,
+                "muitas requisições; tente de novo em instantes",
+            );
         }
+        if let Err(m) = req.validar() {
+            return Resposta::erro(CodigoErro::RequisicaoInvalida, m);
+        }
+        let Ok(identidade) = identidade_cliente(&self.pipe.handle) else {
+            return Resposta::erro(
+                CodigoErro::IdentidadeIndisponivel,
+                "identidade do cliente indisponível",
+            );
+        };
+        tratar_protegido(tratador, identidade, req)
     }
 }
 
 /// Chama o tratador capturando pânicos: viram `erro`/`interno`.
-fn tratar_protegido<T: Tratador>(tratador: &mut T, req: Requisicao) -> Resposta {
-    catch_unwind(AssertUnwindSafe(|| tratador.tratar(req)))
+fn tratar_protegido<T: Tratador>(
+    tratador: &mut T,
+    identidade: IdentidadeCliente,
+    req: Requisicao,
+) -> Resposta {
+    catch_unwind(AssertUnwindSafe(|| tratador.tratar(identidade, req)))
         .unwrap_or_else(|_| Resposta::erro(CodigoErro::Interno, "falha interna do serviço"))
 }
 
@@ -594,7 +656,7 @@ impl Default for ConfigCliente {
 
 /// Cliente bloqueante (para a UI usar em thread de fundo).
 pub struct Cliente {
-    pipe: Pipe,
+    pipe: Option<Pipe>,
 }
 
 impl Cliente {
@@ -641,22 +703,24 @@ impl Cliente {
             return Err(ErroIpc::ServidorNaoConfiavel);
         }
         Ok(Self {
-            pipe: Pipe {
+            pipe: Some(Pipe {
                 handle: h,
                 evento: evento_manual()?,
                 parada: None,
                 timeout_leitura: config.timeout_leitura,
                 timeout_escrita: config.timeout_escrita,
                 prazo_leitura: None,
-            },
+            }),
         })
     }
 
-    /// Envia uma requisição e espera a resposta. Erros de negócio chegam
+    /// Usa a conexão uma vez e a fecha ao concluir. Erros de negócio chegam
     /// como `Ok(Resposta::Erro { .. })`.
     pub fn requisitar(&mut self, req: &Requisicao) -> Result<Resposta, ErroIpc> {
-        quadro::enviar(&mut self.pipe, req)?;
-        quadro::receber(&mut self.pipe)
+        let mut pipe = self.pipe.take().ok_or(ErroIpc::Fechado)?;
+        quadro::enviar(&mut pipe, req)?;
+        pipe.prazo_leitura = Some(Instant::now() + pipe.timeout_leitura);
+        quadro::receber(&mut pipe)
     }
 }
 
@@ -727,9 +791,18 @@ mod testes {
 
     #[test]
     fn panico_do_tratador_vira_interno() {
-        let mut t = |_req: Requisicao| -> Resposta { panic!("pânico proposital") };
+        let mut t = |_identidade: IdentidadeCliente, _req: Requisicao| -> Resposta {
+            panic!("pânico proposital")
+        };
         assert!(matches!(
-            tratar_protegido(&mut t, Requisicao::ObterEstado),
+            tratar_protegido(
+                &mut t,
+                IdentidadeCliente {
+                    sid: "S-1-5-18".into(),
+                    sessao: 0
+                },
+                Requisicao::ObterEstado
+            ),
             Resposta::Erro {
                 codigo: CodigoErro::Interno,
                 ..

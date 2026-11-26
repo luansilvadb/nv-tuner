@@ -17,6 +17,7 @@ pub mod launchers;
 pub mod model;
 pub mod processos;
 pub mod registro;
+pub mod tela;
 pub mod vdf;
 
 pub use arch::{CustoTransformer, FamiliaGpu, GpuArchFacts, arch_facts};

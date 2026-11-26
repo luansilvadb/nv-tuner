@@ -21,7 +21,7 @@ use crate::versao::Versao;
 pub enum Status {
     /// Entra no plano automático.
     Estavel,
-    /// Só aparece como sugestão (`Plan::experimentais`).
+    /// Só concorre no plano após aceite.
     Experimental,
 }
 
@@ -636,7 +636,7 @@ impl ConjuntoRegras {
     }
 }
 
-fn id_valido(id: &str) -> bool {
+pub(crate) fn id_valido(id: &str) -> bool {
     let mut chars = id.chars();
     matches!(chars.next(), Some('a'..='z'))
         && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '-'))
