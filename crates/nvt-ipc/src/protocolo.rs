@@ -83,6 +83,12 @@ pub enum Requisicao {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         alvo_tela: Option<String>,
     },
+    /// O usuário viu o aviso "Atualizado para a vX.Y.Z" (v6, U-47/U-52).
+    /// A identidade vem só do token do chamador; `versao` diferente de
+    /// `ultima_atualizacao.para` é recusada com `entrada_invalida`.
+    MarcarAtualizacaoVista {
+        versao: String,
+    },
 }
 
 impl Requisicao {
@@ -151,9 +157,24 @@ impl Requisicao {
                 }
                 Ok(())
             }
+            Self::MarcarAtualizacaoVista { versao } => validar_versao(versao),
             _ => Ok(()),
         }
     }
+}
+
+/// Versão (`X.Y.Z`, opcionalmente com sufixo): 1 a 64 caracteres ASCII
+/// alfanuméricos, `.`, `-` ou `+`.
+pub fn validar_versao(versao: &str) -> Result<(), String> {
+    if versao.is_empty()
+        || versao.len() > 64
+        || !versao
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+    {
+        return Err("versão inválida".into());
+    }
+    Ok(())
 }
 
 /// Nome de perfil: 1 a [`PERFIL_MAX`] caracteres, sem caracteres de controle.
@@ -226,6 +247,9 @@ pub struct Preferencias {
 /// Resposta enviada pelo serviço à UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "tipo", rename_all = "snake_case")]
+// `Estado` é a maior variante, mas a resposta é criada uma vez por pedido e
+// serializada em seguida; `Box` só espalharia alocações pelo serviço e pela UI.
+#[allow(clippy::large_enum_variant)]
 pub enum Resposta {
     Estado(Estado),
     /// Resposta de `ObterPlano` e de `AplicarAgora`.
@@ -277,6 +301,10 @@ pub enum CodigoErro {
     MensagemInvalida,
     /// Campos fora de faixa ou com formato inválido.
     RequisicaoInvalida,
+    /// Entrada bem formada mas incoerente com o estado do serviço (v6; por
+    /// exemplo, `marcar_atualizacao_vista` com versão que não é a da última
+    /// atualização concluída).
+    EntradaInvalida,
     IdentidadeIndisponivel,
     /// Setting fora da lista permitida do serviço.
     SettingNaoPermitida,
@@ -310,6 +338,84 @@ pub struct Estado {
     pub avisos: Vec<Aviso>,
     /// Gravação pendente porque há jogo ou anticheat em execução (v4).
     pub adiamento: Option<Adiamento>,
+    /// Atualização automática do próprio nv-tuner (v6).
+    pub atualizacao: EstadoAtualizacao,
+}
+
+/// Estado da atualização automática (v6, `docs/spec/atualizacao.md` §10).
+/// DTO próprio do protocolo, independente dos tipos do núcleo.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EstadoAtualizacao {
+    /// Versão do serviço instalado.
+    pub versao_instalada: String,
+    pub ultima_verificacao_unix: Option<u64>,
+    pub proxima_verificacao_unix: Option<u64>,
+    pub ultima_atualizacao: Option<AtualizacaoConcluida>,
+    /// `ultima_atualizacao` ainda não foi vista pelo SID do chamador.
+    pub nao_vista: bool,
+    pub pendente: Option<AtualizacaoPendente>,
+    pub falha: Option<FalhaAtualizacao>,
+    pub erro_verificacao: Option<ErroVerificacao>,
+}
+
+/// Última atualização instalada com sucesso.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AtualizacaoConcluida {
+    pub de: String,
+    pub para: String,
+    pub quando_unix: u64,
+    /// O instalador terminou com 3010 (reinício do Windows pendente).
+    pub reinicio_pendente: bool,
+}
+
+/// Atualização encontrada mas ainda não instalada.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AtualizacaoPendente {
+    pub versao: String,
+    pub motivo: MotivoPendente,
+    pub desde_unix: u64,
+}
+
+/// Por que a atualização pendente ainda não foi instalada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotivoPendente {
+    /// Há jogo ou anticheat em execução.
+    JogoAberto,
+    /// A lista de processos não pôde ser lida (falha fechada).
+    ListaIndisponivel,
+    /// Outra instalação do Windows em andamento.
+    OutraInstalacao,
+    Baixando,
+    Instalando,
+}
+
+/// Falha de instalação de uma versão.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FalhaAtualizacao {
+    pub versao: String,
+    /// Código de saída do instalador.
+    pub codigo: i64,
+    pub tentativas: u8,
+    /// Sem novas tentativas para esta versão.
+    pub abandonada: bool,
+    pub quando_unix: u64,
+}
+
+/// Erro da última verificação de atualização.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "tipo", content = "status", rename_all = "snake_case")]
+pub enum ErroVerificacao {
+    SemConexao,
+    /// Resposta HTTP de recusa, com o status.
+    RecusadoHttp(u16),
+    Assinatura,
+    Manifesto,
+    Disco,
 }
 
 /// Gravação adiada pelo portão do serviço: há processo vigiado (jogo
@@ -979,6 +1085,9 @@ mod testes {
                     alvo: "monitor-estavel".into(),
                 },
             },
+            Requisicao::MarcarAtualizacaoVista {
+                versao: "1.4.0".into(),
+            },
         ];
         for r in &v {
             match r {
@@ -994,7 +1103,8 @@ mod testes {
                 | Requisicao::AgenteConsultar { .. }
                 | Requisicao::AgenteRelatar { .. }
                 | Requisicao::DefinirAceiteExperimental { .. }
-                | Requisicao::ReverterAjusteUsuario { .. } => {}
+                | Requisicao::ReverterAjusteUsuario { .. }
+                | Requisicao::MarcarAtualizacaoVista { .. } => {}
             }
         }
         v
@@ -1190,6 +1300,7 @@ mod testes {
                     Aviso::vrr_desligado_no_painel(1_790_000_004),
                 ],
                 adiamento: Some(adiamento(AcaoAdiada::TratarDeriva)),
+                atualizacao: atualizacao_exemplo(),
             }),
             Resposta::Estado(Estado {
                 agente: EstadoAgente::default(),
@@ -1203,6 +1314,7 @@ mod testes {
                 alertas_deriva: vec![],
                 avisos: vec![],
                 adiamento: None,
+                atualizacao: EstadoAtualizacao::default(),
             }),
             Resposta::Plano(Plano {
                 sistema: ResumoSistema::default(),
@@ -1452,23 +1564,141 @@ mod testes {
     }
 
     #[test]
-    fn mensagem_da_v4_e_recusada() {
-        for payload in [
-            &br#"{"versao":4,"corpo":{"tipo":"obter_estado"}}"#[..],
-            br#"{"versao":4,"corpo":{"tipo":"ok"}}"#,
+    fn mensagens_da_v4_e_v5_sao_recusadas() {
+        for (versao, payload) in [
+            (4, &br#"{"versao":4,"corpo":{"tipo":"obter_estado"}}"#[..]),
+            (4, br#"{"versao":4,"corpo":{"tipo":"ok"}}"#),
+            (5, br#"{"versao":5,"corpo":{"tipo":"obter_estado"}}"#),
+            (5, br#"{"versao":5,"corpo":{"tipo":"ok"}}"#),
+            // Corpo inválido: a recusa vem do envelope, antes do corpo.
+            (5, br#"{"versao":5,"corpo":{"tipo":"formatar_disco"}}"#),
         ] {
             assert!(matches!(
                 decodificar::<Requisicao>(payload),
                 Err(crate::ErroIpc::VersaoIncompativel {
-                    recebida: 4,
-                    esperada: 5
-                })
+                    recebida,
+                    esperada: 6
+                }) if recebida == versao
             ));
             assert!(matches!(
                 decodificar::<Resposta>(payload),
-                Err(crate::ErroIpc::VersaoIncompativel { recebida: 4, .. })
+                Err(crate::ErroIpc::VersaoIncompativel { recebida, .. }) if recebida == versao
             ));
         }
+    }
+
+    fn atualizacao_exemplo() -> EstadoAtualizacao {
+        EstadoAtualizacao {
+            versao_instalada: "1.4.0".into(),
+            ultima_verificacao_unix: Some(1_790_000_000),
+            proxima_verificacao_unix: Some(1_790_021_600),
+            ultima_atualizacao: Some(AtualizacaoConcluida {
+                de: "1.3.2".into(),
+                para: "1.4.0".into(),
+                quando_unix: 1_789_990_000,
+                reinicio_pendente: true,
+            }),
+            nao_vista: true,
+            pendente: Some(AtualizacaoPendente {
+                versao: "1.5.0".into(),
+                motivo: MotivoPendente::JogoAberto,
+                desde_unix: 1_790_000_100,
+            }),
+            falha: Some(FalhaAtualizacao {
+                versao: "1.5.0".into(),
+                codigo: 1603,
+                tentativas: 2,
+                abandonada: false,
+                quando_unix: 1_790_000_050,
+            }),
+            erro_verificacao: Some(ErroVerificacao::RecusadoHttp(403)),
+        }
+    }
+
+    #[test]
+    fn formato_json_v6() {
+        use serde_json::{from_value, json, to_value};
+        let a = to_value(atualizacao_exemplo()).unwrap();
+        assert_eq!(
+            a,
+            json!({
+                "versao_instalada": "1.4.0",
+                "ultima_verificacao_unix": 1_790_000_000u64,
+                "proxima_verificacao_unix": 1_790_021_600u64,
+                "ultima_atualizacao": {
+                    "de": "1.3.2", "para": "1.4.0",
+                    "quando_unix": 1_789_990_000u64, "reinicio_pendente": true
+                },
+                "nao_vista": true,
+                "pendente": {
+                    "versao": "1.5.0", "motivo": "jogo_aberto", "desde_unix": 1_790_000_100u64
+                },
+                "falha": {
+                    "versao": "1.5.0", "codigo": 1603, "tentativas": 2,
+                    "abandonada": false, "quando_unix": 1_790_000_050u64
+                },
+                "erro_verificacao": {"tipo": "recusado_http", "status": 403}
+            })
+        );
+        assert_eq!(
+            from_value::<EstadoAtualizacao>(a.clone()).unwrap(),
+            atualizacao_exemplo()
+        );
+        let mut extra = a.clone();
+        extra["extra"] = json!(1);
+        assert!(from_value::<EstadoAtualizacao>(extra).is_err());
+        let mut extra = a;
+        extra["falha"]["extra"] = json!(1);
+        assert!(from_value::<EstadoAtualizacao>(extra).is_err());
+        for (m, s) in [
+            (MotivoPendente::JogoAberto, "jogo_aberto"),
+            (MotivoPendente::ListaIndisponivel, "lista_indisponivel"),
+            (MotivoPendente::OutraInstalacao, "outra_instalacao"),
+            (MotivoPendente::Baixando, "baixando"),
+            (MotivoPendente::Instalando, "instalando"),
+        ] {
+            assert_eq!(to_value(m).unwrap(), json!(s));
+            assert_eq!(from_value::<MotivoPendente>(json!(s)).unwrap(), m);
+        }
+        for (e, j) in [
+            (ErroVerificacao::SemConexao, json!({"tipo": "sem_conexao"})),
+            (
+                ErroVerificacao::RecusadoHttp(404),
+                json!({"tipo": "recusado_http", "status": 404}),
+            ),
+            (ErroVerificacao::Assinatura, json!({"tipo": "assinatura"})),
+            (ErroVerificacao::Manifesto, json!({"tipo": "manifesto"})),
+            (ErroVerificacao::Disco, json!({"tipo": "disco"})),
+        ] {
+            assert_eq!(to_value(e).unwrap(), j);
+            assert_eq!(from_value::<ErroVerificacao>(j).unwrap(), e);
+        }
+        assert_eq!(
+            to_value(EstadoAtualizacao::default()).unwrap(),
+            json!({
+                "versao_instalada": "", "ultima_verificacao_unix": null,
+                "proxima_verificacao_unix": null, "ultima_atualizacao": null,
+                "nao_vista": false, "pendente": null, "falha": null,
+                "erro_verificacao": null
+            })
+        );
+        assert_eq!(
+            to_value(Requisicao::MarcarAtualizacaoVista {
+                versao: "1.4.0".into()
+            })
+            .unwrap(),
+            json!({"tipo": "marcar_atualizacao_vista", "versao": "1.4.0"})
+        );
+        assert!(
+            from_value::<Requisicao>(json!({
+                "tipo": "marcar_atualizacao_vista", "versao": "1.4.0", "sid": "S-1-5-18"
+            }))
+            .is_err()
+        );
+        assert_eq!(
+            to_value(CodigoErro::EntradaInvalida).unwrap(),
+            json!("entrada_invalida")
+        );
     }
 
     #[test]
@@ -1556,10 +1786,10 @@ mod testes {
         .unwrap();
         assert_eq!(
             json,
-            r#"{"versao":5,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
+            r#"{"versao":6,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
         );
         let json = String::from_utf8(codificar(&Resposta::Ok).unwrap()).unwrap();
-        assert_eq!(json, r#"{"versao":5,"corpo":{"tipo":"ok"}}"#);
+        assert_eq!(json, r#"{"versao":6,"corpo":{"tipo":"ok"}}"#);
     }
 
     #[test]
@@ -1655,6 +1885,12 @@ mod testes {
             assert_eq!(r.validar(), Ok(()), "{r:?}");
         }
         let invalidas = [
+            Requisicao::MarcarAtualizacaoVista {
+                versao: String::new(),
+            },
+            Requisicao::MarcarAtualizacaoVista {
+                versao: "1.0/../x".into(),
+            },
             Requisicao::DefinirAceiteExperimental {
                 regra: "regra/1".into(),
                 aceito: true,

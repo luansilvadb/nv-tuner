@@ -59,6 +59,7 @@ fn tratador_falso(_identidade: IdentidadeCliente, req: Requisicao) -> Resposta {
             alertas_deriva: vec![],
             avisos: vec![],
             adiamento: None,
+            atualizacao: Default::default(),
         }),
         Requisicao::ListarHistorico { limite } => Resposta::Historico {
             entradas: (0..u64::from(limite))
@@ -251,7 +252,11 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
             CodigoErro::VersaoIncompativel,
         ),
         (
-            br#"{"versao":5,"corpo":{"tipo":"executar","cmd":"x"}}"#.as_slice(),
+            br#"{"versao":5,"corpo":{"tipo":"obter_estado"}}"#.as_slice(),
+            CodigoErro::VersaoIncompativel,
+        ),
+        (
+            br#"{"versao":6,"corpo":{"tipo":"executar","cmd":"x"}}"#.as_slice(),
             CodigoErro::MensagemInvalida,
         ),
     ] {
@@ -261,7 +266,7 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
         assert!(matches!(r, Resposta::Erro { codigo: recebido, .. } if recebido == codigo));
     }
     assert_eq!(s.pedir(&Requisicao::ObterPlano), Resposta::Ok);
-    assert_eq!(PROTOCOL_VERSION, 5);
+    assert_eq!(PROTOCOL_VERSION, 6);
     s.parar();
 }
 

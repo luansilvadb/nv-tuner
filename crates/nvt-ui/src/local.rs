@@ -639,6 +639,7 @@ fn montar_dados<S: DriverStore>(
         alertas_deriva,
         avisos: Vec::new(),
         adiamento: None,
+        atualizacao: Default::default(),
     };
 
     // O modo local só lê o estado compartilhado do driver.

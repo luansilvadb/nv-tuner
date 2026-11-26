@@ -154,6 +154,7 @@ fn estado(c: &Coordenador, id: &IdentidadeCliente, agora: Instant) -> EstadoAgen
         alertas_deriva: vec![],
         avisos: vec![],
         adiamento: None,
+        atualizacao: Default::default(),
     });
     c.projetar(id, &mut r, 0, agora);
     let Resposta::Estado(e) = r else {

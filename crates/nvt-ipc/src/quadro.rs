@@ -257,8 +257,8 @@ mod testes {
         for p in [
             &br#"{"corpo":{"tipo":"obter_estado"}}"#[..],
             br#"{"versao":"1","corpo":{"tipo":"obter_estado"}}"#,
-            br#"{"versao":5}"#,
-            br#"{"versao":5,"corpo":{"tipo":"obter_estado"},"extra":0}"#,
+            br#"{"versao":6}"#,
+            br#"{"versao":6,"corpo":{"tipo":"obter_estado"},"extra":0}"#,
             br#"[1,2]"#,
         ] {
             assert!(
@@ -275,7 +275,7 @@ mod testes {
             Err(ErroIpc::Json(_))
         ));
         assert!(matches!(
-            decodificar::<Requisicao>(br#"{"versao":5,"corpo":{"tipo":"formatar_disco"}}"#),
+            decodificar::<Requisicao>(br#"{"versao":6,"corpo":{"tipo":"formatar_disco"}}"#),
             Err(ErroIpc::Json(_))
         ));
     }

@@ -1062,7 +1062,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             Requisicao::AgenteConsultar { .. }
             | Requisicao::AgenteRelatar { .. }
             | Requisicao::DefinirAceiteExperimental { .. }
-            | Requisicao::ReverterAjusteUsuario { .. } => {
+            | Requisicao::ReverterAjusteUsuario { .. }
+            | Requisicao::MarcarAtualizacaoVista { .. } => {
                 return Resposta::erro(
                     CodigoErro::RequisicaoInvalida,
                     "pedido requer coordenador de usuário",
@@ -1146,6 +1147,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             alertas_deriva: self.alertas.clone(),
             avisos: self.avisos(),
             adiamento: self.adiamento_ipc(),
+            atualizacao: nvt_ipc::EstadoAtualizacao::default(),
         }))
     }
 

@@ -1,0 +1,24 @@
+[package]
+name = "nvt-atualizacao"
+description = "Atualização automática do nv-tuner: verificação do manifesto, versões, agendamento, estados e msiexec (puro)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+laboratorio = []
+
+[dependencies]
+serde.workspace = true
+serde_json = "1"
+minisign-verify = "=0.3.0"
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+minisign = "=0.7.9"
+
+[lints]
+workspace = true

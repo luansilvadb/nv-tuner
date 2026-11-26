@@ -38,6 +38,35 @@ const PROIBIDOS: &[&str] = &[
     "SetProcessAffinityMask",
     "Image File Execution Options",
     "Command::new",
+    "CreateProcessW",
+    "CreateProcessA",
+    "CreateProcessAsUserW",
+    "CreateProcessAsUserA",
+    "CreateProcessWithTokenW",
+    "CreateProcessWithLogonW",
+    "ShellExecuteW",
+    "ShellExecuteA",
+    "ShellExecuteExW",
+    "ShellExecuteExA",
+    "WinExec",
+];
+
+/// Exceções exatas (docs/spec/atualizacao.md §9.6, U-29): (arquivo relativo à raiz,
+/// termo, linhas com ocorrência). Fora desta lista, qualquer ocorrência falha; no arquivo
+/// listado, contagem diferente (a mais ou a menos) falha quando o arquivo existe.
+const PERMITIDOS: &[(&str, &str, usize)] = &[
+    // lote 2: sobe para 1 quando o lançador auditado existir.
+    (
+        "crates/nvt-service/src/atualizacao/lancador.rs",
+        "CreateProcessW",
+        0,
+    ),
+    // lote 2: sobe para 1 quando o lançador auditado existir.
+    (
+        "crates/nvt-service/src/atualizacao/lancador.rs",
+        "CreateProcessAsUserW",
+        0,
+    ),
 ];
 
 const DIRETORIOS_EXCLUIDOS: &[&str] = &["tests", "examples", "benches"];
@@ -300,6 +329,42 @@ fn raiz_workspace() -> PathBuf {
         .to_path_buf()
 }
 
+/// Confronta as ocorrências com `permitidos` e devolve as violações (vazio = ok).
+/// `existentes` lista os arquivos analisados (caminhos relativos com `/`).
+fn conferir(
+    achados: &[(String, Ocorrencia)],
+    existentes: &[String],
+    permitidos: &[(&str, &str, usize)],
+) -> Vec<String> {
+    let mut relatorio = Vec::new();
+    for (arquivo, oc) in achados {
+        let permitido = permitidos
+            .iter()
+            .any(|&(a, t, _)| a == arquivo && t == oc.termo);
+        if !permitido {
+            relatorio.push(format!("  {arquivo}:{}: `{}`", oc.linha, oc.termo));
+        }
+    }
+    for &(arquivo, termo, esperado) in permitidos {
+        if !existentes.iter().any(|e| e == arquivo) {
+            continue;
+        }
+        let linhas: Vec<String> = achados
+            .iter()
+            .filter(|(a, oc)| a == arquivo && oc.termo == termo)
+            .map(|(_, oc)| format!("{arquivo}:{}", oc.linha))
+            .collect();
+        if linhas.len() != esperado {
+            relatorio.push(format!(
+                "  {arquivo}: `{termo}` permitido {esperado} vez(es), encontrado {} [{}]",
+                linhas.len(),
+                linhas.join(", ")
+            ));
+        }
+    }
+    relatorio
+}
+
 #[test]
 fn nenhuma_api_proibida_em_codigo_de_producao() {
     let raiz = raiz_workspace();
@@ -322,20 +387,19 @@ fn nenhuma_api_proibida_em_codigo_de_producao() {
         crates.display()
     );
 
-    let mut relatorio = Vec::new();
+    let mut achados = Vec::new();
+    let mut existentes = Vec::new();
     for arquivo in &arquivos {
         let fonte = fs::read_to_string(arquivo)
             .unwrap_or_else(|e| panic!("ler {}: {e}", arquivo.display()));
         let relativo = arquivo.strip_prefix(&raiz).unwrap_or(arquivo);
+        let relativo = relativo.display().to_string().replace('\\', "/");
         for oc in analisar(&fonte) {
-            relatorio.push(format!(
-                "  {}:{}: `{}`",
-                relativo.display().to_string().replace('\\', "/"),
-                oc.linha,
-                oc.termo
-            ));
+            achados.push((relativo.clone(), oc));
         }
+        existentes.push(relativo);
     }
+    let relatorio = conferir(&achados, &existentes, PERMITIDOS);
     assert!(
         relatorio.is_empty(),
         "T-01 (docs/spec/competitivo.md §3, N1/N2): {} ocorrência(s) de API proibida em \
@@ -431,4 +495,78 @@ fn cfg_test_em_item_sem_corpo() {
         "fn f() { Command::new(\"x\"); }\n",
     );
     assert_eq!(termos(fonte), vec![(3, "Command::new")]);
+}
+
+fn oc(arquivo: &str, linha: usize, termo: &'static str) -> (String, Ocorrencia) {
+    (arquivo.to_string(), Ocorrencia { linha, termo })
+}
+
+const LANC: &str = "crates/x/src/lancador.rs";
+const PERM_TESTE: &[(&str, &str, usize)] = &[(LANC, "CreateProcessW", 1)];
+
+#[test]
+fn permitido_com_contagem_exata_passa() {
+    let achados = vec![oc(LANC, 10, "CreateProcessW")];
+    assert!(conferir(&achados, &[LANC.to_string()], PERM_TESTE).is_empty());
+}
+
+#[test]
+fn permitido_com_contagem_a_mais_falha() {
+    let achados = vec![
+        oc(LANC, 10, "CreateProcessW"),
+        oc(LANC, 20, "CreateProcessW"),
+    ];
+    let r = conferir(&achados, &[LANC.to_string()], PERM_TESTE);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(r[0].contains(&format!("{LANC}:20")), "{r:?}");
+}
+
+#[test]
+fn permitido_com_contagem_a_menos_falha_se_arquivo_existe() {
+    let r = conferir(&[], &[LANC.to_string()], PERM_TESTE);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(r[0].contains("encontrado 0"), "{r:?}");
+    // Arquivo ainda inexistente: não cobra a contagem.
+    assert!(conferir(&[], &[], PERM_TESTE).is_empty());
+}
+
+#[test]
+fn permitido_em_arquivo_errado_falha() {
+    let outro = "crates/x/src/outro.rs";
+    let achados = vec![
+        oc(LANC, 10, "CreateProcessW"),
+        oc(outro, 5, "CreateProcessW"),
+    ];
+    let r = conferir(&achados, &[LANC.to_string(), outro.to_string()], PERM_TESTE);
+    assert_eq!(r, vec![format!("  {outro}:5: `CreateProcessW`")]);
+}
+
+#[test]
+fn termo_nao_permitido_no_arquivo_permitido_falha() {
+    let achados = vec![
+        oc(LANC, 10, "CreateProcessW"),
+        oc(LANC, 11, "ShellExecuteW"),
+    ];
+    let r = conferir(&achados, &[LANC.to_string()], PERM_TESTE);
+    assert_eq!(r, vec![format!("  {LANC}:11: `ShellExecuteW`")]);
+}
+
+#[test]
+fn termos_de_processo_sao_palavra_inteira() {
+    let fonte = concat!(
+        "CreateProcessWithTokenW(a);\n",
+        "CreateProcessAsUserW(b);\n",
+        "ShellExecuteExW(&mut i);\n",
+        "MyCreateProcessW(); WinExecX();\n",
+        "CreateProcessW(c);\n",
+    );
+    assert_eq!(
+        termos(fonte),
+        vec![
+            (1, "CreateProcessWithTokenW"),
+            (2, "CreateProcessAsUserW"),
+            (3, "ShellExecuteExW"),
+            (5, "CreateProcessW"),
+        ]
+    );
 }

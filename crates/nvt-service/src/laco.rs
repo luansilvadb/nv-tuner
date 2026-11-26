@@ -764,6 +764,7 @@ pub(crate) fn tratar_sem_driver(
             alertas_deriva: Vec::new(),
             avisos: Vec::new(),
             adiamento: None,
+            atualizacao: Default::default(),
         }),
         Requisicao::ObterPlano => plano_sem_driver(),
         Requisicao::ListarHistorico { .. } => Resposta::Historico {

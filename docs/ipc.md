@@ -78,7 +78,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 ## Envelope e versão
 
 ```json
-{"versao": 5, "corpo": { "tipo": "...", ... }}
+{"versao": 6, "corpo": { "tipo": "...", ... }}
 ```
 
 - `versao` é conferida **antes** de interpretar `corpo`. Versão diferente de
@@ -102,6 +102,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | 3 | `plano.jogos` (fatos por jogo e explicação: regras aplicadas e não aplicadas com motivo, herança do global) |
 | 4 | Fase 1 competitiva (`docs/spec/competitivo.md` §7.6, só o que a fase 1 usa): `capacidades.refresh_mhz` e `capacidades.vrr` (objeto, antes `bool`); `jogo.competitivo`, `jogo.em_execucao`, `jogo.orientacoes`; `estado.adiamento` (com `lista_indisponivel`); `plano.adiada`; resposta `restauracao` (antes `ok`) para `restaurar_original`; resposta `adiada` para `definir_preferencias`/`destravar_setting` adiados; avisos `gsync_sem_vrr`, `vrr_desligado_no_painel` e `acao_pendente_descartada`; motivos `vrr_inativo` e `jogo_com_reflex`. As variantes de camada (Windows/jogo) ficam para a v5 |
 | 5 | Fase 2 (camada Windows, decisão D6): identidade do cliente pelo token; requisições `agente_consultar`, `agente_relatar`, `definir_aceite_experimental` e `reverter_ajuste_usuario`; respostas `plano_agente` e `encerrar`; `estado.agente` e `estado.diagnosticos`; `plano.sistema` (`ResumoSistema`) e `plano.sugestoes_driver`; erro `identidade_indisponivel`. Mensagens v4 são recusadas antes de desserializar o corpo |
+| 6 | Atualização automática (`docs/spec/atualizacao.md` §8.6 e §10): `estado.atualizacao` (`EstadoAtualizacao`); requisição `marcar_atualizacao_vista`; erro `entrada_invalida`. Mensagens v5 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
 
 ## Requisições (`corpo.tipo`)
 
@@ -120,6 +121,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | `agente_relatar`        | `id_tarefa`, `operacao`, `revisao`, `resultados[]` (`destino`, `status`, `detalhe`, `mudanca`) |
 | `definir_aceite_experimental` | `regra` (ID), `aceito` (bool)                        |
 | `reverter_ajuste_usuario` | `destino` (setting de usuário tipada), `alvo_tela` (opcional, caminho estável do monitor) |
+| `marcar_atualizacao_vista` | `versao` (1 a 64 caracteres em `[A-Za-z0-9.+-]`); resposta `ok` (v6) |
 
 - `sincronismo`: `desligado` \| `v_sync` \| `g_sync`.
 - `qualidade`: `desempenho` \| `equilibrado` \| `qualidade`.
@@ -135,14 +137,14 @@ validação semântica (lista permitida, existência do perfil) é do serviço.
 Exemplo:
 
 ```json
-{"versao":5,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
+{"versao":6,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
 ```
 
 ## Respostas (`corpo.tipo`)
 
 | Tipo        | Conteúdo                                                        |
 |-------------|-----------------------------------------------------------------|
-| `estado`    | `versao_servico`, `driver`, `gpu` (com `capacidades`), `preferencias`, `jogos`, `ultima_aplicacao`, `alertas_deriva`, `avisos`, `adiamento` |
+| `estado`    | `versao_servico`, `driver`, `gpu` (com `capacidades`), `preferencias`, `jogos`, `ultima_aplicacao`, `alertas_deriva`, `avisos`, `adiamento`, `atualizacao` (v6) |
 | `plano`     | `gerado_unix`, `perfis[]` → `perfil`, `nome_legivel`, `mudancas[]`; `reversoes[]`; `ignorados[]`; `jogos[]`; `adiada` |
 | `historico` | `entradas[]`                                                    |
 | `restauracao` | `adiada` (resposta de `restaurar_original`)                   |
@@ -242,6 +244,39 @@ e `descricao`.
 Alertas de deriva indicam settings cujo valor real no driver diverge do
 último valor aplicado: `perfil`, `setting`, `nome_legivel`, `esperado`,
 `encontrado`, `detectado_unix`.
+
+### Atualização automática (`estado.atualizacao`, v6)
+
+```json
+{
+  "versao_instalada": "1.4.0",
+  "ultima_verificacao_unix": 1790000000,
+  "proxima_verificacao_unix": 1790021600,
+  "ultima_atualizacao": {"de": "1.3.2", "para": "1.4.0", "quando_unix": 1789990000, "reinicio_pendente": true},
+  "nao_vista": true,
+  "pendente": {"versao": "1.5.0", "motivo": "jogo_aberto", "desde_unix": 1790000100},
+  "falha": {"versao": "1.5.0", "codigo": 1603, "tentativas": 2, "abandonada": false, "quando_unix": 1790000050},
+  "erro_verificacao": {"tipo": "recusado_http", "status": 403}
+}
+```
+
+- `versao_instalada`: versão do serviço instalado.
+- `ultima_verificacao_unix` / `proxima_verificacao_unix`: `null` = ainda não
+  verificou / sem verificação agendada.
+- `ultima_atualizacao`: última instalação concluída (`de`, `para`,
+  `quando_unix`); `reinicio_pendente` = o instalador terminou com 3010.
+- `nao_vista`: calculado **por SID do chamador** (identidade só do token);
+  `true` enquanto esse usuário não enviou `marcar_atualizacao_vista` com
+  `versao` = `ultima_atualizacao.para`. Outra versão → `entrada_invalida`.
+  O serviço guarda `atualizacao_vista` por SID em `usuarios.json`.
+- `pendente.motivo`: `jogo_aberto` \| `lista_indisponivel` \|
+  `outra_instalacao` \| `baixando` \| `instalando`.
+- `falha`: `codigo` = código de saída do instalador; `abandonada` = sem novas
+  tentativas para essa versão.
+- `erro_verificacao.tipo`: `sem_conexao` \| `recusado_http` (com `status`
+  HTTP) \| `assinatura` \| `manifesto` \| `disco`.
+
+Os DTOs são do `nvt-ipc` e não dependem dos tipos do núcleo de atualização.
 
 ### Avisos (`estado.avisos`)
 
@@ -355,6 +390,7 @@ Datas são segundos desde a época Unix (UTC).
 | `mensagem_grande`       | quadro acima de 1 MiB                             |
 | `mensagem_invalida`     | JSON/envelope inválido ou tipo desconhecido       |
 | `requisicao_invalida`   | campo fora de faixa ou com formato inválido       |
+| `entrada_invalida`      | pedido bem formado mas incoerente com o estado do serviço (v6: `marcar_atualizacao_vista` com versão diferente de `ultima_atualizacao.para`) |
 | `setting_nao_permitida` | setting fora da lista permitida                   |
 | `perfil_nao_encontrado` | perfil inexistente no driver                      |
 | `driver_indisponivel`   | NVAPI/driver indisponível                         |

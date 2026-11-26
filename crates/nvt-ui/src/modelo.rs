@@ -718,6 +718,7 @@ mod testes {
             alertas_deriva: vec![],
             avisos: vec![],
             adiamento: None,
+            atualizacao: Default::default(),
         }
     }
 

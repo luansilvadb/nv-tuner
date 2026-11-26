@@ -387,6 +387,7 @@ pub fn codigo_erro(c: CodigoErro) -> &'static str {
         CodigoErro::PerfilNaoEncontrado => "perfil não encontrado no driver",
         CodigoErro::DriverIndisponivel => "driver NVIDIA indisponível",
         CodigoErro::Ocupado => "o serviço está ocupado com outra operação",
+        CodigoErro::EntradaInvalida => "pedido incoerente com o estado do serviço",
         CodigoErro::Interno => "falha interna do serviço",
     }
 }
