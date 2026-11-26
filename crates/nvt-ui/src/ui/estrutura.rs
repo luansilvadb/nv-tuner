@@ -276,12 +276,9 @@ impl Janela {
     /// Conteúdo da seção ativa.
     pub(super) fn conteudo_secao(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.secao {
-            Secao::Inicio | Secao::Jogos => self.conteudo(cx),
-            Secao::Avancado => v_flex()
-                .gap(px(tema::ESP_4))
-                .child(self.subnavegacao_avancado(cx))
-                .child(self.conteudo(cx))
-                .into_any_element(),
+            Secao::Inicio => super::inicio::render(self, cx),
+            Secao::Jogos => super::jogos::render(self, cx),
+            Secao::Avancado => super::avancado::render(self, cx),
             #[cfg(feature = "medicao-partidas")]
             Secao::Partidas => div()
                 .text_color(cx.theme().muted_foreground)

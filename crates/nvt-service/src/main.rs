@@ -13,6 +13,7 @@ mod laco;
 mod logs;
 mod nomes;
 mod nucleo;
+mod recomendadas;
 mod relatorio;
 mod scm;
 mod usuario;
