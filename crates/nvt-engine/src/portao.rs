@@ -24,18 +24,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nvt_core::BaseJogos;
 use nvt_detect::{ANTICHEAT_SO_DURANTE_JOGO, FonteProcessos, ProcessosDoSistema};
 
-/// Gravação recusada pelo portão: há processo vigiado em execução.
+/// Marcador posto em [`Adiamento::processos`] quando a lista de processos não
+/// pôde ser lida (falha fechada; nenhum nome de processo é exposto).
+pub const LISTA_INDISPONIVEL: &str = "lista de processos indisponível";
+
+/// Gravação recusada pelo portão: há processo vigiado em execução ou a lista
+/// de processos não pôde ser lida.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adiamento {
-    /// Processos vigiados em execução (grafia da lista vigiada, sem repetição).
+    /// Processos vigiados em execução (grafia da lista vigiada, sem
+    /// repetição) ou, com `lista_indisponivel`, só [`LISTA_INDISPONIVEL`].
     pub processos: Vec<String>,
-    /// Desde quando (segundos Unix) o portão vê processo vigiado em execução
-    /// sem interrupção.
+    /// Desde quando (segundos Unix) o portão adia sem interrupção.
     pub desde_unix: u64,
+    /// A lista de processos não pôde ser lida: não se sabe o que está aberto.
+    pub lista_indisponivel: bool,
 }
 
 impl fmt::Display for Adiamento {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.lista_indisponivel {
+            return write!(f, "gravação adiada: {LISTA_INDISPONIVEL}");
+        }
         write!(
             f,
             "gravação adiada: processo(s) de jogo em execução ({})",
@@ -172,10 +182,14 @@ impl Portao {
     }
 
     /// Consulta a lista de processos agora. Livre: devolve a [`Licenca`].
-    /// Com processo vigiado em execução: [`Adiamento`].
+    /// Com processo vigiado em execução ou lista ilegível (falha fechada):
+    /// [`Adiamento`].
     pub fn verificar(&self, base: &BaseJogos, extras: &[&str]) -> Result<Licenca, Adiamento> {
         let vigiados = self.vigiados(base, extras);
-        let rodando = nvt_detect::em_execucao(&self.0.fonte.processos(), &vigiados);
+        let (rodando, lista_indisponivel) = match self.0.fonte.ler() {
+            Ok(ps) => (nvt_detect::em_execucao(&ps, &vigiados), false),
+            Err(_) => (vec![LISTA_INDISPONIVEL.to_owned()], true),
+        };
         if rodando.is_empty() {
             self.0.desde.store(0, Ordering::Relaxed);
             return Ok(Licenca { _privado: () });
@@ -193,6 +207,7 @@ impl Portao {
         Err(Adiamento {
             processos: rodando,
             desde_unix: desde,
+            lista_indisponivel,
         })
     }
 }
@@ -221,6 +236,17 @@ mod testes {
         assert!(v.iter().any(|x| x == "cs2.exe"), "base curada vigiada");
         assert!(v.iter().any(|x| x == "EasyAntiCheat_EOS.exe"));
         assert!(!v.iter().any(|x| x.eq_ignore_ascii_case("vgc.exe")));
+    }
+
+    #[test]
+    fn lista_ilegivel_adia_sem_nomes() {
+        let base = BaseJogos::embutida().unwrap();
+        let p = Portao::new(ProcessosFalsos::falhando());
+        let a = p.verificar(&base, &[]).unwrap_err();
+        assert!(a.lista_indisponivel);
+        assert_eq!(a.processos, [LISTA_INDISPONIVEL]);
+        assert!(a.desde_unix > 0);
+        assert!(a.to_string().contains(LISTA_INDISPONIVEL));
     }
 
     #[test]

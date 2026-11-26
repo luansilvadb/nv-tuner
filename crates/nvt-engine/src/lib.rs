@@ -49,6 +49,8 @@ pub use estado::{
 };
 pub use falso::DriverFalso;
 /// Fonte de processos do portão (reexportada para quem injeta uma fonte).
-pub use nvt_detect::{FonteProcessos, Processo, ProcessosDoSistema, ProcessosFalsos};
-pub use portao::{Adiamento, Licenca, Portao};
+pub use nvt_detect::{
+    FonteProcessos, ListaIndisponivel, Processo, ProcessosDoSistema, ProcessosFalsos,
+};
+pub use portao::{Adiamento, LISTA_INDISPONIVEL, Licenca, Portao};
 pub use store::{DriverStore, DrsReal, PerfilEncontrado};

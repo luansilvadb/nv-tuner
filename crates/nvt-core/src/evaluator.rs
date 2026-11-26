@@ -347,14 +347,23 @@ fn resolver(
         let (valor, extra) = match acao {
             ValorAcao::Nome(n) => (def.valores[n], String::new()),
             ValorAcao::Numero(v) => (*v, String::new()),
+            // O cálculo usa o piso do refresh (59,94 Hz → 59): arredondar para
+            // cima deixaria o limite a menos de 3 FPS do refresh real. O
+            // arredondamento fica só na exibição.
             ValorAcao::LimiteVrr => match caps
-                .refresh_hz()
+                .refresh_hz_piso()
                 .and_then(|hz| limite_vrr(hz).map(|v| (hz, v)))
             {
-                Some((hz, v)) if def.aceita(v) => (
-                    v,
-                    format!(" Valor: mínimo entre {hz} Hz − 3 e ⌊{hz} − {hz}²/3600⌋ = {v}."),
-                ),
+                Some((hz, v)) if def.aceita(v) => {
+                    let formula = format!("mínimo entre {hz} Hz − 3 e ⌊{hz} − {hz}²/3600⌋ = {v}");
+                    let texto = match caps.refresh_hz() {
+                        Some(exib) if exib != hz => format!(
+                            " Valor: refresh de ≈{exib} Hz, contado como {hz} Hz (para baixo); {formula}."
+                        ),
+                        _ => format!(" Valor: {formula}."),
+                    };
+                    (v, texto)
+                }
                 _ => {
                     descartes.push(Descarte {
                         regra: Some(regra.id.clone()),

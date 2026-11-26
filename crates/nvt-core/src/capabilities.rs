@@ -107,6 +107,14 @@ impl Capabilities {
             .map(|m| m.saturating_add(500) / 1000)
             .filter(|&hz| hz > 0)
     }
+
+    /// Refresh do monitor principal em Hz inteiros, arredondado para baixo
+    /// (`⌊refresh_mhz/1000⌋`), quando conhecido. Base dos limites de FPS:
+    /// arredondar para cima (59,94 → 60) deixaria o limite a menos da margem
+    /// do refresh real.
+    pub fn refresh_hz_piso(&self) -> Option<u32> {
+        self.refresh_mhz.map(|m| m / 1000).filter(|&hz| hz > 0)
+    }
 }
 
 impl Capabilities {

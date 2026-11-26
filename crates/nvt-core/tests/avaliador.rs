@@ -230,7 +230,7 @@ fn sem_sync_desliga_vsync_e_gsync() {
 #[test]
 fn gsync_com_refresh_conhecido_limita_abaixo_do_refresh() {
     // Spec competitivo §7.4: `sincronismo-gsync-limite` passou a exigir VRR
-    // ativo, usa `limite_vrr` (224 a 240 Hz, não mais 237) e é experimental:
+    // ativo, usa `limite_vrr` sobre o piso do refresh (239,76 Hz → 239 → 223) e é experimental:
     // vira sugestão, não entra no plano automático.
     let caps = Capabilities {
         refresh_mhz: Some(239_760),
@@ -258,7 +258,7 @@ fn gsync_com_refresh_conhecido_limita_abaixo_do_refresh() {
         .expect("sugestão do limite para VRR");
     assert_eq!(s.alvo, g);
     assert_eq!(s.mudancas.len(), 1);
-    assert_eq!(s.mudancas[0].valor, 224);
+    assert_eq!(s.mudancas[0].valor, 223);
     assert!(s.mudancas[0].explicacao.contains("240 Hz"));
 }
 

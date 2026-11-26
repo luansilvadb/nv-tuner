@@ -80,10 +80,17 @@ fn limite_vrr_tabela_da_spec() {
 }
 
 /// O avaliador chega ao valor da tabela a partir do refresh em milésimos de
-/// Hz (arredondado só aqui).
+/// Hz, com o piso do refresh (59,94 Hz conta como 59, não 60).
 #[test]
 fn gsync_limite_usa_a_tabela_no_avaliador() {
-    for (mhz, esperado) in [(60_000, 57), (144_000, 138), (239_760, 224), (480_000, 416)] {
+    for (mhz, esperado) in [
+        (60_000, 57),
+        (59_940, 56),
+        (144_000, 138),
+        (143_980, 137),
+        (239_760, 223),
+        (480_000, 416),
+    ] {
         let caps = Capabilities {
             refresh_mhz: Some(mhz),
             ..com_vrr(0, Some(true), Some(true))

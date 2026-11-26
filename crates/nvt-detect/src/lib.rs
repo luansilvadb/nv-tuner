@@ -27,8 +27,8 @@ pub use facts::{
 pub use launchers::{FalhaScanner, RelatorioVarredura};
 pub use model::{DetectedGame, Launcher, deduplicar, pasta_canonica};
 pub use processos::{
-    ANTICHEAT_SO_DURANTE_JOGO, FonteProcessos, Processo, ProcessosDoSistema, ProcessosFalsos,
-    em_execucao, listar_processos,
+    ANTICHEAT_SO_DURANTE_JOGO, FonteProcessos, ListaIndisponivel, Processo, ProcessosDoSistema,
+    ProcessosFalsos, em_execucao, listar_processos,
 };
 pub use registro::ServicosSistema;
 

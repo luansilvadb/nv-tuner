@@ -195,6 +195,9 @@ pub struct ResultadoDeteccao {
     /// Processos vigiados em execução (exes dos jogos, processos protegidos
     /// da base e anticheats que só existem durante o jogo), na grafia vigiada.
     pub processos_em_execucao: Vec<String>,
+    /// A lista de processos não pôde ser lida: nenhuma pasta de jogo foi
+    /// lida nesta varredura (fatos anteriores ou desconhecidos).
+    pub lista_processos_indisponivel: bool,
 }
 
 impl ResultadoDeteccao {
@@ -212,6 +215,9 @@ pub struct DetectorJogos {
     base: BaseJogos,
     /// Última entrada de cada jogo, pela chave de [`chave_cache`].
     anteriores: BTreeMap<String, JogoEntrada>,
+    /// Já houve varredura com a lista de processos lida. Antes dela (ex.:
+    /// serviço recém-iniciado) a pasta de jogo de exe desconhecido não é lida.
+    ja_varreu: bool,
 }
 
 /// Chave do cache: launcher + pasta como veio do launcher, sem resolver o
@@ -222,6 +228,14 @@ fn chave_cache(j: &DetectedGame) -> String {
         j.launcher,
         j.pasta_instalacao().to_string_lossy().to_lowercase()
     )
+}
+
+/// Nome do arquivo do exe indicado pelo launcher (sem tocar no disco).
+fn exe_indicado(j: &DetectedGame) -> Option<String> {
+    j.exe_indicado
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
 }
 
 fn adicionar_sem_repetir(lista: &mut Vec<String>, nome: &str) {
@@ -236,6 +250,7 @@ impl DetectorJogos {
         Self {
             base,
             anteriores: BTreeMap::new(),
+            ja_varreu: false,
         }
     }
 
@@ -291,11 +306,41 @@ impl DetectorJogos {
                 adicionar_sem_repetir(&mut vigiados, &n.to_string_lossy());
             }
         }
-        let rodando = nvt_detect::em_execucao(&processos.processos(), &vigiados);
+        // Falha fechada: sem a lista não se sabe o que está aberto, então
+        // nenhuma pasta é lida.
+        let (rodando, lista_ok) = match processos.ler() {
+            Ok(ps) => (nvt_detect::em_execucao(&ps, &vigiados), true),
+            Err(e) => {
+                avisos.push(format!(
+                    "{e}: pastas de jogos não lidas nesta varredura (fatos anteriores)"
+                ));
+                (Vec::new(), false)
+            }
+        };
+        // Jogo de exe desconhecido (sem exe anterior, sem exe da base pelo
+        // AppID, sem exe indicado) não é reconhecível entre os processos: só
+        // tem a pasta lida numa varredura com a lista lida, sem nenhum
+        // processo vigiado aberto e depois de uma varredura anterior.
+        let le_desconhecidos = lista_ok && rodando.is_empty() && self.ja_varreu;
 
         let mut saida = Vec::new();
         let mut novos = BTreeMap::new();
         for (j, (chave, exes)) in jogos.iter().zip(conhecidos) {
+            let exe_desconhecido = exes.is_empty() && exe_indicado(j).is_none();
+            if !lista_ok || (exe_desconhecido && !le_desconhecidos) {
+                match self.entrada_sem_leitura(j, &chave, &exes) {
+                    Some(mut e) => {
+                        e.id_jogo = casar_na_base(&self.base, &e).map(|c| c.id.clone());
+                        novos.insert(chave, e.clone());
+                        saida.push(e);
+                    }
+                    None => avisos.push(format!(
+                        "{}: análise adiada (exe desconhecido com jogo possivelmente aberto)",
+                        j.nome
+                    )),
+                }
+                continue;
+            }
             let entrada = match nvt_detect::analisar_jogo_se_fechado(j, servicos, &exes, &rodando) {
                 AnaliseJogo::Analisado(t) => match jogo_de_traits(j, &t) {
                     Some(e) => e,
@@ -314,11 +359,36 @@ impl DetectorJogos {
             saida.push(entrada);
         }
         self.anteriores = novos;
+        self.ja_varreu |= lista_ok;
         ResultadoDeteccao {
             jogos: saida,
             avisos,
             processos_em_execucao: rodando,
+            lista_processos_indisponivel: !lista_ok,
         }
+    }
+
+    /// Entrada de um jogo cuja pasta não foi lida sem se saber se está
+    /// aberto: os fatos anteriores ou, sem eles, fatos desconhecidos com o exe
+    /// indicado ou conhecido. `None` sem nenhum exe sabido.
+    fn entrada_sem_leitura(
+        &self,
+        j: &DetectedGame,
+        chave: &str,
+        conhecidos: &[String],
+    ) -> Option<JogoEntrada> {
+        let mut e = match self.anteriores.get(chave) {
+            Some(a) => a.clone(),
+            None => {
+                let exe = exe_indicado(j).or_else(|| conhecidos.first().cloned())?;
+                let mut e = JogoEntrada::new(j.nome.clone(), exe);
+                e.launcher = j.launcher.to_string();
+                e
+            }
+        };
+        e.nome = j.nome.clone();
+        e.em_execucao = false;
+        Some(e.com_ids(j))
     }
 
     /// Exes conhecidos de um jogo sem tocar na pasta dele: o exe da varredura
