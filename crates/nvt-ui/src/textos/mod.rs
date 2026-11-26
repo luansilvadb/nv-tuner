@@ -2,6 +2,21 @@
 //!
 //! Centralizados aqui para facilitar uma tradução futura: o resto do crate
 //! não contém frases de interface, só referências a este módulo.
+//!
+//! As telas novas têm um submódulo cada; as constantes da raiz atendem às
+//! telas legadas, que o Avançado reaproveita.
+
+// As telas novas usam estes módulos a partir do lote L2; até lá, parte deles
+// (e constantes legadas que a estrutura nova deixou de usar) fica sem uso.
+#![allow(dead_code)]
+
+pub mod avancado;
+pub mod boas_vindas;
+pub mod estado;
+pub mod inicio;
+pub mod jogos;
+#[cfg(test)]
+mod testes;
 
 use nvt_ipc::{
     AcaoAdiada, AcaoHistorico, AcaoReversao, Adiamento, Aviso, CodigoErro, ImpactoVisual,
@@ -25,13 +40,10 @@ pub const TELA_RESTAURAR: &str = "Restaurar original";
 pub const CONEXAO_CONECTANDO: &str = "Conectando ao serviço…";
 pub const CONEXAO_SERVICO: &str = "Serviço conectado";
 pub const CONEXAO_VISUALIZACAO: &str = "Modo de visualização";
-pub const AVISO_VISUALIZACAO_TITULO: &str = "Serviço do nv-tuner não está em execução";
-pub const AVISO_VISUALIZACAO: &str = "Mostrando o que seria feito, calculado localmente e somente \
-     leitura: nada é gravado no driver. Para aplicar, instale o nv-tuner pelo instalador ou \
-     inicie o serviço “nv-tuner (serviço)” (nvt-service) em services.msc. A interface reconecta sozinha quando o \
-     serviço subir.";
+pub const AVISO_VISUALIZACAO_TITULO: &str = "O nv-tuner não está ativo neste PC";
+pub const AVISO_VISUALIZACAO: &str = "Mostrando só informações. Nada é mudado no PC.";
 pub const CARREGANDO: &str = "Carregando…";
-pub const SO_COM_SERVICO: &str = "Disponível apenas com o serviço em execução.";
+pub const SO_COM_SERVICO: &str = "Disponível só com o nv-tuner ativo.";
 
 // Visão geral -------------------------------------------------------------
 pub const SECAO_SISTEMA: &str = "Sistema";
@@ -117,8 +129,9 @@ pub const EXPERIMENTAL_ACEITA: &str = "experimental aceita por você";
 pub const EXPERIMENTAIS_DRIVER: &str = "O efeito no driver vale para todos os usuários da máquina. Só valem os aceites de quem está na sessão de console ativa.";
 pub const ACEITE_DRIVER_INATIVO: &str = "Seu aceite fica inativo fora da sessão de console ativa.";
 pub const AGENTE_ATIVO: &str = "Ajustes do seu usuário: ativos";
-pub const AGENTE_AUSENTE: &str = "Ajustes do seu usuário: agente não está em execução";
-pub const AGENTE_INDISPONIVEL: &str = "Ajustes do seu usuário: status indisponível sem o serviço";
+pub const AGENTE_AUSENTE: &str =
+    "Ajustes do seu usuário: pausados até você entrar de novo no Windows";
+pub const AGENTE_INDISPONIVEL: &str = "Ajustes do seu usuário: indisponíveis sem o nv-tuner ativo";
 pub const RESTAURACAO_USUARIO_PENDENTE: &str = "Restauração dos ajustes do seu usuário pendente.";
 pub const DRIVER_RESTAURADO: &str = "Restauração do driver concluída.";
 pub const OK_ACEITE: &str = "Preferência experimental atualizada.";
@@ -389,6 +402,7 @@ pub fn codigo_erro(c: CodigoErro) -> &'static str {
         CodigoErro::Ocupado => "o serviço está ocupado com outra operação",
         CodigoErro::EntradaInvalida => "pedido incoerente com o estado do serviço",
         CodigoErro::Interno => "falha interna do serviço",
+        CodigoErro::RecursoAusente => "este recurso ainda não existe nesta versão do serviço",
     }
 }
 

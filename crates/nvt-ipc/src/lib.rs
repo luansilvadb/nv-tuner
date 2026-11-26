@@ -17,16 +17,18 @@ mod erro;
 pub mod pipe;
 pub mod protocolo;
 pub mod quadro;
+pub mod saude;
 pub mod usuario;
 
 pub use config_jogo::*;
 pub use erro::ErroIpc;
 pub use protocolo::*;
 pub use quadro::{TAMANHO_MAXIMO, codificar, decodificar, enviar, ler_quadro, receber};
+pub use saude::*;
 pub use usuario::*;
 
 /// Versão do protocolo; incrementada a cada mudança incompatível.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Nome do named pipe usado pelo serviço.
 pub const NOME_PIPE: &str = r"\\.\pipe\nv-tuner";

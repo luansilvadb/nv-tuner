@@ -90,6 +90,7 @@ fn relato(resultados_jogo: Vec<ResultadoJogo>) -> Requisicao {
         revisao: 2,
         resultados: vec![],
         resultados_jogo,
+        saude: None,
     }
 }
 
@@ -222,7 +223,7 @@ fn ida_e_volta_pelo_envelope_v7() {
     ] {
         assert_eq!(req.validar(), Ok(()));
         let bytes = codificar(&req).unwrap();
-        assert!(bytes.starts_with(br#"{"versao":7,"#));
+        assert!(bytes.starts_with(br#"{"versao":8,"#));
         assert_eq!(decodificar::<Requisicao>(&bytes).unwrap(), req);
     }
     let resp = Resposta::PlanoAgente(plano());
@@ -491,7 +492,7 @@ fn mensagem_v6_com_campos_de_jogo_recusada_pelo_envelope() {
         decodificar::<Requisicao>(&payload),
         Err(crate::ErroIpc::VersaoIncompativel {
             recebida: 6,
-            esperada: 7
+            esperada: 8
         })
     ));
 }

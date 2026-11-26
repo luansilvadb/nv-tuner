@@ -578,6 +578,7 @@ impl Coordenador {
                 revisao,
                 resultados,
                 resultados_jogo,
+                ..
             } => req.validar().map_err(invalida).and_then(|()| {
                 self.relatar(
                     identidade,

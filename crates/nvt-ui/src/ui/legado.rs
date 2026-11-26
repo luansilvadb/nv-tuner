@@ -1,4 +1,5 @@
-//! Janela principal: navegação lateral e as telas.
+//! Telas legadas (v0.2.0), mostradas pela estrutura nova
+//! ([`super::estrutura`]) até o L2.
 //!
 //! Só lê [`EstadoUi`] e envia [`Comando`]s para a thread de comunicação; a
 //! thread da janela nunca bloqueia em E/S.
@@ -12,13 +13,10 @@ use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::link::Link;
 use gpui_kit::component::radio::{Radio, RadioGroup};
-use gpui_kit::component::sidebar::{
-    Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
-};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex,
+    ActiveTheme, Disableable, Sizable, StyledExt, WindowExt, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -27,12 +25,14 @@ use nvt_ipc::{
     NivelAviso, Qualidade, Reversao, Sincronismo, StatusMudanca, SugestaoExperimental,
 };
 
+use super::estrutura::{Destino, Secao};
 use crate::arquivo_jogo as aj;
 use crate::modelo::{
     Comando, Conexao, EstadoUi, Evento, GrupoMudancas, ItemMudanca, Tela, TipoMensagem,
     destino_usuario, formatar_data, linha_setting,
 };
 use crate::servico::Canal;
+use crate::tema;
 use crate::textos as t;
 
 const SINCRONISMOS: [Sincronismo; 3] = [
@@ -49,14 +49,21 @@ const FPS_ATALHOS: [u32; 6] = [60, 120, 141, 144, 165, 240];
 const FPS_PADRAO: u32 = 141;
 
 pub struct Janela {
-    ui: EstadoUi,
+    pub(super) ui: EstadoUi,
+    /// Item ativo da navegação lateral.
+    pub(super) secao: Secao,
     comandos: Sender<Comando>,
     /// Perfis dos jogos com a linha expandida na tela Jogos.
     expandidos: BTreeSet<String>,
 }
 
 impl Janela {
-    pub fn new(tela: Tela, expandidos: Vec<String>, canal: Canal, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        destino: Destino,
+        expandidos: Vec<String>,
+        canal: Canal,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let eventos = canal.eventos;
         // Consome os eventos da thread de comunicação sem bloquear a janela.
         cx.spawn(async move |this, cx| {
@@ -81,7 +88,8 @@ impl Janela {
         })
         .detach();
         Self {
-            ui: EstadoUi::new(tela),
+            ui: EstadoUi::new(destino.tela),
+            secao: destino.secao,
             comandos: canal.comandos,
             expandidos: expandidos.into_iter().collect(),
         }
@@ -96,40 +104,7 @@ impl Janela {
         cx.notify();
     }
 
-    fn ir(&mut self, tela: Tela, cx: &mut Context<Self>) {
-        self.ui.tela = tela;
-        cx.notify();
-    }
-
-    // -----------------------------------------------------------------------
-    // Estrutura
-    // -----------------------------------------------------------------------
-
-    fn barra_lateral(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let itens = Tela::TODAS.map(|tela| {
-            SidebarMenuItem::new(tela.titulo())
-                .icon(icone(tela))
-                .active(self.ui.tela == tela)
-                .on_click(cx.listener(move |this, _, _, cx| this.ir(tela, cx)))
-        });
-        Sidebar::new("navegacao")
-            .header(
-                SidebarHeader::new().child(
-                    v_flex()
-                        .child(div().text_lg().font_semibold().child(t::TITULO_JANELA))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t::SUBTITULO_APP),
-                        ),
-                ),
-            )
-            .child(SidebarGroup::new(t::NAV_GRUPO).child(SidebarMenu::new().children(itens)))
-            .footer(SidebarFooter::new().child(self.selo_conexao()))
-    }
-
-    fn selo_conexao(&self) -> impl IntoElement {
+    pub(super) fn selo_conexao(&self) -> impl IntoElement {
         match self.ui.conexao {
             Conexao::Conectando => Tag::secondary().child(t::CONEXAO_CONECTANDO),
             Conexao::Servico => Tag::success().child(t::CONEXAO_SERVICO),
@@ -187,7 +162,7 @@ impl Janela {
         v
     }
 
-    fn conteudo(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn conteudo(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.ui.conexao == Conexao::Conectando && self.ui.dados.estado.is_none() {
             return div()
                 .text_color(cx.theme().muted_foreground)
@@ -1454,50 +1429,39 @@ impl Janela {
 impl Render for Janela {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tema = cx.theme().clone();
+        let agente = self
+            .ui
+            .dados
+            .estado
+            .as_ref()
+            .filter(|_| self.ui.conexao == Conexao::Servico)
+            .map_or(t::AGENTE_INDISPONIVEL, |e| {
+                if e.agente.presente {
+                    t::AGENTE_ATIVO
+                } else {
+                    t::AGENTE_AUSENTE
+                }
+            });
+        let rodape = v_flex().gap_1().child(self.selo_conexao()).child(
+            div()
+                .text_xs()
+                .text_color(tema.muted_foreground)
+                .child(agente),
+        );
         h_flex()
             .size_full()
             .bg(tema.background)
             .text_color(tema.foreground)
-            .child(self.barra_lateral(cx))
+            .font_family(tema.font_family.clone())
+            .text_size(px(tema::TAM_CORPO))
+            .child(self.barra_lateral(rodape, cx))
             .child(
                 v_flex()
                     .flex_1()
                     .h_full()
                     .min_w_0()
-                    .child(
-                        h_flex()
-                            .px_6()
-                            .py_4()
-                            .border_b_1()
-                            .border_color(tema.border)
-                            .justify_between()
-                            .child(div().text_xl().font_semibold().child(self.ui.tela.titulo()))
-                            .child(
-                                v_flex()
-                                    .items_end()
-                                    .gap_1()
-                                    .child(self.selo_conexao())
-                                    .child(
-                                        div().text_xs().text_color(tema.muted_foreground).child(
-                                            self.ui
-                                                .dados
-                                                .estado
-                                                .as_ref()
-                                                .filter(|_| self.ui.conexao == Conexao::Servico)
-                                                .map_or(t::AGENTE_INDISPONIVEL, |e| {
-                                                    if e.agente.presente {
-                                                        t::AGENTE_ATIVO
-                                                    } else {
-                                                        t::AGENTE_AUSENTE
-                                                    }
-                                                }),
-                                        ),
-                                    )
-                                    .when(self.ui.restauracao_usuario_pendente(), |v| {
-                                        v.child(explicacao(t::RESTAURACAO_USUARIO_PENDENTE, &tema))
-                                    }),
-                            ),
-                    )
+                    // O texto da linha de estado virá do modelo (`linha_estado`).
+                    .child(self.linha_estado(None, cx))
                     .child(
                         div()
                             .id("conteudo")
@@ -1506,10 +1470,15 @@ impl Render for Janela {
                             .overflow_y_scroll()
                             .child(
                                 v_flex()
-                                    .p_6()
-                                    .gap_4()
+                                    .px(px(tema::ESP_8))
+                                    .py(px(tema::ESP_6))
+                                    .gap(px(tema::ESP_4))
+                                    .child(self.titulo_pagina())
+                                    .when(self.ui.restauracao_usuario_pendente(), |v| {
+                                        v.child(explicacao(t::RESTAURACAO_USUARIO_PENDENTE, &tema))
+                                    })
                                     .child(self.avisos(cx))
-                                    .child(self.conteudo(cx)),
+                                    .child(self.conteudo_secao(cx)),
                             ),
                     ),
             )
@@ -1535,18 +1504,6 @@ fn sessao_console_ativa() -> bool {
     }
     #[cfg(not(windows))]
     false
-}
-
-fn icone(tela: Tela) -> IconName {
-    match tela {
-        Tela::VisaoGeral => IconName::LayoutDashboard,
-        Tela::Jogos => IconName::GalleryVerticalEnd,
-        Tela::Mudancas => IconName::Replace,
-        Tela::Windows => IconName::Settings2,
-        Tela::Preferencias => IconName::Settings2,
-        Tela::Historico => IconName::Calendar,
-        Tela::Restaurar => IconName::Undo2,
-    }
 }
 
 fn cartao(titulo: &'static str, corpo: impl IntoElement, tema: &Theme) -> Div {

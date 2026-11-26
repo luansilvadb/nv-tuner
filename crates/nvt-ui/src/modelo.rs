@@ -12,6 +12,15 @@ use nvt_ipc::{
 
 use crate::textos;
 
+// Consumido pelas telas novas no L2.
+#[allow(dead_code)]
+pub mod painel;
+#[allow(unused_imports)]
+pub use painel::{
+    Fatos, LinhaEstado, MotivoIndisponivel, Saude, StatusJogo, TipoSinal, Veredito, linha_estado,
+    status_jogo, veredito,
+};
+
 /// Telas da navegação lateral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tela {

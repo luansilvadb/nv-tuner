@@ -1176,6 +1176,15 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                     "pedido requer coordenador de usuário",
                 );
             }
+            // v8: respostas provisórias até as tarefas de L2/L3/L5.
+            Requisicao::AplicarRecomendadas
+            | Requisicao::ObterSaude
+            | Requisicao::MarcarInicioVisto { .. }
+            | Requisicao::ListarPartidas { .. }
+            | Requisicao::ObterPartida { .. }
+            | Requisicao::ApagarPartidas => {
+                return Resposta::erro(CodigoErro::RecursoAusente, "recurso ainda não disponível");
+            }
             Requisicao::ObterEstado => self.obter_estado(),
             Requisicao::ObterPlano => self.obter_plano(),
             Requisicao::AplicarAgora => self.aplicar_agora(agora),

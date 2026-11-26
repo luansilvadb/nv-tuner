@@ -257,8 +257,8 @@ mod testes {
         for p in [
             &br#"{"corpo":{"tipo":"obter_estado"}}"#[..],
             br#"{"versao":"1","corpo":{"tipo":"obter_estado"}}"#,
-            br#"{"versao":7}"#,
-            br#"{"versao":7,"corpo":{"tipo":"obter_estado"},"extra":0}"#,
+            br#"{"versao":8}"#,
+            br#"{"versao":8,"corpo":{"tipo":"obter_estado"},"extra":0}"#,
             br#"[1,2]"#,
         ] {
             assert!(
@@ -275,8 +275,58 @@ mod testes {
             Err(ErroIpc::Json(_))
         ));
         assert!(matches!(
-            decodificar::<Requisicao>(br#"{"versao":7,"corpo":{"tipo":"formatar_disco"}}"#),
+            decodificar::<Requisicao>(br#"{"versao":8,"corpo":{"tipo":"formatar_disco"}}"#),
             Err(ErroIpc::Json(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod testes_v8 {
+    use super::*;
+    use crate::{PROTOCOL_VERSION, Requisicao};
+
+    #[test]
+    fn v7_e_recusada() {
+        assert_eq!(PROTOCOL_VERSION, 8);
+        let payload = br#"{"versao":7,"corpo":{"tipo":"obter_estado"}}"#;
+        assert!(matches!(
+            decodificar::<Requisicao>(payload),
+            Err(ErroIpc::VersaoIncompativel {
+                recebida: 7,
+                esperada: 8
+            })
+        ));
+    }
+
+    #[test]
+    fn relato_sem_saude_e_aceito() {
+        let payload = br#"{"versao":8,"corpo":{"tipo":"agente_relatar","id_tarefa":1,"operacao":"aplicar","revisao":1,"resultados":[]}}"#;
+        match decodificar::<Requisicao>(payload) {
+            Ok(Requisicao::AgenteRelatar { saude: None, .. }) => {}
+            outro => panic!("{outro:?}"),
+        }
+    }
+
+    #[test]
+    fn requisicoes_novas_no_envelope() {
+        for corpo in [
+            r#"{"tipo":"aplicar_recomendadas"}"#,
+            r#"{"tipo":"obter_saude"}"#,
+            r#"{"tipo":"marcar_inicio_visto","fonte":"run_usuario","nome":"Discord"}"#,
+            r#"{"tipo":"listar_partidas","desde_unix":0,"limite":10}"#,
+            r#"{"tipo":"obter_partida","id":3}"#,
+            r#"{"tipo":"apagar_partidas"}"#,
+        ] {
+            let p = format!(r#"{{"versao":8,"corpo":{corpo}}}"#);
+            assert!(decodificar::<Requisicao>(p.as_bytes()).is_ok(), "{corpo}");
+        }
+        for corpo in [
+            r#"{"tipo":"marcar_inicio_visto","fonte":"run_usuario","nome":"x","caminho":"c"}"#,
+            r#"{"tipo":"marcar_inicio_visto","fonte":"servico","nome":"x"}"#,
+        ] {
+            let p = format!(r#"{{"versao":8,"corpo":{corpo}}}"#);
+            assert!(decodificar::<Requisicao>(p.as_bytes()).is_err(), "{corpo}");
+        }
     }
 }

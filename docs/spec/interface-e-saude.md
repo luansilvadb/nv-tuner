@@ -44,13 +44,16 @@ Entregas:
 
 | # | Decisão | Consequência |
 |---|---|---|
-| D1 | A gravação de partidas não é opção do usuário e não vai para usuários antes de validada. Fica atrás da feature `medicao-partidas` (crate `nvt-medicao`, propagada por `nvt-service` e `nvt-ui`), desligada no release. | Trava tripla (§8.4): `build.rs` + `compile_error!`, passo do `release.yml` e marcador visível "Build de teste" na UI. No build normal o cartão de partidas e a tela Histórico de partidas não existem (código `#[cfg]`), e o IPC responde `Erro { RecursoAusente }`. |
+| D1 | A gravação de partidas não é opção do usuário e não vai para usuários antes de validada. Fica atrás da feature `medicao-partidas` (crate `nvt-medicao`, propagada por `nvt-service`, `nvt-agente` e `nvt-ui`; liga também a feature `build-de-teste` de `nvt-manutencao`), desligada no release. | Trava tripla (§8.4): `build.rs` + `compile_error!`, passo do `release.yml` e marcador visível "Build de teste" na UI. No build normal o cartão de partidas e a tela Histórico de partidas não existem (código `#[cfg]`), e o IPC responde `Erro { RecursoAusente }`. |
 | D1a | Diferente de `laboratorio`, a medição **precisa** de build otimizado (o custo de FPS só vale medido em release). A trava não usa `PROFILE`: o `build.rs` exige `NVT_BUILD_DE_TESTE=1` quando a feature está ativa e falha se `GITHUB_ACTIONS` ou `CI` estiverem definidos. | O mantenedor gera localmente `cargo build --release --features medicao-partidas` com a variável; o CI nunca consegue. O binário de teste mostra "Build de teste" na barra de título e na versão (`0.3.0+teste`). |
 | D2 | Limpeza de temporários é um **modo** (`ModoLimpeza`): `Desligada`, `Simulacao` (dry-run), `Ativa`. Build de teste: `Simulacao` fixo. Build normal: `Desligada` até o mantenedor validar o dry-run; uma versão posterior muda a constante para `Ativa`. Sem opção do usuário. | O modo é constante de compilação (`nvt-manutencao::MODO_LIMPEZA`, escolhido por `cfg`), não preferência nem algo que o IPC altere (o `Estado` só informa o modo). Testes provam que `Simulacao` nunca chama a fachada de exclusão (§4.4, R-L-06). |
 | D3 | Inicialização: só detectar e mostrar. Para "Abrir inicialização", **abrir `ms-settings:startupapps` por `ShellExecuteW` na UI**, como exceção auditada em `proibicoes.rs`. | Justificativa abaixo. |
 | D4 | Outros sinais (espaço livre, memória/CPU em repouso, driver, plano de energia, Storage Sense): só mostrar, em frase simples, com o caminho do Windows quando houver ação manual. | Nenhuma escrita nova. |
 | D5 | Redesenho para leigos no build normal (§5). "Aplicar melhorias recomendadas" usa **requisição IPC nova** `AplicarRecomendadas`. "Desfazer tudo" = `RestaurarOriginal` existente. | Justificativa abaixo. |
 | D6 | IPC v8. Mensagens novas sem dados pessoais (§7.6). v7 é rejeitada antes de desserializar o corpo, como nas versões anteriores. | UI e serviço sobem juntos no MSI; a UI antiga recebe `VersaoIncompativel` e o texto "Feche e abra de novo". |
+| D7 | Q9: "Desfazer tudo" (`RestaurarOriginal`) mantém os aceites experimentais; "Voltar a ajustar" (`AplicarAgora`) os reaplica. | Desfazer e refazer simétricos para o leigo; R-AR-06 fica como está. |
+| D8 | Q10: a v0.3.0 já sai com IPC v8; `ObterSaude` e afins respondem `Erro { RecursoAusente }` até o L4. | O MSI instala UI e serviço juntos; não há segunda troca de protocolo depois. |
+| D9 | Q11: um único build de teste (`medicao-partidas` + `NVT_BUILD_DE_TESTE=1`) liga a gravação de partidas e o dry-run da limpeza. | As travas não se separam; o Lab-L usa o mesmo binário do Lab-M. |
 
 **Justificativa de D3.** O texto "Configurações > Aplicativos > Inicialização" é seguro mas
 falha o critério de sucesso (o leigo não acha a página). `ShellExecuteW` com um URI
@@ -86,15 +89,15 @@ roteiro de §10.
 | ID | Requisito | Teste |
 |---|---|---|
 | R-UI-01 | Navegação lateral com três itens visíveis no build normal: Início, Jogos, Avançado (ícones Lucide distintos e visíveis). No build de teste, um quarto item "Partidas". | Teste de modelo: `Tela::visiveis()` por cfg. |
-| R-UI-02 | Início mostra exatamente um veredito: "Seu PC está otimizado", "Há melhorias disponíveis" ou "Algo piorou: <motivo curto>", calculado por função pura `veredito(&Estado, &Saude) -> Veredito` com prioridade: indisponível > piorou > melhorias > otimizado. | Tabela de casos em `modelo` cobrindo cada entrada. |
+| R-UI-02 | Início mostra exatamente um veredito, calculado por função pura `veredito(&Estado, Option<&Saude>) -> Veredito`, com prioridade: indisponível (serviço ausente ou protocolo incompatível) > sem placa NVIDIA ("Não encontramos uma placa de vídeo NVIDIA") > pausado após Desfazer tudo ("Os ajustes estão desligados", botão "Voltar a ajustar", que envia `AplicarAgora`) > esperando o jogo ("Há mudanças esperando o jogo fechar") > piorou > melhorias > otimizado (inclui "nada a fazer": "Não há nada a ajustar neste PC agora."). Atualização e agente ausente ficam só na linha de estado. Sem saúde (`None`), "piorou" nunca é escolhido. | Tabela de casos em `modelo` cobrindo cada entrada. |
 | R-UI-03 | Nenhuma sigla na tela principal (Início, Jogos, boas-vindas). Lista de siglas proibidas (GPU, VRAM, DLSS, VRR, G-SYNC, FPS, BAR, DRS, HAGS, MPO, SID, IPC, ETW, MSI, CPU, RAM, SSD). No Avançado podem aparecer com o nome por extenso na primeira ocorrência. | Teste que varre as constantes de `textos/inicio.rs`, `textos/jogos.rs`, `textos/boas_vindas.rs`. Exceção: nome do jogo e marca "NVIDIA". |
 | R-UI-04 | Nenhum emoji em texto nem em recurso. | Teste: nenhum caractere fora de BMP nem nos blocos de símbolo (U+2600–U+27BF, U+1F000+) em `textos/`. |
 | R-UI-05 | Estados (serviço ausente, protocolo incompatível, jogo aberto, atualização, agente ausente) aparecem numa única **linha de estado** no topo do conteúdo, uma por vez, por prioridade, com no máximo uma ação. Nenhum alerta repetido de várias linhas. | Teste de modelo `linha_estado()`: prioridade e um único resultado. |
-| R-UI-06 | Botão "Aplicar melhorias recomendadas" aparece só se houver experimental aplicável; desabilitado com motivo na própria linha (não só tooltip) com jogo aberto ou serviço ausente. | Teste de modelo. Lab: clique aceita todas e aplica. |
+| R-UI-06 | Botão "Aplicar melhorias recomendadas" aparece só se houver experimental aplicável; desabilitado com motivo na própria linha (não só tooltip) com serviço ausente. Com jogo aberto continua habilitado e a resposta `adiada` vira "As melhorias serão aplicadas quando o jogo fechar." (R-AR-02). Depois do clique, o Início mostra "Aplicamos N melhorias. Para voltar atrás, use Desfazer tudo." Sem diálogo de confirmação: a ação é reversível. | Teste de modelo. Lab: clique aceita todas e aplica. |
 | R-UI-07 | "Desfazer tudo" pede confirmação em linguagem simples e envia `RestaurarOriginal`. | Teste de modelo do diálogo; o caminho IPC já é coberto. |
 | R-UI-08 | Tudo que a v0.2.0 faz continua acessível no Avançado: Visão técnica (sistema, capacidades, conformidade, deriva), Mudanças por perfil com Aceitar/Retirar e Destravar, Windows (o que o app fez, reverter, experimentais, diagnóstico), Arquivo do jogo e reversão por chave, Preferências técnicas, Histórico técnico, Restaurar original, Reescanear jogos, Verificar atualização. | Teste de inventário: cada `Requisicao` enviada pela UI v0.2.0 tem um ponto de chamada alcançável a partir de uma `Tela` (lista em teste). |
 | R-UI-09 | Boas-vindas aparece só na primeira abertura (marca em `%LOCALAPPDATA%\nv-tuner\ui.json`), uma tela, um botão "Começar". Falha ao ler ou gravar a marca não bloqueia: mostra no máximo de novo. | Teste do armazenamento com pasta temporária. |
-| R-UI-10 | Tema: segue claro/escuro do Windows (`AppsUseLightTheme` em HKCU, leitura) se disponível; senão escuro. Destaque ciano do logo (`#38C8F0`, variação escurecida para contraste em tema claro). Fonte `Segoe UI Variable`, queda para `Segoe UI`. | Teste de função pura `tema_para(Option<bool>)`; contraste do texto sobre destaque >= 4,5:1 calculado em teste. |
+| R-UI-10 | Tema escuro fixo (a intenção pede "escuro"; tema claro fica fora). Destaque ciano do logo (`#38C8F0`). Fonte `Segoe UI Variable`, queda para `Segoe UI`. | Teste dos tokens; contraste do texto sobre fundo e sobre destaque >= 4,5:1 calculado em teste. |
 | R-UI-11 | Escala tipográfica fixa: título de página 28, veredito 20 semibold, título de cartão 15 semibold, corpo 14, legenda 12. Cartões usam `SettingPage`/`SettingGroup`/`SettingItem` do gpui-component. | Revisão visual por capturas (Lab-UI). |
 | R-UI-12 | Jogos mostra por jogo: nome, um status ("Otimizado", "Faça 2 ajustes no jogo", "Aguardando o jogo fechar") e detalhe ao clicar; nada de API, versão de DLSS, perfil ou anticheat na lista. O detalhe técnico tem link "Ver no Avançado". | Teste de modelo `status_jogo()`. |
 | R-UI-13 | Capturas de referência novas em `docs/ui-capturas/` para cada tela e cada estado da linha. | Lab-UI. |
@@ -107,7 +110,9 @@ roteiro de §10.
 | R-AR-01 | `AplicarRecomendadas` aceita, para o SID chamador, todas as experimentais aplicáveis das três camadas numa única gravação de preferências e responde `Recomendadas { aceitas: Vec<String>, adiada: bool }`. | Teste do serviço com fachadas falsas. |
 | R-AR-02 | Com jogo/anticheat aberto, os aceites são persistidos e a aplicação fica `adiada: true`, como "Aplicar agora". | Teste. |
 | R-AR-03 | Repetir a requisição é idempotente (nenhum aceite duplicado, mesma revisão se nada mudou). | Teste. |
-| R-AR-04 | Experimental DRS fora do SID do console é aceita mas indicada como inativa (regra da fase 2). | Teste. |
+| R-AR-04 | Experimental DRS fora do SID do console é aceita mas indicada como inativa (regra da fase 2). Aceites Windows e de arquivo de jogo valem só para o SID chamador. | Teste. |
+| R-AR-05 | Só entram regras marcadas experimentais no catálogo e aplicáveis agora; regra não experimental, de condição não casada, de camada indisponível ou travada pelo usuário nunca é aceita. Falha na gravação das preferências = nenhum aceite e nenhuma aplicação (tudo ou nada). | Teste com catálogo falso contendo cada caso. |
+| R-AR-06 | "Desfazer tudo" depois de `AplicarRecomendadas` volta tudo ao original e pausa a autonomia (`autonomia_pausada`), como hoje; os aceites continuam gravados e voltam a valer com "Voltar a ajustar" (ver Q9). | Teste de sequência Aplicar -> Restaurar -> AplicarAgora. |
 
 ### 4.3 Saúde: sinais e inicialização (R-S)
 
@@ -131,7 +136,7 @@ roteiro de §10.
 | R-L-04 | Nunca: Prefetch, D3DSCache, NVIDIA DXCache/GLCache/NV_Cache, SoftwareDistribution, Delivery Optimization, Lixeira, WinSxS, Installer, Logs, Minidump, LiveKernelReports. Garantia estrutural: só os dois alvos existem; teste adicional recusa qualquer raiz fora deles e qualquer caminho que, normalizado, saia da raiz. | Teste. |
 | R-L-05 | Portões: nenhum jogo/anticheat (mesma lista do `Portao`, verificada antes da passada e a cada 200 entradas), mutex `Global\_MSIExecute` inexistente (`OpenMutexW`, sem processo), no máximo uma passada por 24 h (registro persistido), limite de 60 s e 20.000 entradas por passada. | Testes com relógio e portão falsos. |
 | R-L-06 | `Simulacao` percorre e calcula `{ arquivos, bytes, pulados_por_motivo }` e **nunca** chama exclusão. Garantia: a passada é genérica sobre `trait Excluidor`; em `Simulacao` o tipo é `ExcluidorNulo`, que não tem acesso ao handle (o código de abertura com `DELETE` só existe em `ExcluidorReal`). Teste com `ExcluidorEspiao` em `Simulacao` conta zero chamadas; teste de integração em pasta real em `Simulacao` confere que todos os arquivos continuam lá, byte a byte. | Teste. |
-| R-L-07 | `Desligada` não percorre nada. `MODO_LIMPEZA` por cfg: `medicao-partidas`/build de teste => `Simulacao`; build normal => `Desligada`. Teste de compilação afirma o modo por cfg. | Teste. |
+| R-L-07 | `Desligada` não percorre nada. `MODO_LIMPEZA` por cfg: feature `build-de-teste` de `nvt-manutencao` (ligada só por `medicao-partidas` de serviço e agente, com a mesma trava de `build.rs` de §8.4) => `Simulacao`; build normal => `Desligada`. Teste de compilação afirma o modo por cfg. | Teste. |
 | R-L-08 | Resultado da última passada (modo, data, arquivos, bytes, contagens de pulados) fica no estado e no histórico técnico. UI: no build de teste, Avançado > Manutenção mostra "Simulação: apagaria N arquivos e liberaria X GB". No build normal com `Ativa` (futuro), Início pode dizer "Liberamos X GB de arquivos temporários antigos". Nunca citar FPS ou velocidade. | Teste de texto (nenhuma ocorrência de "FPS", "rápido", "desempenho" nos textos de limpeza). |
 | R-L-09 | O log registra só contagens e bytes; nunca nomes de arquivo do usuário. | Teste do relatório. |
 
@@ -152,7 +157,7 @@ roteiro de §10.
 
 | ID | Requisito | Teste |
 |---|---|---|
-| R-B-01 | `release.yml` falha se `cargo tree -e features` mostrar `medicao-partidas` (mesmo padrão do passo `laboratorio`). | Revisão do workflow + ensaio local do comando. |
+| R-B-01 | `release.yml` falha se `cargo tree -e features` mostrar `medicao-partidas` ou `build-de-teste` (mesmo padrão do passo `laboratorio`). | Revisão do workflow + ensaio local do comando. |
 | R-B-02 | `crates/nvt-medicao/build.rs` falha se a feature estiver ativa e (`NVT_BUILD_DE_TESTE` != `1` ou `CI`/`GITHUB_ACTIONS` definidos); `lib.rs` tem `compile_error!` equivalente para `all(feature = "medicao-partidas", not(nvt_build_de_teste))` com o cfg emitido pelo `build.rs`. | Teste de build: `cargo check --features medicao-partidas` sem a variável falha (script em `scripts/`). |
 | R-B-03 | Build de teste mostra "Build de teste" na barra de título e a versão com sufixo `+teste`. O MSI de teste é gerado à parte, com nome `nv-tuner-<versão>-teste.msi`, e nunca publicado. | Teste de texto; inspeção do MSI. |
 | R-B-04 | `proibicoes.rs`: exceção única nova `("crates/nvt-ui/src/abrir.rs", "ShellExecuteW", 1)` e teste que exige a constante literal `ms-settings:startupapps` como único argumento de URI. Nenhum outro termo novo permitido. Termos novos proibidos fora de `nvt-medicao`: `StartTraceW`, `EnableTraceEx2`, `OpenTraceW`, `ProcessTrace`, `ControlTraceW`; proibidos em todo lugar: `SystemTraceControlGuid`, `KERNEL_LOGGER_NAME`, `EtwMaxLoggers`. | Teste. |
@@ -185,8 +190,9 @@ Linha de estado (uma por vez, por prioridade):
 |---|---|---|---|
 | 1 | Protocolo incompatível | "O nv-tuner foi atualizado. Feche esta janela e abra de novo." | nenhuma |
 | 2 | Serviço ausente | "O nv-tuner não está ativo neste PC. Mostrando só informações." | nenhuma |
+| 3a | Atualização concluída (versão mudou desde a última abertura; some ao trocar de tela) | "O nv-tuner foi atualizado." | nenhuma |
 | 3 | Jogo aberto | "<Nome do jogo> está aberto. As mudanças esperam o jogo fechar." | nenhuma |
-| 4 | Atualização pronta ou instalando | "Uma atualização do nv-tuner será instalada quando nenhum jogo estiver aberto." | nenhuma |
+| 4 | Atualização pronta ou instalando (falha não aparece aqui) | "Uma atualização do nv-tuner será instalada quando nenhum jogo estiver aberto." | nenhuma |
 | 5 | Agente ausente | "Parte dos ajustes do Windows está pausada até você entrar de novo no Windows." | nenhuma |
 
 Códigos de falha (HTTP, assinatura, 3010) só aparecem em Avançado > Atualização.
@@ -219,6 +225,10 @@ Início
         [ Aplicar melhorias recomendadas ]  [ Desfazer tudo ]
   "Algo piorou: pouco espaço livre" / "Restam 12 GB no disco do Windows."
   "O nv-tuner não está ativo" / "Reinstale o nv-tuner para que ele volte a cuidar do PC."
+  "Há mudanças esperando o jogo fechar" / "Nada é mexido enquanto você joga."
+  "Os ajustes estão desligados" / "Você pediu para desfazer tudo."  [ Voltar a ajustar ]
+  "Não encontramos uma placa de vídeo NVIDIA" / "O nv-tuner só ajusta PCs com placa NVIDIA."
+  "Não há nada a ajustar neste PC agora." (só com Desfazer tudo)
 
 Seus jogos                                                 > Ver todos
   Counter-Strike 2        Otimizado
@@ -241,7 +251,7 @@ Saúde do PC
 Regras: "quadros por segundo" por extenso; "Placa de vídeo" no lugar de GPU. Só a linha de
 inicialização tem botão; os outros sinais são texto, com o caminho do Windows quando
 houver ação manual. Se nenhum sinal estiver em atenção, a seção vira uma linha única
-"Tudo certo com a saúde do PC", expansível.
+"Tudo certo com a saúde do PC", expansível. Sem resposta de `ObterSaude` (`RecursoAusente`, como na v0.3.0) a seção não aparece; "Verificando o PC" só enquanto a primeira resposta não chega.
 
 Confirmação de "Desfazer tudo":
 
@@ -286,7 +296,7 @@ equivalente da v0.2.0, com textos revisados (sigla por extenso na primeira vez):
 | Jogos (técnico) | Tabela atual com API, DLSS, anticheat, Arquivo do jogo | Reverter chave |
 | Preferências | Sincronismo, Qualidade visual, Limite de quadros, com "Recomendado para seu monitor" pré-marcado | Salvar, Descartar |
 | Inicialização | Lista completa por fonte, novo/mudou, data de detecção | Marcar como visto, Abrir inicialização |
-| Manutenção | Última passada da limpeza (modo, data, contagens, bytes); tamanhos informativos de Lixeira, caches de sombreamento ("não apague: os jogos ficam mais lentos até o cache se refazer") e Windows Update | nenhuma |
+| Manutenção | Última passada da limpeza (modo, data, contagens, bytes) | nenhuma |
 | Atualização | Cartão atual, com códigos | Verificar agora |
 | Histórico técnico | Tela Histórico atual | nenhuma |
 | Desfazer tudo | Tela Restaurar original | Desfazer tudo |
@@ -477,20 +487,20 @@ O redesenho sai em L1–L2 e pode ser publicado sozinho como v0.3.0, antes da sa
 
 | Tarefa | Arquivos de escrita | Pronto quando |
 |---|---|---|
-| Tema e estrutura | `crates/nvt-ui/src/tema.rs`, `crates/nvt-ui/src/main.rs`, `crates/nvt-ui/src/ui/mod.rs`, `crates/nvt-ui/src/ui/estrutura.rs` | Lateral com Início/Jogos/Avançado e ícones distintos; linha de estado única; Segoe UI Variable; ciano; tema do sistema; testes de R-UI-01 e R-UI-10. |
+| Tema e estrutura | `crates/nvt-ui/src/tema.rs`, `crates/nvt-ui/src/main.rs`, `crates/nvt-ui/src/ui.rs` (movido para `ui/legado.rs`: `ui.rs` e `ui/mod.rs` não coexistem), `crates/nvt-ui/src/ui/mod.rs`, `crates/nvt-ui/src/ui/estrutura.rs`, `crates/nvt-ui/src/ui/legado.rs`, `crates/nvt-ui/Cargo.toml` (declara a feature `medicao-partidas` vazia, para os `#[cfg]` passarem no Clippy) | Lateral com Início/Jogos/Avançado e ícones distintos; linha de estado única; Segoe UI Variable; ciano; tema do sistema; testes de R-UI-01 e R-UI-10. |
 | Modelo puro | `crates/nvt-ui/src/modelo.rs`, `crates/nvt-ui/src/modelo/` | `veredito`, `linha_estado`, `status_jogo` com tabelas de casos (R-UI-02, R-UI-05, R-UI-12). |
 | Textos | `crates/nvt-ui/src/textos.rs` (migrado para `textos/mod.rs`), `crates/nvt-ui/src/textos/` | Textos de §5 revisados; R-UI-03, R-UI-04 e R-UI-14 verdes. |
-| IPC v8 | `crates/nvt-ipc/` | DTOs de §7.6 com validação e limites; v7 recusada; testes de envelope e de campos (R-S-03). |
+| IPC v8 | `crates/nvt-ipc/`, `crates/nvt-service/src/nucleo.rs`, `crates/nvt-agente/src/ciclo.rs` | DTOs de §7.6 com validação e limites; v7 recusada; testes de envelope e de campos (R-S-03). `AgenteRelatar.saude` é `Option` com `#[serde(default)]`; requisições novas respondem `Erro { RecursoAusente }` em `nucleo.rs` até serem implementadas, para o workspace compilar ao fim do lote. |
 | Proibições e inventário | `crates/nvt-core/tests/proibicoes.rs`, `crates/nvt-core/tests/inventario_ui.rs` | Termos de §8.3 vigiados, com levantamento dos usos atuais; exceção de `abrir.rs` declarada com teste da constante. |
 
 ### L2 — telas do redesenho e recomendadas
 
 | Tarefa | Arquivos de escrita | Pronto quando |
 |---|---|---|
-| Início e boas-vindas | `crates/nvt-ui/src/ui/inicio.rs`, `crates/nvt-ui/src/ui/boas_vindas.rs`, `crates/nvt-ui/src/local.rs`, `crates/nvt-ui/src/abrir.rs` | R-UI-06, R-UI-07, R-UI-09, R-UI-14; saúde vazia mostra "Verificando o PC"; bloqueio de `abrir.rs` testado (R-S-04). |
+| Início e boas-vindas | `crates/nvt-ui/src/ui/inicio.rs`, `crates/nvt-ui/src/ui/boas_vindas.rs`, `crates/nvt-ui/src/local.rs` | Todas as variações de R-UI-02; R-UI-06, R-UI-07, R-UI-09, R-UI-14; sem saúde a seção não aparece. |
 | Jogos | `crates/nvt-ui/src/ui/jogos.rs`, `crates/nvt-ui/src/arquivo_jogo.rs` | Lista e detalhe (R-UI-12). |
-| Avançado | `crates/nvt-ui/src/ui/avancado.rs`, `crates/nvt-ui/src/ui.rs` (removido ao migrar) | Grupos de §5.5, menos Inicialização, Manutenção e Métricas; R-UI-08 verde. |
-| Recomendadas no serviço | `crates/nvt-service/src/recomendadas.rs`, `crates/nvt-service/src/nucleo.rs`, `crates/nvt-service/src/testes.rs` | R-AR-01 a R-AR-04 com fachadas falsas. |
+| Avançado | `crates/nvt-ui/src/ui/avancado.rs`, `crates/nvt-ui/src/ui/legado.rs` (removido ao migrar) | Grupos de §5.5, menos Inicialização, Manutenção e Métricas; R-UI-08 verde. |
+| Recomendadas no serviço | `crates/nvt-service/src/recomendadas.rs`, `crates/nvt-service/src/nucleo.rs`, `crates/nvt-service/src/testes.rs` | R-AR-01 a R-AR-06 com fachadas falsas. |
 | Cliente e integração (responsável pelo lockfile) | `crates/nvt-ui/src/servico.rs`, `crates/nvt-ui/Cargo.toml`, `Cargo.lock` | Chamadas v8 e `RecursoAusente`; testes, fmt, Clippy e build do workspace verdes; capturas novas (R-UI-13). |
 
 ### L3 — saúde: leituras e limpeza
@@ -499,22 +509,23 @@ O redesenho sai em L1–L2 e pode ser publicado sozinho como v0.3.0, antes da sa
 |---|---|---|
 | Leituras Windows | `crates/nvt-windows/src/saude.rs`, `crates/nvt-windows/src/saude/`, `crates/nvt-windows/src/lib.rs`, `crates/nvt-windows/Cargo.toml` | R-S-01 e R-S-05 por traits só de leitura; testes de fachada e de indisponibilidade. |
 | Manutenção | `crates/nvt-manutencao/` (novo) | R-L-02 a R-L-07 e R-L-09; testes de junção, arquivo em uso e `Simulacao` byte a byte. |
-| Saúde no agente | `crates/nvt-agente/src/saude.rs`, `crates/nvt-agente/src/saude/`, `crates/nvt-agente/src/ciclo.rs`, `crates/nvt-agente/src/ciclo_testes.rs` | R-S-02, R-S-07, sinais de sessão e limpeza de `%TEMP%` com portão; relato em `AgenteRelatar.saude`. |
-| Saúde no serviço | `crates/nvt-service/src/saude.rs`, `crates/nvt-service/src/saude_testes.rs`, `crates/nvt-service/src/laco.rs`, `crates/nvt-service/src/usuario.rs`, `crates/nvt-service/src/usuario_testes.rs` | Sinais de máquina; limpeza de `C:\Windows\Temp` com portão e mutex MSI; `ObterSaude` por SID; `MarcarInicioVisto`. |
+| Saúde no agente | `crates/nvt-agente/src/saude.rs`, `crates/nvt-agente/src/saude/`, `crates/nvt-agente/src/ciclo.rs`, `crates/nvt-agente/src/ciclo_testes.rs`, `crates/nvt-agente/Cargo.toml` | R-S-02, R-S-07, sinais de sessão e limpeza de `%TEMP%` com portão; relato em `AgenteRelatar.saude`. |
+| Saúde no serviço | `crates/nvt-service/src/saude.rs`, `crates/nvt-service/src/saude_testes.rs`, `crates/nvt-service/src/laco.rs`, `crates/nvt-service/src/usuario.rs`, `crates/nvt-service/src/usuario_testes.rs`, `crates/nvt-service/src/nucleo.rs`, `crates/nvt-service/Cargo.toml` | Sinais de máquina; limpeza de `C:\Windows\Temp` com portão e mutex MSI; `ObterSaude` por SID; `MarcarInicioVisto`. |
+| Integração L3 (responsável pelo lockfile) | `Cargo.lock` | Atualizado depois das tarefas acima (o workspace já inclui `crates/*`); testes, fmt, Clippy e build verdes. |
 
 ### L4 — saúde na UI e integração
 
 | Tarefa | Arquivos de escrita | Pronto quando |
 |---|---|---|
-| UI de saúde | `crates/nvt-ui/src/ui/inicio.rs`, `crates/nvt-ui/src/ui/avancado.rs`, `crates/nvt-ui/src/textos/saude.rs` | Saúde no Início; grupos Inicialização e Manutenção; R-S-06 e R-L-08. |
-| Integração (responsável pelo lockfile) | `Cargo.toml`, `Cargo.lock`, `crates/nvt-service/Cargo.toml`, `crates/nvt-agente/Cargo.toml`, `crates/nvt-service/src/main.rs` | Workspace com `nvt-manutencao`; testes, fmt, Clippy e build verdes; teste afirma `MODO_LIMPEZA = Desligada` no build normal. |
+| UI de saúde | `crates/nvt-ui/src/ui/inicio.rs`, `crates/nvt-ui/src/ui/avancado.rs`, `crates/nvt-ui/src/textos/saude.rs`, `crates/nvt-ui/src/abrir.rs` | Saúde no Início; grupos Inicialização e Manutenção; R-S-06 e R-L-08; bloqueio de `abrir.rs` testado (R-S-04). |
+| Integração (responsável pelo lockfile) | `Cargo.lock`, `crates/nvt-service/src/main.rs` | Workspace com `nvt-manutencao`; testes, fmt, Clippy e build verdes; teste afirma `MODO_LIMPEZA = Desligada` no build normal. |
 
 ### L5 — medição (só build de teste)
 
 | Tarefa | Arquivos de escrita | Pronto quando |
 |---|---|---|
 | Crate de medição | `crates/nvt-medicao/` (novo) | Trava de §8.4 itens 1 e 2 com verificação por script; agregação, engasgo, 1% low, retenção e formato (R-M-04 a R-M-07) testados sem ETW; ETW e NVML atrás de fachada. |
-| Serviço | `crates/nvt-service/src/partidas.rs`, `crates/nvt-service/Cargo.toml`, `crates/nvt-service/src/laco.rs` | Feature propagada; sessão ligada ao laço; `ListarPartidas`, `ObterPartida`, `ApagarPartidas`; sem a feature, `RecursoAusente` testado. |
+| Serviço e agente | `crates/nvt-service/src/partidas.rs`, `crates/nvt-service/Cargo.toml`, `crates/nvt-service/src/laco.rs`, `crates/nvt-agente/Cargo.toml`, `crates/nvt-manutencao/Cargo.toml` | Feature propagada; sessão ligada ao laço; `ListarPartidas`, `ObterPartida`, `ApagarPartidas`; sem a feature, `RecursoAusente` testado. |
 | UI de partidas | `crates/nvt-ui/src/ui/partidas.rs`, `crates/nvt-ui/src/textos/partidas.rs`, `crates/nvt-ui/Cargo.toml` | Tela §5.6 e grupo Métricas sob `#[cfg]`; marcador "Build de teste". |
 | Release e build de teste (responsável pelo lockfile) | `.github/workflows/release.yml`, `scripts/build-teste.ps1`, `instalador/build-msi.ps1`, `Cargo.toml`, `Cargo.lock` | Passo de §8.4 item 3; script gera binários e MSI `-teste`; ensaio local mostra o passo falhando com a feature ativa e passando sem ela. |
 
@@ -529,8 +540,8 @@ O redesenho sai em L1–L2 e pode ser publicado sozinho como v0.3.0, antes da sa
 
 ### 10.1 Lab-UI
 
-Capturas de todas as telas e estados da linha em 1200x800 e 1920x1080, tema claro e
-escuro. Teste com três pessoas leigas, sem instrução: responder "seu PC está bem?" e
+Capturas de todas as telas, variações do veredito e estados da linha em 1200x800 e
+1920x1080. Teste com três pessoas leigas, sem instrução: responder "seu PC está bem?" e
 "como desfazer o que o app fez?" em até 30 s cada.
 
 ### 10.2 Dry-run da limpeza (Lab-L)
@@ -589,5 +600,12 @@ tira aquele anticheat da gravação ou encerra o recurso.
 - Q6. `chart::LineChart` com 3.600 pontos: reduzir para um ponto a cada 10 s na tela?
 - Q7. Limiares de "Atenção" para memória (proposta: > 85% comprometida) e CPU em repouso
   (> 15% em 5 min) precisam de calibração.
+- Q9. (Decidida: D7.) "Desfazer tudo" deve também retirar os aceites feitos por "Aplicar melhorias
+  recomendadas"? Hoje (R-AR-06) volta ao original e pausa, mas "Voltar a ajustar" reaplica
+  os aceites. Alternativa: `RestaurarOriginal` limpa os aceites experimentais do SID.
+- Q10. (Decidida: D8.) A v0.3.0 (só redesenho) já leva IPC v8 com `ObterSaude` e afins respondidos
+  `RecursoAusente`, evitando nova troca de protocolo depois. Alternativa: v0.3.0 em v7.
+- Q11. (Decidida: D9.) Dry-run da limpeza depende da feature de medição (`build-de-teste` só ligada por
+  `medicao-partidas`): validar a limpeza exige o build com gravação. Separar as duas travas?
 - Q8. Com a limpeza `Ativa`, o Início cita o espaço liberado só acima de 1 GB? Proposta:
   sim.

@@ -49,6 +49,21 @@ const PROIBIDOS: &[&str] = &[
     "ShellExecuteExW",
     "ShellExecuteExA",
     "WinExec",
+    // §8.3 (docs/spec/interface-e-saude.md): sessão ETW só no módulo de medição.
+    "StartTraceW",
+    "EnableTraceEx2",
+    "OpenTraceW",
+    "ProcessTrace",
+    "ControlTraceW",
+    // §8.3: logger de kernel e esgotamento de sessões, proibidos em todo lugar.
+    "SystemTraceControlGuid",
+    "KERNEL_LOGGER_NAME",
+    "EtwMaxLoggers",
+    // §8.3: exclusão de arquivo pela API Win32 só nos módulos autorizados. Levantamento
+    // do L1: nenhum uso em código de produção (as exclusões atuais usam `std::fs`).
+    "DeleteFileW",
+    "RemoveDirectoryW",
+    "FileDispositionInfoEx",
 ];
 
 /// Exceções exatas (docs/spec/atualizacao.md §9.6, U-29): (arquivo relativo à raiz,
@@ -65,6 +80,27 @@ const PERMITIDOS: &[(&str, &str, usize)] = &[
         "CreateProcessAsUserW",
         1,
     ),
+    // D3 (docs/spec/interface-e-saude.md): abrir `ms-settings:startupapps`. O arquivo
+    // nasce no L4, que muda a contagem para 1; até lá, criar o arquivo com o termo falha.
+    ("crates/nvt-ui/src/abrir.rs", "ShellExecuteW", 0), // L4
+    // §8.3: sessão ETW da medição; contagens fixadas no L5, quando o arquivo nascer.
+    ("crates/nvt-medicao/src/etw.rs", "StartTraceW", 0), // L5
+    ("crates/nvt-medicao/src/etw.rs", "EnableTraceEx2", 0), // L5
+    ("crates/nvt-medicao/src/etw.rs", "OpenTraceW", 0),  // L5
+    ("crates/nvt-medicao/src/etw.rs", "ProcessTrace", 0), // L5
+    ("crates/nvt-medicao/src/etw.rs", "ControlTraceW", 0), // L5
+    // §8.3: exclusão da limpeza de temporários; contagens fixadas no L3.
+    ("crates/nvt-manutencao/src/windows.rs", "DeleteFileW", 0), // L3
+    (
+        "crates/nvt-manutencao/src/windows.rs",
+        "RemoveDirectoryW",
+        0,
+    ), // L3
+    (
+        "crates/nvt-manutencao/src/windows.rs",
+        "FileDispositionInfoEx",
+        0,
+    ), // L3
 ];
 
 const DIRETORIOS_EXCLUIDOS: &[&str] = &["tests", "examples", "benches"];
@@ -420,6 +456,78 @@ fn lancador_usa_msiexec_da_pasta_de_sistema() {
     assert!(
         contem_palavra(&codigo, "GetSystemDirectoryW"),
         "lancador.rs deve montar o caminho por GetSystemDirectoryW"
+    );
+}
+
+/// D3: quando `abrir.rs` existir, o único URI aberto é a constante literal
+/// `ms-settings:startupapps` (nenhum argumento vindo de dados).
+#[test]
+fn abrir_usa_so_a_constante_de_inicializacao() {
+    let caminho = raiz_workspace().join("crates/nvt-ui/src/abrir.rs");
+    let Ok(fonte) = fs::read_to_string(&caminho) else {
+        return; // L4: o arquivo ainda não existe.
+    };
+    conferir_abrir(&fonte).unwrap_or_else(|e| panic!("abrir.rs: {e}"));
+}
+
+fn conferir_abrir(fonte: &str) -> Result<(), String> {
+    let linhas = lexer(fonte);
+    let excluida = linhas_de_teste(&linhas);
+    let codigo: String = linhas
+        .into_iter()
+        .zip(excluida)
+        .filter(|(_, ex)| !ex)
+        .map(|(l, _)| l.busca + "\n")
+        .collect();
+    let literal = "\"ms-settings:startupapps\"";
+    if codigo.matches(literal).count() != 1 {
+        return Err(format!("{literal} deve aparecer exatamente uma vez"));
+    }
+    if codigo.matches("ms-settings:").count() != 1 {
+        return Err("nenhum outro URI `ms-settings:` é permitido".into());
+    }
+    let declarada = codigo.lines().any(|l| {
+        let l = l.trim_start();
+        let l = l.strip_prefix("pub(crate) ").unwrap_or(l);
+        let l = l.strip_prefix("pub ").unwrap_or(l);
+        l.starts_with("const ") && l.contains(literal)
+    });
+    if !declarada {
+        return Err(format!("{literal} deve ser uma constante (`const`)"));
+    }
+    Ok(())
+}
+
+#[test]
+fn conferencia_de_abrir() {
+    let ok = "const URI: &str = \"ms-settings:startupapps\";\nfn f() { ShellExecuteW(URI); }\n";
+    assert!(conferir_abrir(ok).is_ok());
+    let dois = concat!(
+        "const URI: &str = \"ms-settings:startupapps\";\n",
+        "const B: &str = \"ms-settings:storagesense\";\n",
+    );
+    assert!(conferir_abrir(dois).is_err());
+    let sem_const = "fn f() { ShellExecuteW(\"ms-settings:startupapps\"); }\n";
+    assert!(conferir_abrir(sem_const).is_err());
+    let comentado = "// \"ms-settings:startupapps\"\nfn f(u: &str) { ShellExecuteW(u); }\n";
+    assert!(conferir_abrir(comentado).is_err());
+}
+
+#[test]
+fn termos_de_etw_e_exclusao_sao_vigiados() {
+    let fonte = concat!(
+        "StartTraceW(a); ProcessTraceX();\n",
+        "let g = SystemTraceControlGuid;\n",
+        "DeleteFileW(p); RemoveDirectoryW(q);\n",
+    );
+    assert_eq!(
+        termos(fonte),
+        vec![
+            (1, "StartTraceW"),
+            (2, "SystemTraceControlGuid"),
+            (3, "DeleteFileW"),
+            (3, "RemoveDirectoryW"),
+        ]
     );
 }
 

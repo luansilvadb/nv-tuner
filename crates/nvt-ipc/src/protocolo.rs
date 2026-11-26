@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config_jogo::{ConfigJogoUi, DestinoJogoIpc, ResultadoJogo};
+use crate::saude::{FonteInicio, PARTIDAS_MAX, Partida, ResumoPartida, Saude, SaudeSessao};
 
 use crate::usuario::{
     Camada, Diagnostico, EstadoAgente, EstadoExperimental, EstadoTarefa, FatosUsuario,
@@ -78,6 +79,9 @@ pub enum Requisicao {
         /// Resultados das ações de arquivo de jogo (v7).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         resultados_jogo: Vec<ResultadoJogo>,
+        /// Saúde lida na sessão do usuário (v8); ausente = sem leitura nova.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        saude: Option<SaudeSessao>,
     },
     DefinirAceiteExperimental {
         regra: String,
@@ -98,6 +102,29 @@ pub enum Requisicao {
     MarcarAtualizacaoVista {
         versao: String,
     },
+    /// Aceita, para o SID chamador, todas as experimentais aplicáveis numa
+    /// única gravação (v8, R-AR). Resposta [`Resposta::Recomendadas`].
+    AplicarRecomendadas,
+    /// Sinais, inicialização e limpeza do SID chamador e da máquina (v8).
+    /// Resposta [`Resposta::Saude`].
+    ObterSaude,
+    /// Incorpora o programa `(fonte, nome)` à linha de base (v8); o agente
+    /// busca o pedido na próxima consulta.
+    MarcarInicioVisto {
+        fonte: FonteInicio,
+        nome: String,
+    },
+    /// Resumos de partidas do SID chamador (v8, só `medicao-partidas`).
+    ListarPartidas {
+        desde_unix: u64,
+        limite: u32,
+    },
+    /// Resumo e amostras de uma partida do SID chamador (v8).
+    ObterPartida {
+        id: u64,
+    },
+    /// Apaga as partidas do SID chamador (v8).
+    ApagarPartidas,
 }
 
 impl Requisicao {
@@ -138,9 +165,13 @@ impl Requisicao {
             Self::AgenteRelatar {
                 resultados,
                 resultados_jogo,
+                saude,
                 ..
             } => {
                 crate::config_jogo::validar_resultados_jogo(resultados_jogo)?;
+                if let Some(saude) = saude {
+                    saude.validar()?;
+                }
                 if resultados.len() > 256 {
                     return Err("muitos resultados da tarefa".into());
                 }
@@ -173,6 +204,10 @@ impl Requisicao {
             }
             Self::ReverterConfigJogo { destino } => destino.validar(),
             Self::MarcarAtualizacaoVista { versao } => validar_versao(versao),
+            Self::MarcarInicioVisto { nome, .. } => crate::saude::validar_nome_inicio(nome),
+            Self::ListarPartidas { limite, .. } if !(1..=PARTIDAS_MAX).contains(limite) => {
+                Err(format!("limite deve estar entre 1 e {PARTIDAS_MAX}"))
+            }
             _ => Ok(()),
         }
     }
@@ -260,7 +295,8 @@ pub struct Preferencias {
 // ---------------------------------------------------------------------------
 
 /// Resposta enviada pelo serviço à UI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Sem `Eq`: `Partida` carrega métricas em `f32`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "tipo", rename_all = "snake_case")]
 // `Estado` é a maior variante, mas a resposta é criada uma vez por pedido e
 // serializada em seguida; `Box` só espalharia alocações pelo serviço e pela UI.
@@ -286,6 +322,19 @@ pub enum Resposta {
         adiamento: Adiamento,
     },
     PlanoAgente(PlanoAgente),
+    /// Resposta de `AplicarRecomendadas` (v8).
+    Recomendadas {
+        aceitas: Vec<String>,
+        adiada: bool,
+    },
+    /// Resposta de `ObterSaude` (v8).
+    Saude(Saude),
+    /// Resposta de `ListarPartidas` (v8).
+    Partidas {
+        resumos: Vec<ResumoPartida>,
+    },
+    /// Resposta de `ObterPartida` (v8).
+    Partida(Partida),
     Encerrar,
     Ok,
     Erro {
@@ -331,6 +380,8 @@ pub enum CodigoErro {
     Ocupado,
     /// Falha interna do serviço.
     Interno,
+    /// Recurso ausente neste build ou ainda não implementado (v8).
+    RecursoAusente,
 }
 
 /// Resumo do estado do serviço e do sistema.
@@ -1096,6 +1147,7 @@ mod testes {
             consulta(),
             Requisicao::AgenteRelatar {
                 resultados_jogo: vec![],
+                saude: None,
                 id_tarefa: 1,
                 operacao: OperacaoUsuario::Aplicar,
                 revisao: 7,
@@ -1126,6 +1178,18 @@ mod testes {
             Requisicao::ReverterConfigJogo {
                 destino: crate::config_jogo::testes::destino(),
             },
+            Requisicao::AplicarRecomendadas,
+            Requisicao::ObterSaude,
+            Requisicao::MarcarInicioVisto {
+                fonte: crate::FonteInicio::Tarefa,
+                nome: "OneDrive Reporting".into(),
+            },
+            Requisicao::ListarPartidas {
+                desde_unix: 0,
+                limite: PARTIDAS_MAX,
+            },
+            Requisicao::ObterPartida { id: 1 },
+            Requisicao::ApagarPartidas,
             Requisicao::MarcarAtualizacaoVista {
                 versao: "1.4.0".into(),
             },
@@ -1146,7 +1210,13 @@ mod testes {
                 | Requisicao::DefinirAceiteExperimental { .. }
                 | Requisicao::ReverterAjusteUsuario { .. }
                 | Requisicao::ReverterConfigJogo { .. }
-                | Requisicao::MarcarAtualizacaoVista { .. } => {}
+                | Requisicao::MarcarAtualizacaoVista { .. }
+                | Requisicao::AplicarRecomendadas
+                | Requisicao::ObterSaude
+                | Requisicao::MarcarInicioVisto { .. }
+                | Requisicao::ListarPartidas { .. }
+                | Requisicao::ObterPartida { .. }
+                | Requisicao::ApagarPartidas => {}
             }
         }
         v
@@ -1477,6 +1547,16 @@ mod testes {
                 }),
                 processos_vigiados: ["cs2.exe".into()].into(),
             }),
+            Resposta::Recomendadas {
+                aceitas: vec!["sincronismo-gsync-limite".into()],
+                adiada: true,
+            },
+            Resposta::Saude(crate::saude::testes::saude()),
+            Resposta::Partidas {
+                resumos: vec![crate::saude::testes::partida().resumo],
+            },
+            Resposta::Partida(crate::saude::testes::partida()),
+            Resposta::erro(CodigoErro::RecursoAusente, "ainda não implementado"),
             Resposta::Encerrar,
             Resposta::Ok,
             Resposta::erro(CodigoErro::SettingNaoPermitida, "setting fora da lista"),
@@ -1489,6 +1569,10 @@ mod testes {
                 | Resposta::Restauracao { .. }
                 | Resposta::Adiada { .. }
                 | Resposta::PlanoAgente(_)
+                | Resposta::Recomendadas { .. }
+                | Resposta::Saude(_)
+                | Resposta::Partidas { .. }
+                | Resposta::Partida(_)
                 | Resposta::Encerrar
                 | Resposta::Ok
                 | Resposta::Erro { .. } => {}
@@ -1630,9 +1714,10 @@ mod testes {
     }
 
     #[test]
-    fn mensagens_da_v4_v5_e_v6_sao_recusadas() {
+    fn mensagens_da_v4_a_v7_sao_recusadas() {
         for (versao, payload) in [
-            (6, &br#"{"versao":6,"corpo":{"tipo":"obter_estado"}}"#[..]),
+            (7, &br#"{"versao":7,"corpo":{"tipo":"obter_estado"}}"#[..]),
+            (6, br#"{"versao":6,"corpo":{"tipo":"obter_estado"}}"#),
             (6, br#"{"versao":6,"corpo":{"tipo":"ok"}}"#),
             (6, br#"{"versao":6,"corpo":{"tipo":"formatar_disco"}}"#),
             (4, br#"{"versao":4,"corpo":{"tipo":"obter_estado"}}"#),
@@ -1646,7 +1731,7 @@ mod testes {
                 decodificar::<Requisicao>(payload),
                 Err(crate::ErroIpc::VersaoIncompativel {
                     recebida,
-                    esperada: 7
+                    esperada: 8
                 }) if recebida == versao
             ));
             assert!(matches!(
@@ -1855,10 +1940,10 @@ mod testes {
         .unwrap();
         assert_eq!(
             json,
-            r#"{"versao":7,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
+            r#"{"versao":8,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
         );
         let json = String::from_utf8(codificar(&Resposta::Ok).unwrap()).unwrap();
-        assert_eq!(json, r#"{"versao":7,"corpo":{"tipo":"ok"}}"#);
+        assert_eq!(json, r#"{"versao":8,"corpo":{"tipo":"ok"}}"#);
     }
 
     #[test]
@@ -1954,6 +2039,36 @@ mod testes {
             assert_eq!(r.validar(), Ok(()), "{r:?}");
         }
         let invalidas = [
+            Requisicao::MarcarInicioVisto {
+                fonte: crate::FonteInicio::RunUsuario,
+                nome: r"C:\Users\fulano\app".into(),
+            },
+            Requisicao::MarcarInicioVisto {
+                fonte: crate::FonteInicio::RunUsuario,
+                nome: String::new(),
+            },
+            Requisicao::ListarPartidas {
+                desde_unix: 0,
+                limite: 0,
+            },
+            Requisicao::ListarPartidas {
+                desde_unix: 0,
+                limite: PARTIDAS_MAX + 1,
+            },
+            Requisicao::AgenteRelatar {
+                resultados_jogo: vec![],
+                saude: Some(crate::SaudeSessao {
+                    inicializacao: vec![crate::ProgramaInicio {
+                        executavel: r"C:\Users\fulano\a.exe".into(),
+                        ..crate::saude::testes::programa()
+                    }],
+                    ..Default::default()
+                }),
+                id_tarefa: 1,
+                operacao: OperacaoUsuario::Aplicar,
+                revisao: 1,
+                resultados: vec![],
+            },
             Requisicao::MarcarAtualizacaoVista {
                 versao: String::new(),
             },
@@ -1978,6 +2093,7 @@ mod testes {
             },
             Requisicao::AgenteRelatar {
                 resultados_jogo: vec![],
+                saude: None,
                 id_tarefa: 1,
                 operacao: OperacaoUsuario::Aplicar,
                 revisao: 7,

@@ -256,11 +256,15 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
             CodigoErro::VersaoIncompativel,
         ),
         (
+            br#"{"versao":7,"corpo":{"tipo":"obter_estado"}}"#.as_slice(),
+            CodigoErro::VersaoIncompativel,
+        ),
+        (
             br#"{"versao":6,"corpo":{"tipo":"executar","cmd":"x"}}"#.as_slice(),
             CodigoErro::VersaoIncompativel,
         ),
         (
-            br#"{"versao":7,"corpo":{"tipo":"executar","cmd":"x"}}"#.as_slice(),
+            br#"{"versao":8,"corpo":{"tipo":"executar","cmd":"x"}}"#.as_slice(),
             CodigoErro::MensagemInvalida,
         ),
     ] {
@@ -270,7 +274,7 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
         assert!(matches!(r, Resposta::Erro { codigo: recebido, .. } if recebido == codigo));
     }
     assert_eq!(s.pedir(&Requisicao::ObterPlano), Resposta::Ok);
-    assert_eq!(PROTOCOL_VERSION, 7);
+    assert_eq!(PROTOCOL_VERSION, 8);
     s.parar();
 }
 
@@ -686,6 +690,7 @@ fn ui_intercalada_com_dois_agentes_em_conexoes_curtas() {
                 assert_eq!(
                     pedir(Requisicao::AgenteRelatar {
                         resultados_jogo: vec![],
+                        saude: None,
                         id_tarefa,
                         operacao: OperacaoUsuario::Aplicar,
                         revisao: plano.revisao,

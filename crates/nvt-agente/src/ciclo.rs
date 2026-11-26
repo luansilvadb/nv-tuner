@@ -678,6 +678,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             revisao: t.tarefa.revisao,
             resultados: t.resultados.clone(),
             resultados_jogo: t.resultados_jogo.clone(),
+            saude: None,
         };
         match self.agente.transporte.trocar(&req)? {
             Resposta::Encerrar => return Ok(Controle::Encerrar),

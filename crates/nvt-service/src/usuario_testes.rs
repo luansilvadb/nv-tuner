@@ -87,6 +87,7 @@ fn relato(
     } = tarefa.tarefa;
     Requisicao::AgenteRelatar {
         resultados_jogo: vec![],
+        saude: None,
         id_tarefa,
         operacao,
         revisao,
@@ -516,6 +517,7 @@ fn relatar(
     } = t.tarefa;
     let req = Requisicao::AgenteRelatar {
         resultados_jogo: vec![],
+        saude: None,
         id_tarefa,
         operacao,
         revisao,
@@ -871,6 +873,7 @@ fn relato_jogo(tarefa: &TarefaJogo, resultados: Vec<ResultadoJogo>) -> Requisica
         revisao,
         resultados: vec![],
         resultados_jogo: resultados,
+        saude: None,
     }
 }
 

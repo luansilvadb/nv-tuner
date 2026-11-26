@@ -28,3 +28,8 @@ embed-resource = "3"
 
 [lints]
 workspace = true
+
+[features]
+# Gravação de partidas (build de teste; spec interface-e-saude.md D1). Vazia
+# no L1: só declara a feature para os `#[cfg]` da UI.
+medicao-partidas = []

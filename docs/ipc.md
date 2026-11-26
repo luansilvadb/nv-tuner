@@ -78,7 +78,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 ## Envelope e versão
 
 ```json
-{"versao": 7, "corpo": { "tipo": "...", ... }}
+{"versao": 8, "corpo": { "tipo": "...", ... }}
 ```
 
 - `versao` é conferida **antes** de interpretar `corpo`. Versão diferente de
@@ -113,6 +113,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | 5 | Fase 2 (camada Windows, decisão D6): identidade do cliente pelo token; requisições `agente_consultar`, `agente_relatar`, `definir_aceite_experimental` e `reverter_ajuste_usuario`; respostas `plano_agente` e `encerrar`; `estado.agente` e `estado.diagnosticos`; `plano.sistema` (`ResumoSistema`) e `plano.sugestoes_driver`; erro `identidade_indisponivel`. Mensagens v4 são recusadas antes de desserializar o corpo |
 | 6 | Atualização automática (`docs/spec/atualizacao.md` §8.6 e §10): `estado.atualizacao` (`EstadoAtualizacao`); requisição `marcar_atualizacao_vista`; erro `entrada_invalida`. Mensagens v5 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
 | 7 | Fase 3, arquivo de configuração de jogo (`docs/spec/fase3-plano.md`, L1-c): `fatos.config_jogo` em `agente_consultar`; `plano_agente.tarefa_jogo`; `agente_relatar.resultados_jogo`; requisição `reverter_config_jogo`; `jogo.config_jogo` no plano; motivos da Fase 3. Detalhes em “Arquivo de configuração de jogo (v7)”. Mensagens v6 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
+| 8 | Interface e saúde (`docs/spec/interface-e-saude.md` §7.6): requisições `aplicar_recomendadas`, `obter_saude`, `marcar_inicio_visto`, `listar_partidas`, `obter_partida`, `apagar_partidas`; respostas `recomendadas`, `saude`, `partidas`, `partida`; `agente_relatar.saude` (opcional); erro `recurso_ausente`. Detalhes em “Saúde do PC e partidas (v8)”. Mensagens v7 (e anteriores) são recusadas pelo envelope antes de desserializar o corpo |
 
 ## Requisições (`corpo.tipo`)
 
@@ -128,11 +129,17 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | `destravar_setting`     | `perfil`, `setting`                                        |
 | `reescanear_jogos`      | —                                                          |
 | `agente_consultar`      | `fatos` (fatos da sessão, diagnósticos de sessão e, opcional, `gestao[]`: por destino `destino`, `valores` — ajuste tipado com `antes` = valor de antes da gestão e `depois` = esperado; no refresh, `alvo` é o alvo da tela — e `travado`), `ultima_tarefa` (estado da última tarefa ou `null`), `geracao_restaurada` |
-| `agente_relatar`        | `id_tarefa`, `operacao`, `revisao`, `resultados[]` (`destino`, `status`, `detalhe`, `mudanca`) |
+| `agente_relatar`        | `id_tarefa`, `operacao`, `revisao`, `resultados[]` (`destino`, `status`, `detalhe`, `mudanca`), `resultados_jogo[]` (v7), `saude` (opcional, v8) |
 | `definir_aceite_experimental` | `regra` (ID), `aceito` (bool)                        |
 | `reverter_ajuste_usuario` | `destino` (setting de usuário tipada), `alvo_tela` (opcional, caminho estável do monitor) |
 | `marcar_atualizacao_vista` | `versao` (1 a 64 caracteres em `[A-Za-z0-9.+-]`); resposta `ok` (v6) |
 | `reverter_config_jogo` | `destino` (`DestinoJogoIpc`); reversão individual de uma chave de arquivo de jogo (v7) |
+| `aplicar_recomendadas` | —; aceita as experimentais aplicáveis do SID chamador numa única gravação; resposta `recomendadas` (v8) |
+| `obter_saude` | —; resposta `saude` (v8) |
+| `marcar_inicio_visto` | `fonte` (`FonteInicio`), `nome` (1 a 128 bytes, sem `\`, `/`, `:` nem controle); resposta `ok` (v8) |
+| `listar_partidas` | `desde_unix`, `limite` (1 a 200); resposta `partidas` (v8, só `medicao-partidas`) |
+| `obter_partida` | `id`; resposta `partida`, só do SID chamador (v8) |
+| `apagar_partidas` | —; apaga as do SID chamador; resposta `ok` (v8) |
 
 - `sincronismo`: `desligado` \| `v_sync` \| `g_sync`.
 - `qualidade`: `desempenho` \| `equilibrado` \| `qualidade`.
@@ -148,7 +155,7 @@ validação semântica (lista permitida, existência do perfil) é do serviço.
 Exemplo:
 
 ```json
-{"versao":7,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
+{"versao":8,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
 ```
 
 ## Respostas (`corpo.tipo`)
@@ -161,6 +168,10 @@ Exemplo:
 | `restauracao` | `adiada` (resposta de `restaurar_original`)                   |
 | `adiada`    | `adiamento` (resposta de `definir_preferencias`/`destravar_setting` aceitos com a aplicação pendente) |
 | `plano_agente` | `revisao`, `geracao_restauracao`, `tarefa` (ações tipadas ou `null`), `processos_vigiados` (resposta de `agente_consultar`) |
+| `recomendadas` | `aceitas[]` (IDs de regra), `adiada` (v8) |
+| `saude`     | `Saude` (v8) |
+| `partidas`  | `resumos[]` (`ResumoPartida`, v8) |
+| `partida`   | `resumo`, `amostras[]` (v8) |
 | `encerrar`  | instrui o agente a encerrar; o serviço atual não a emite (o SCM não distingue desinstalação de parada comum; ver `docs/servico.md`) |
 | `ok`        | —                                                               |
 | `erro`      | `codigo`, `mensagem`                                            |
@@ -425,6 +436,26 @@ hash fora do formato, rótulo não anonimizado e listas acima do limite são
 recusados por `Requisicao::validar`, `PlanoAgente::validar` e
 `ConfigJogoUi::validar`.
 
+### Saúde do PC e partidas (v8)
+
+DTOs em `crates/nvt-ipc/src/saude.rs`. Nenhum caminho, linha de comando,
+título de janela, nome de usuário, SID ou identificador de conta trafega.
+Todos usam `deny_unknown_fields`.
+
+| Tipo | Forma |
+|---|---|
+| `FonteInicio` | `run_usuario`, `run_once_usuario`, `run_maquina`, `run_once_maquina`, `run_maquina32`, `pasta_usuario`, `pasta_comum`, `tarefa` |
+| `ProgramaInicio` | `fonte`, `nome` (até 128 bytes), `executavel` (só o nome do arquivo, até 64 bytes), `habilitado` (`bool` ou `null`), `situacao` (`na_base`, `novo`, `mudou`), `detectado_unix`; `nome` e `executavel` recusam `\`, `/`, `:` e controle; somente leitura |
+| `Sinal` | `tipo` (`espaco_livre`, `memoria_repouso`, `cpu_repouso`, `driver_desatualizado`, `plano_energia`, `sensor_armazenamento`), `gravidade` (`ok`, `informativo`, `atencao`, `indisponivel`), `valor` (`{"bytes":{livres,total}}`, `{"percentual":n}` até 100, `{"versao":{atual,ultima}}`, `{"booleano":b}`, `"nenhum"`), `lido_unix` |
+| `ResultadoLimpeza` | `modo` (`desligada`, `simulacao` = dry-run, `ativa`), `alvo` (`temp_usuario`, `temp_windows`), `inicio_unix`, `duracao_ms`, `arquivos`, `bytes`, `pulados` (mapa `MotivoPulo` -> contagem), `interrompida` (`jogo_aberto`, `instalacao`, `tempo`, `erro` ou `null`); só contagens; `desligada` com contagens é recusada |
+| `SaudeSessao` (`agente_relatar.saude`, opcional, omitido se `null`) | `sinais` (até 16, tipo sem repetição), `inicializacao` (até 256, `(fonte, nome)` sem repetição), `limpeza` (só `temp_usuario` ou `null`) |
+| `Saude` (resposta `saude`) | `sinais`, `inicializacao` (mesmos limites), `modo_limpeza` (modo vigente do build), `limpeza[]` (no máximo uma por alvo) |
+| `ResumoPartida` | campos de §7.4 da spec; `histograma` com exatamente 64 faixas; métricas `f32` finitas e não negativas; percentuais até 100 |
+| `Partida` | `resumo`, `amostras` (`AmostraSegundo`, até 4096, para caber no quadro de 1 MiB) |
+
+As requisições v8 respondem `erro` `recurso_ausente` enquanto não são
+implementadas no serviço; sem a feature `medicao-partidas`, as de partidas
+continuam assim.
 ### Códigos de erro
 
 | Código                  | Significado                                       |
@@ -439,6 +470,7 @@ recusados por `Requisicao::validar`, `PlanoAgente::validar` e
 | `driver_indisponivel`   | NVAPI/driver indisponível                         |
 | `ocupado`               | outra operação em andamento ou limite de taxa; o pedido **não** foi executado |
 | `interno`               | falha interna (inclui pânico do tratador e diretório de estado inseguro) |
+| `recurso_ausente`       | recurso fora deste build ou ainda não implementado (v8) |
 
 O código é estável; a mensagem serve só para exibição.
 
