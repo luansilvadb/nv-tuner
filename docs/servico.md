@@ -45,8 +45,8 @@ original” antes de desinstalar; o MSI ignora o código, mas o log `/l*v`
 registra a mensagem. No próprio processo não há quem execute a pendência,
 então o comando recusa **antes** de mudar qualquer coisa (nem a autonomia) e
 sai com código 1. Ainda no próprio processo, `apply --yes` com uma
-restauração pendente deixada pelo serviço em `servico.json` executa primeiro
-essa restauração (como o serviço faria ao reiniciar) e depois aplica.
+restauração pendente deixada pelo serviço em `servico.json` a descarta (avisa
+“restauração pendente descartada: você pediu para aplicar”) e só aplica.
 
 ## Laço
 

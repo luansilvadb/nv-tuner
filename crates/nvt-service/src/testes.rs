@@ -1507,3 +1507,103 @@ fn lista_de_processos_indisponivel_vai_como_sinal_proprio() {
     let a = plano.adiada.expect("adiada");
     assert!(a.lista_indisponivel && a.processos.is_empty());
 }
+
+/// Restauração pendente persistida pelo serviço e `apply` pela CLI sem o
+/// serviço no ar: o pedido explícito substitui a pendência (descartada do
+/// arquivo) e só a aplicação grava; a restauração não roda antes.
+#[test]
+fn apply_pela_cli_descarta_a_restauracao_pendente_e_grava_uma_vez() {
+    use crate::nucleo::EstadoServico;
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let seg = Duration::from_secs;
+    let p = Processos::default();
+    {
+        let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+        n.iniciar(t0);
+        p.abrir(EXE_WARDOGS);
+        let r = n.tratar(Requisicao::RestaurarOriginal, t0 + seg(1));
+        assert!(matches!(r, Resposta::Restauracao { adiada: Some(_) }));
+    }
+    assert!(
+        EstadoServico::carregar(Some(&dir.0))
+            .restauracao_pendente_desde_unix
+            .is_some()
+    );
+    p.fechar_todos();
+
+    // Núcleo da CLI: a pendência carregada do disco ainda não foi reavaliada
+    // e não aparece como adiamento (processos vazios).
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0 + seg(60));
+    assert!(adiamento_do_estado(&mut n, t0 + seg(60)).is_none());
+
+    let antes = escritas(&d);
+    crate::relatorio::gravar_local(&mut n, false, t0 + seg(60)).expect("apply");
+    assert!(n.pendente().is_none());
+    // A restauração não rodou (VSync continua o do plano) e no máximo uma
+    // gravação (a do plano, aqui já aplicado) foi feita.
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_OFF));
+    assert!(
+        escritas(&d).1 <= antes.1 + 1,
+        "{:?} -> {:?}",
+        antes,
+        escritas(&d)
+    );
+    let salvo = EstadoServico::carregar(Some(&dir.0));
+    assert_eq!(salvo.restauracao_pendente_desde_unix, None);
+    assert!(!salvo.autonomia_pausada);
+}
+
+/// Retomada da restauração pendente falhando por erro que não é adiamento:
+/// "Aplicar agora" responde com o erro real, nunca "jogo aberto ()", e o
+/// estado não expõe adiamento.
+#[test]
+fn retomada_com_erro_real_mostra_o_erro_e_nao_jogo_aberto() {
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let seg = Duration::from_secs;
+    let p = Processos::default();
+    {
+        let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+        n.iniciar(t0);
+        p.abrir(EXE_WARDOGS);
+        let _ = n.tratar(Requisicao::RestaurarOriginal, t0 + seg(1));
+    }
+    p.fechar_todos();
+
+    let falhar = Rc::new(std::cell::Cell::new(false));
+    let (d2, f2, s2) = (d.clone(), falhar.clone(), s.clone());
+    let mut n = Nucleo::novo_com_portao(
+        Box::new(move || {
+            if f2.get() {
+                Err(nvt_engine::ErroEngine::SemGpu)
+            } else {
+                Ok(d2.clone())
+            }
+        }),
+        Box::new(jogos),
+        Box::new(move || Some(s2.borrow().clone())),
+        Some(dir.0.clone()),
+        cfg(false),
+        t0 + seg(60),
+        nvt_engine::Portao::new(p.clone()),
+    )
+    .expect("núcleo");
+    falhar.set(true);
+    n.iniciar(t0 + seg(60));
+    assert_eq!(n.pendente().map(|x| x.tentativas), Some(1));
+    assert!(adiamento_do_estado(&mut n, t0 + seg(61)).is_none());
+
+    match n.tratar(Requisicao::AplicarAgora, t0 + seg(62)) {
+        Resposta::Erro { mensagem, .. } => {
+            assert!(
+                mensagem.contains("restauração pendente falhou"),
+                "{mensagem}"
+            );
+            assert!(
+                mensagem.contains(&nvt_engine::ErroEngine::SemGpu.to_string()),
+                "{mensagem}"
+            );
+            assert!(!mensagem.contains("jogo aberto"), "{mensagem}");
+        }
+        outro => panic!("esperava erro, veio {outro:?}"),
+    }
+}

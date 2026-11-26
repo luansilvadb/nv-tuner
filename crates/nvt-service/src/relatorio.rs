@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use nvt_core::Alvo;
 use nvt_drs::NvApi;
-use nvt_engine::{DrsReal, OrigemPerfil, jogos_da_maquina};
+use nvt_engine::{DriverStore, DrsReal, OrigemPerfil, jogos_da_maquina};
 use nvt_ipc::pipe::{Cliente, ConfigCliente};
 use nvt_ipc::{ErroIpc, Plano, Requisicao, Resposta, StatusMudanca};
 
@@ -347,6 +347,16 @@ fn eh_admin() -> bool {
 /// (`msiexec /x … RESTAURAR_PERFIL=1`) o serviço é removido logo depois e a
 /// restauração pendente não roda.
 fn mostrar_adiada(a: &nvt_ipc::Adiamento, pelo_servico: bool) -> Result<(), Erro> {
+    // Sem processos nem lista indisponível não houve adiamento real: não
+    // dizer "jogo aberto ()".
+    if a.processos.is_empty() && !a.lista_indisponivel {
+        return Err(format!(
+            "a ação ficou pendente ({:?}) sem jogo aberto detectado; nada foi gravado agora. \
+             Veja o log do serviço.",
+            a.acao
+        )
+        .into());
+    }
     let motivo = motivo_adiamento(&a.processos, a.lista_indisponivel);
     if !pelo_servico {
         return Err(
@@ -442,26 +452,42 @@ pub fn gravar(dir: &Path, pipe: &str, tentar_ipc: bool, restaurar: bool) -> Exit
     sair((|| {
         let api = NvApi::load()?;
         let mut n = nucleo(&api, dir, false)?;
-        // Também na restauração: os exes detectados entram no portão.
-        n.varrer(Instant::now());
-        // Sem o serviço não há quem execute a ação pendente: com jogo aberto,
-        // recusa antes de mudar qualquer coisa (inclusive a autonomia).
-        if let Err(a) = n.engine().pode_gravar() {
-            return Err(format!(
-                "{}: nada foi gravado; feche os jogos e repita o comando",
-                motivo_adiamento(&a.processos, a.lista_indisponivel)
-            )
-            .into());
-        }
-        // Restauração deixada pendente pelo serviço antes de parar: roda
-        // primeiro (como o serviço faria ao reiniciar). No próprio
-        // `restore-original` ela é a própria requisição.
-        if !restaurar {
-            n.retomar_pendente(Instant::now());
-        }
-        let r = n.tratar(req, Instant::now());
-        mostrar(&r, restaurar, false)
+        gravar_local(&mut n, restaurar, Instant::now())
     })())
+}
+
+/// `apply`/`restore-original` no próprio processo (serviço fora do ar). Toda
+/// gravação passa pelo portão do núcleo.
+pub(crate) fn gravar_local<S: DriverStore>(
+    n: &mut Nucleo<'_, S>,
+    restaurar: bool,
+    agora: Instant,
+) -> Result<(), Erro> {
+    // Também na restauração: os exes detectados entram no portão.
+    n.varrer(agora);
+    // Sem o serviço não há quem execute a ação pendente: com jogo aberto,
+    // recusa antes de mudar qualquer coisa (inclusive a autonomia e a
+    // restauração pendente).
+    if let Err(a) = n.engine().pode_gravar() {
+        return Err(format!(
+            "{}: nada foi gravado; feche os jogos e repita o comando",
+            motivo_adiamento(&a.processos, a.lista_indisponivel)
+        )
+        .into());
+    }
+    // Restauração deixada pendente pelo serviço antes de parar: o `apply`
+    // explícito do usuário a substitui (uma gravação só, a pedida). No próprio
+    // `restore-original` ela é a própria requisição.
+    if !restaurar && n.descartar_restauracao_pendente() {
+        println!("restauração pendente descartada: você pediu para aplicar");
+    }
+    let req = if restaurar {
+        Requisicao::RestaurarOriginal
+    } else {
+        Requisicao::AplicarAgora
+    };
+    let r = n.tratar(req, agora);
+    mostrar(&r, restaurar, false)
 }
 
 #[cfg(test)]
@@ -500,6 +526,26 @@ mod testes {
 
         let feita = mostrar(&Resposta::Restauracao { adiada: None }, true, true);
         assert_eq!(codigo_saida(&feita), 0);
+    }
+
+    /// Pendência sem processos e sem lista indisponível não é jogo aberto:
+    /// a mensagem não pode dizer "jogo aberto ()".
+    #[test]
+    fn pendencia_sem_adiamento_real_nao_diz_jogo_aberto() {
+        let mut a = adiamento(AcaoAdiada::RestaurarOriginal, false);
+        a.processos.clear();
+        for pelo_servico in [false, true] {
+            let res = mostrar(
+                &Resposta::Restauracao {
+                    adiada: Some(a.clone()),
+                },
+                true,
+                pelo_servico,
+            );
+            assert_eq!(codigo_saida(&res), 1);
+            let texto = res.unwrap_err().to_string();
+            assert!(!texto.contains("jogo aberto ("), "{texto}");
+        }
     }
 
     #[test]

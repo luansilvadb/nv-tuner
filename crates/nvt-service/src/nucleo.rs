@@ -122,6 +122,19 @@ pub struct Pendente {
     pub adiamento: Adiamento,
     /// Execuções que já falharam (erro que não é adiamento).
     pub tentativas: u32,
+    /// Erro da última execução que falhou (limpo quando o portão adia de
+    /// novo): enquanto houver, a pendência não é exibida como jogo aberto.
+    pub ultimo_erro: Option<String>,
+}
+
+impl Pendente {
+    /// O portão de fato adiou (processos vigiados ou lista indisponível) e a
+    /// última execução não falhou por outro erro? A pendência carregada do
+    /// disco, ainda não reavaliada (processos vazios), não é adiamento real.
+    fn adiamento_real(&self) -> bool {
+        self.ultimo_erro.is_none()
+            && (self.adiamento.lista_indisponivel || !self.adiamento.processos.is_empty())
+    }
 }
 
 /// Última aplicação de plano (persistida em `servico.json`).
@@ -308,6 +321,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                     lista_indisponivel: false,
                 },
                 tentativas: 0,
+                ultimo_erro: None,
             });
         let proxima_reavaliacao = pendente.as_ref().map(|_| agora);
         Ok(Self {
@@ -381,6 +395,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             acao,
             adiamento,
             tentativas,
+            ultimo_erro: None,
         });
         self.proxima_reavaliacao = Some(agora + self.cfg.intervalo_adiamento);
     }
@@ -415,10 +430,29 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         }
     }
 
+    /// `apply` explícito do usuário (CLI sem o serviço no ar): descarta a
+    /// restauração pendente, inclusive a persistida em `servico.json`, para
+    /// que a aplicação pedida grave uma vez só. Retorna se havia alguma.
+    pub fn descartar_restauracao_pendente(&mut self) -> bool {
+        let havia =
+            self.restauracao_pendente() || self.servico.restauracao_pendente_desde_unix.is_some();
+        if self.restauracao_pendente() {
+            self.pendente = None;
+            self.proxima_reavaliacao = None;
+        }
+        self.esquecer_restauracao_persistida();
+        if havia {
+            info!("restauração pendente descartada: o usuário pediu para aplicar");
+        }
+        havia
+    }
+
     /// Adiamento atual no formato do protocolo. Com a lista de processos
-    /// indisponível, vai o sinal próprio, nunca um nome de processo.
+    /// indisponível, vai o sinal próprio, nunca um nome de processo. Só há
+    /// adiamento quando o portão de fato adiou ([`Pendente::adiamento_real`]).
     fn adiamento_ipc(&self) -> Option<nvt_ipc::Adiamento> {
-        self.pendente.as_ref().map(|p| nvt_ipc::Adiamento {
+        let p = self.pendente.as_ref().filter(|p| p.adiamento_real())?;
+        Some(nvt_ipc::Adiamento {
             processos: if p.adiamento.lista_indisponivel {
                 Vec::new()
             } else {
@@ -492,6 +526,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             return;
         };
         p.tentativas += 1;
+        p.ultimo_erro = Some(e.to_string());
         let n = p.tentativas;
         if n < TENTATIVAS_PENDENTE {
             warn!(
@@ -1034,6 +1069,18 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
     fn aplicar_agora(&mut self, agora: Instant) -> Resultado<Resposta> {
         if self.restauracao_pendente() {
             // A restauração pendente vence qualquer outra ação (F1-07).
+            // Pendente por erro (não por jogo aberto): mostra o erro.
+            if let Some(e) = self.pendente.as_ref().and_then(|p| p.ultimo_erro.clone()) {
+                info!("aplicar agora ignorado: a restauração pendente falhou ({e})");
+                return Ok(Resposta::erro(
+                    CodigoErro::Interno,
+                    format!(
+                        "a restauração pendente falhou ({e}); nova tentativa em {} s; nada foi \
+                         aplicado",
+                        self.cfg.intervalo_adiamento.as_secs()
+                    ),
+                ));
+            }
             info!("aplicar agora ignorado: restauração pendente até o jogo fechar");
             self.renovar()?;
             return self.plano_adiado();
