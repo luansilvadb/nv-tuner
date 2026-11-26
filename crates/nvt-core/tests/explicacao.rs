@@ -9,6 +9,20 @@ use nvt_core::{
 
 const TURING: &str = "dlss-preset-e-turing";
 const AMPERE: &str = "dlss-preset-e-ampere";
+// Regras por jogo da fase competitiva (spec competitivo F1-10/F1-11): a de
+// energia vale para todo jogo e a de G-SYNC + Reflex aparece como não aplicada;
+// os testes de DLSS as descontam.
+const ENERGIA: &str = "energia-desempenho-maximo-por-jogo";
+const GSYNC_REFLEX: &str = "gsync-reflex-sem-limite-driver";
+
+/// Regras aplicadas, sem a de energia por jogo.
+fn aplicadas(r: &ResumoJogo) -> Vec<RegraAplicada> {
+    r.aplicadas
+        .iter()
+        .filter(|a| a.regra != ENERGIA)
+        .cloned()
+        .collect()
+}
 
 fn regras() -> ConjuntoRegras {
     ConjuntoRegras::embutido().unwrap_or_else(|e| panic!("regras reais inválidas:\n{e}"))
@@ -21,6 +35,7 @@ fn com_dlss(id: &str) -> GameFacts {
         dlss: Some(Versao::new(310, 6, 0, 0)),
         reflex: Some(true),
         anticheat_kernel: Some(true),
+        ..GameFacts::default()
     }
 }
 
@@ -31,6 +46,7 @@ fn sem_dlss(id: &str) -> GameFacts {
         dlss: None,
         reflex: Some(false),
         anticheat_kernel: Some(true),
+        ..GameFacts::default()
     }
 }
 
@@ -64,7 +80,7 @@ fn turing_com_dlss_aplica_preset_e() {
     let p = plano(&caps, &[com_dlss("WARDOGS")], &Preferences::default());
     let r = resumo(&p, "WARDOGS");
     assert_eq!(
-        r.aplicadas,
+        aplicadas(r),
         vec![RegraAplicada {
             regra: TURING.into(),
             settings: dlss_settings(),
@@ -79,10 +95,18 @@ fn turing_com_dlss_aplica_preset_e() {
             encontrado: "turing".into(),
         }
     );
-    assert_eq!(r.nao_aplicadas.len(), 1);
+    assert_eq!(
+        r.nao_aplicadas
+            .iter()
+            .filter(|n| n.regra != GSYNC_REFLEX)
+            .count(),
+        1
+    );
     // Herda todo o global (o jogo não sobrescreve nenhuma setting global).
     assert_eq!(r.herda_do_global.len(), p.global.len());
-    assert!(r.herda_do_global.contains(&"energia".to_string()));
+    // F1-11: energia saiu do global (o jogo a recebe no próprio perfil).
+    assert!(!r.herda_do_global.contains(&"energia".to_string()));
+    assert!(r.aplicadas.iter().any(|a| a.regra == ENERGIA));
 }
 
 #[test]
@@ -90,7 +114,7 @@ fn ampere_com_dlss_e_experimental() {
     let caps = Capabilities::tipicas(Arquitetura::Ampere);
     let p = plano(&caps, &[com_dlss("j")], &Preferences::default());
     let r = resumo(&p, "j");
-    assert!(r.aplicadas.is_empty());
+    assert!(aplicadas(r).is_empty());
     assert_eq!(motivo(r, AMPERE), &MotivoNaoAplicada::Experimental);
     assert!(matches!(
         motivo(r, TURING),
@@ -104,7 +128,7 @@ fn ada_e_blackwell_com_dlss_nao_precisam() {
         let caps = Capabilities::tipicas(arq);
         let p = plano(&caps, &[com_dlss("j")], &Preferences::default());
         let r = resumo(&p, "j");
-        assert!(r.aplicadas.is_empty(), "{arq}");
+        assert!(aplicadas(r).is_empty(), "{arq}");
         for regra in [TURING, AMPERE] {
             assert_eq!(
                 motivo(r, regra),
@@ -140,7 +164,7 @@ fn jogo_sem_dlss_em_qualquer_gpu() {
         let caps = Capabilities::tipicas(arq);
         let p = plano(&caps, &[sem_dlss("LoL")], &Preferences::default());
         let r = resumo(&p, "LoL");
-        assert!(r.aplicadas.is_empty());
+        assert!(aplicadas(r).is_empty());
         // Fatos do jogo vêm antes das capacidades.
         assert_eq!(motivo(r, TURING), &MotivoNaoAplicada::JogoSemDlss, "{arq}");
         assert_eq!(motivo(r, AMPERE), &MotivoNaoAplicada::JogoSemDlss, "{arq}");
@@ -156,7 +180,7 @@ fn fidelidade_bloqueia_pelo_teto() {
     };
     let p = plano(&caps, &[com_dlss("j")], &prefs);
     let r = resumo(&p, "j");
-    assert!(r.aplicadas.is_empty());
+    assert!(aplicadas(r).is_empty());
     assert_eq!(
         motivo(r, TURING),
         &MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade {
@@ -180,7 +204,7 @@ fn escolha_travada_e_do_usuario() {
     let r = resumo(&p, "j");
     // As outras duas settings seguem aplicadas; a travada aparece com o motivo.
     assert_eq!(
-        r.aplicadas,
+        aplicadas(r),
         vec![RegraAplicada {
             regra: TURING.into(),
             settings: vec!["dlss_override".into(), "dlss_perfil_preset".into()],

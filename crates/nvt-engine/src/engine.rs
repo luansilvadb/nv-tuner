@@ -4,12 +4,13 @@
 use std::collections::BTreeSet;
 
 use nvt_core::{
-    Alvo, Capabilities, ConjuntoRegras, DefSetting, GameFacts, Plan, Preferences, SettingChange,
+    Alvo, BaseJogos, Capabilities, ConjuntoRegras, DefSetting, ErroRegra, ErrosRegras, GameFacts,
+    Plan, Preferences, SettingChange,
 };
 use nvt_drs::{ProfileRef, RestoreOp, Setting, SettingLocation, SettingValue};
 use serde::{Deserialize, Serialize};
 
-use crate::deteccao::{JogoEntrada, capacidades};
+use crate::deteccao::{JogoEntrada, capacidades, casar_na_base, fatos_do_jogo};
 use crate::erro::{ErroEngine, Resultado};
 use crate::estado::{
     Armazem, Esperado, Estado, OrigemRegistro, PerfilCriado, RegistroHistorico, Travada,
@@ -328,25 +329,43 @@ pub fn classificar_deriva(
 pub struct Engine<S: DriverStore> {
     store: S,
     regras: ConjuntoRegras,
+    /// Base curada de jogos competitivos (fatos curados, F1-03/F1-04).
+    base: BaseJogos,
     armazem: Armazem,
 }
 
 impl<S: DriverStore> Engine<S> {
-    /// Motor com as regras embutidas.
+    /// Motor com as regras e a base de jogos embutidas.
     pub fn new(store: S, armazem: Armazem) -> Resultado<Self> {
-        Ok(Self::com_regras(
-            store,
-            armazem,
-            ConjuntoRegras::embutido()?,
-        ))
+        let base = BaseJogos::embutida().map_err(|e| {
+            ErroEngine::Regras(ErrosRegras(vec![ErroRegra::Toml {
+                arquivo: "jogos.toml".into(),
+                mensagem: e.to_string(),
+            }]))
+        })?;
+        Ok(Self::com_regras(store, armazem, ConjuntoRegras::embutido()?).com_base(base))
     }
 
+    /// Motor com as regras dadas e a base de jogos embutida (vazia se a base
+    /// embutida for inválida, o que o teste de carga impede).
     pub fn com_regras(store: S, armazem: Armazem, regras: ConjuntoRegras) -> Self {
         Self {
             store,
             regras,
+            base: BaseJogos::embutida().unwrap_or_else(|_| BaseJogos::vazia()),
             armazem,
         }
+    }
+
+    /// Troca a base curada de jogos.
+    pub fn com_base(mut self, base: BaseJogos) -> Self {
+        self.base = base;
+        self
+    }
+
+    /// Base curada de jogos competitivos.
+    pub fn base_jogos(&self) -> &BaseJogos {
+        &self.base
     }
 
     pub fn store(&self) -> &S {
@@ -508,13 +527,7 @@ impl<S: DriverStore> Engine<S> {
             if saida.iter().any(|s| s.perfil.eq_ignore_ascii_case(&perfil)) {
                 continue;
             }
-            let fatos = GameFacts {
-                id: perfil.clone(),
-                api: j.api,
-                dlss: j.dlss,
-                reflex: j.reflex,
-                anticheat_kernel: j.anticheat_kernel,
-            };
+            let fatos = fatos_do_jogo(perfil.clone(), j, casar_na_base(&self.base, j));
             saida.push(JogoResolvido {
                 entrada: j.clone(),
                 perfil,

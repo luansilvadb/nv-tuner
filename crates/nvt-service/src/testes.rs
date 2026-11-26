@@ -941,10 +941,14 @@ fn plano_envia_jogos_com_fatos_e_explicacao() {
     assert_eq!(w.api, "dx12");
     assert_eq!(w.dlss.as_deref(), Some("310.6"));
     assert_eq!((w.reflex, w.anticheat_kernel), (Some(true), Some(true)));
-    assert_eq!(w.resumo.aplicadas.len(), 1);
+    // Spec competitivo F1-11: a energia por jogo vale para todo jogo, então
+    // aparece aplicada ao lado do DLSS (antes: só a regra de DLSS).
+    const ENERGIA: &str = "energia-desempenho-maximo-por-jogo";
+    assert_eq!(w.resumo.aplicadas.len(), 2);
     assert_eq!(w.resumo.aplicadas[0].regra, "dlss-preset-e-turing");
     assert!(!w.resumo.aplicadas[0].descricao.is_empty());
     assert_eq!(w.resumo.aplicadas[0].settings.len(), 3);
+    assert_eq!(w.resumo.aplicadas[1].regra, ENERGIA);
     assert!(!w.resumo.herda_do_global.is_empty());
     let l = p
         .jogos
@@ -953,11 +957,15 @@ fn plano_envia_jogos_com_fatos_e_explicacao() {
         .unwrap();
     assert_eq!(l.launcher, "Riot");
     assert_eq!(l.dlss, None);
-    assert!(l.resumo.aplicadas.is_empty());
+    assert_eq!(l.resumo.aplicadas.len(), 1);
+    assert_eq!(l.resumo.aplicadas[0].regra, ENERGIA);
+    // As regras de DLSS dizem "jogo sem DLSS" (a nova regra por jogo de
+    // G-SYNC + Reflex, F1-10, tem outro motivo).
     assert!(
         l.resumo
             .nao_aplicadas
             .iter()
+            .filter(|r| r.regra.starts_with("dlss-"))
             .all(|r| r.motivo == nvt_ipc::MotivoNaoAplicada::JogoSemDlss),
         "{:?}",
         l.resumo.nao_aplicadas

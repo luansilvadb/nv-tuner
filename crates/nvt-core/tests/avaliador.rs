@@ -1,8 +1,8 @@
 //! Testes do avaliador e da carga das regras reais de `regras/`.
 
 use nvt_core::{
-    Alvo, Api, Arquitetura, Capabilities, ConjuntoRegras, EscolhaUsuario, GameFacts, Origem, Plan,
-    Preferences, Qualidade, Sincronismo, Versao, avaliar,
+    Alvo, Api, Arquitetura, Capabilities, ConjuntoRegras, EscolhaUsuario, EstadoVrr, GameFacts,
+    Origem, Plan, Preferences, Qualidade, Sincronismo, Versao, avaliar,
 };
 
 fn regras() -> ConjuntoRegras {
@@ -16,6 +16,7 @@ fn jogo_dlss(id: &str) -> GameFacts {
         dlss: Some(Versao::new(310, 6, 0, 0)),
         reflex: Some(true),
         anticheat_kernel: Some(true),
+        ..GameFacts::default()
     }
 }
 
@@ -26,6 +27,7 @@ fn jogo_sem_dlss(id: &str) -> GameFacts {
         dlss: None,
         reflex: Some(false),
         anticheat_kernel: Some(true),
+        ..GameFacts::default()
     }
 }
 
@@ -55,10 +57,23 @@ fn tem_preset_e(plan: &Plan, id: &str) -> bool {
         && valor(plan, &a, "dlss_preset") == Some(5)
 }
 
+/// O perfil do jogo só recebe a energia por jogo (F1-11), que vale para todo
+/// jogo: o que antes era "nenhuma mudança por jogo".
+fn so_energia(plan: &Plan, id: &str) -> bool {
+    let m = plan.mudancas(&jogo(id));
+    m.len() == 1 && m[0].setting == "energia"
+}
+
+fn por_jogo_so_energia(plan: &Plan) -> bool {
+    plan.por_jogo.keys().all(|id| so_energia(plan, id))
+}
+
 #[test]
 fn carrega_regras_reais() {
     let r = regras();
-    assert_eq!(r.regras.len(), 11);
+    // Spec competitivo §7.4/F1-11: energia global trocada pela por jogo (mesma
+    // contagem) e nova `gsync-reflex-sem-limite-driver` (+1).
+    assert_eq!(r.regras.len(), 12);
     assert!(r.catalogo.len() >= 21);
     let ids = r.catalogo.ids_permitidos();
     for id in [0x10E41E01, 0x00634291, 0x10E41DF3, 0x00A879CF, 0x10835002] {
@@ -88,7 +103,7 @@ fn turing_com_dlss_recebe_preset_e() {
 fn ampere_so_gera_sugestao_experimental() {
     let caps = Capabilities::tipicas(Arquitetura::Ampere);
     let plan = plano(&caps, &[jogo_dlss("jogo-a")], &Preferences::default());
-    assert!(!plan.por_jogo.contains_key("jogo-a"));
+    assert!(so_energia(&plan, "jogo-a"));
     assert_eq!(plan.experimentais.len(), 1);
     let s = &plan.experimentais[0];
     assert_eq!(s.regra, "dlss-preset-e-ampere");
@@ -101,17 +116,18 @@ fn ada_e_blackwell_nao_recebem_override() {
     for arq in [Arquitetura::Ada, Arquitetura::Blackwell] {
         let caps = Capabilities::tipicas(arq);
         let plan = plano(&caps, &[jogo_dlss("jogo-a")], &Preferences::default());
-        assert!(plan.por_jogo.is_empty(), "{arq}: {:?}", plan.por_jogo);
+        assert!(por_jogo_so_energia(&plan), "{arq}: {:?}", plan.por_jogo);
         assert!(plan.experimentais.is_empty());
-        // O baseline global continua valendo.
-        assert_eq!(valor(&plan, &Alvo::Global, "energia"), Some(1));
+        // F1-11: energia saiu do global e vale no perfil do jogo.
+        assert_eq!(valor(&plan, &Alvo::Global, "energia"), None);
+        assert_eq!(valor(&plan, &jogo("jogo-a"), "energia"), Some(1));
     }
 }
 
 #[test]
 fn gtx16_sem_tensor_cores_nao_recebe_override() {
     let plan = plano(&gtx16(), &[jogo_dlss("jogo-a")], &Preferences::default());
-    assert!(plan.por_jogo.is_empty());
+    assert!(por_jogo_so_energia(&plan));
     assert!(plan.experimentais.is_empty());
 }
 
@@ -122,7 +138,7 @@ fn arquitetura_desconhecida_nao_recebe_override() {
         ..Capabilities::tipicas(Arquitetura::Unknown(0x1C0))
     };
     let plan = plano(&caps, &[jogo_dlss("jogo-a")], &Preferences::default());
-    assert!(plan.por_jogo.is_empty());
+    assert!(por_jogo_so_energia(&plan));
 }
 
 #[test]
@@ -133,7 +149,7 @@ fn jogo_sem_dlss_nao_recebe_override() {
         &[jogo_sem_dlss("jogo-b"), jogo_dlss("jogo-a")],
         &Preferences::default(),
     );
-    assert!(!plan.por_jogo.contains_key("jogo-b"));
+    assert!(so_energia(&plan, "jogo-b"));
     assert!(tem_preset_e(&plan, "jogo-a"));
 }
 
@@ -141,7 +157,7 @@ fn jogo_sem_dlss_nao_recebe_override() {
 fn dlss_desconhecido_conta_como_sem_dlss() {
     let caps = Capabilities::tipicas(Arquitetura::Turing);
     let plan = plano(&caps, &[GameFacts::new("jogo-c")], &Preferences::default());
-    assert!(plan.por_jogo.is_empty());
+    assert!(por_jogo_so_energia(&plan));
 }
 
 #[test]
@@ -152,7 +168,7 @@ fn fidelidade_bloqueia_preset_e() {
         ..Preferences::default()
     };
     let plan = plano(&caps, &[jogo_dlss("jogo-a")], &prefs);
-    assert!(plan.por_jogo.is_empty());
+    assert!(por_jogo_so_energia(&plan));
     assert!(plan.descartes.iter().any(|d| {
         d.regra.as_deref() == Some("dlss-preset-e-turing")
             && d.alvo == jogo("jogo-a")
@@ -180,7 +196,8 @@ fn baseline_global_completo() {
     let g = Alvo::Global;
     assert_eq!(valor(&plan, &g, "low_latency_cpl"), Some(2));
     assert_eq!(valor(&plan, &g, "low_latency_enabled"), Some(1));
-    assert_eq!(valor(&plan, &g, "energia"), Some(1));
+    // F1-11: energia não é mais global (regra por jogo).
+    assert_eq!(valor(&plan, &g, "energia"), None);
     assert_eq!(valor(&plan, &g, "shader_cache"), Some(1));
     assert_eq!(valor(&plan, &g, "indicador_vrr"), Some(0));
     assert_eq!(valor(&plan, &g, "af_modo"), Some(0));
@@ -215,8 +232,15 @@ fn sem_sync_desliga_vsync_e_gsync() {
 
 #[test]
 fn gsync_com_refresh_conhecido_limita_abaixo_do_refresh() {
+    // Spec competitivo §7.4: `sincronismo-gsync-limite` passou a exigir VRR
+    // ativo, usa `limite_vrr` (224 a 240 Hz, não mais 237) e é experimental:
+    // vira sugestão, não entra no plano automático.
     let caps = Capabilities {
-        refresh_hz: Some(240),
+        refresh_mhz: Some(239_760),
+        vrr: EstadoVrr {
+            possivel: Some(true),
+            ativo: Some(true),
+        },
         ..Capabilities::tipicas(Arquitetura::Ada)
     };
     let prefs = Preferences {
@@ -229,13 +253,16 @@ fn gsync_com_refresh_conhecido_limita_abaixo_do_refresh() {
     assert_eq!(valor(&plan, &g, "gsync_app_mode"), Some(2));
     assert_eq!(valor(&plan, &g, "gsync_app_state"), Some(0));
     assert_eq!(valor(&plan, &g, "vsync"), Some(0x47814940));
-    assert_eq!(valor(&plan, &g, "limite_fps"), Some(237));
-    assert!(
-        plan.mudanca(&g, "limite_fps")
-            .unwrap()
-            .explicacao
-            .contains("240 Hz")
-    );
+    assert_eq!(valor(&plan, &g, "limite_fps"), None);
+    let s = plan
+        .experimentais
+        .iter()
+        .find(|s| s.regra == "sincronismo-gsync-limite")
+        .expect("sugestão do limite para VRR");
+    assert_eq!(s.alvo, g);
+    assert_eq!(s.mudancas.len(), 1);
+    assert_eq!(s.mudancas[0].valor, 224);
+    assert!(s.mudancas[0].explicacao.contains("240 Hz"));
 }
 
 #[test]
@@ -268,7 +295,11 @@ fn vsync_liga_vsync_e_desliga_gsync() {
 #[test]
 fn limite_do_usuario_vence_limite_da_regra() {
     let caps = Capabilities {
-        refresh_hz: Some(144),
+        refresh_mhz: Some(144_000),
+        vrr: EstadoVrr {
+            possivel: Some(true),
+            ativo: Some(true),
+        },
         ..Capabilities::tipicas(Arquitetura::Turing)
     };
     let prefs = Preferences {
@@ -286,9 +317,20 @@ fn limite_do_usuario_vence_limite_da_regra() {
             regra: None
         }
     );
-    assert!(plan.descartes.iter().any(|d| {
-        d.regra.as_deref() == Some("sincronismo-gsync-limite") && d.motivo.contains("suplantada")
-    }));
+    // Spec competitivo §7.4: `sincronismo-gsync-limite` é experimental, então
+    // não disputa a setting (antes: descartada como "suplantada"); fica só
+    // como sugestão, com o valor de `limite_vrr` (138 a 144 Hz).
+    assert!(
+        !plan
+            .descartes
+            .iter()
+            .any(|d| d.regra.as_deref() == Some("sincronismo-gsync-limite"))
+    );
+    assert!(
+        plan.experimentais
+            .iter()
+            .any(|s| s.regra == "sincronismo-gsync-limite" && s.mudancas[0].valor == 138)
+    );
 }
 
 #[test]
@@ -316,8 +358,10 @@ fn escolha_travada_pelo_usuario_e_respeitada() {
                 alvo: jogo("jogo-a"),
                 setting: "dlss_preset".into(),
             },
+            // F1-11: energia passou a ser por jogo; a trava acompanha o alvo
+            // (antes, a trava era no global).
             EscolhaUsuario {
-                alvo: Alvo::Global,
+                alvo: jogo("jogo-a"),
                 setting: "energia".into(),
             },
         ],
@@ -326,7 +370,7 @@ fn escolha_travada_pelo_usuario_e_respeitada() {
     let plan = plano(&caps, &[jogo_dlss("jogo-a")], &prefs);
     assert_eq!(valor(&plan, &jogo("jogo-a"), "dlss_preset"), None);
     assert_eq!(valor(&plan, &jogo("jogo-a"), "dlss_override"), Some(1));
-    assert_eq!(valor(&plan, &Alvo::Global, "energia"), None);
+    assert_eq!(valor(&plan, &jogo("jogo-a"), "energia"), None);
     assert_eq!(plan.respeitadas.len(), 2);
     assert!(
         plan.respeitadas
@@ -345,5 +389,6 @@ fn plano_e_deterministico() {
     let b = plano(&caps, &invertidos, &Preferences::default());
     assert_eq!(a.global, b.global);
     assert_eq!(a.por_jogo, b.por_jogo);
-    assert_eq!(a.por_jogo.keys().collect::<Vec<_>>(), ["a", "z"]);
+    // F1-11: todo jogo recebe a energia por jogo, inclusive o sem DLSS.
+    assert_eq!(a.por_jogo.keys().collect::<Vec<_>>(), ["a", "m", "z"]);
 }

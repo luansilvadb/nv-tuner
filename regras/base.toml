@@ -22,15 +22,18 @@ evidencia = "Laboratório, LoL (DX11, sem Reflex): estado sem sincronismo com Ul
 low_latency_cpl = "ultra"
 low_latency_enabled = "on"
 
+# Energia: só no perfil de cada jogo (spec competitivo F1-11). Substitui a
+# antiga `baseline-energia-desempenho-maximo` (global); o global volta ao valor
+# de antes da gestão pelo mecanismo de settings que saíram do plano.
 [[regra]]
-id = "baseline-energia-desempenho-maximo"
-descricao = "Gerenciamento de energia em desempenho máximo"
+id = "energia-desempenho-maximo-por-jogo"
+descricao = "Gerenciamento de energia em desempenho máximo no perfil do jogo"
 status = "estavel"
-escopo = "global"
+escopo = "por_jogo"
 impacto_visual = "nenhum"
 prioridade = 50
-motivo = "Evita quedas de clock da GPU em cenas leves ou com carga variável, que viram picos de frametime."
-evidencia = "Laboratório: valor original era Normal/Otimizado (0x5); aplicado Prefer maximum performance no global e mantido nas medições de LoL e WARDOGS sem regressão."
+motivo = "Mantém o clock da GPU estável durante o jogo, sem quedas em cenas leves ou com carga variável (consistência de clock). Fica só no perfil do jogo: fora dos jogos, a GPU segue o gerenciamento de energia original."
+evidencia = "Laboratório: valor original era Normal/Otimizado (0x5); Prefer maximum performance mantido nas medições de LoL e WARDOGS sem regressão (sem medição de ganho). competitivo-driver.md §2.6: recomendado por perfil de jogo, pela consistência de clock."
 
 [regra.aplicar]
 energia = "desempenho_maximo"
@@ -120,20 +123,40 @@ vsync = "force_on"
 
 [[regra]]
 id = "sincronismo-gsync-limite"
-descricao = "Com G-SYNC, limite de FPS logo abaixo do refresh"
-status = "estavel"
+descricao = "Com G-SYNC e VRR ativo, limite de FPS igual ao limite automático do driver"
+status = "experimental"
 escopo = "global"
 impacto_visual = "nenhum"
 prioridade = 60
-motivo = "Mantém o FPS dentro da janela de VRR e evita que o V-Sync entre em ação (fila e latência extras). Sem refresh conhecido, nenhum limite é gravado."
-evidencia = "Laboratório: com G-SYNC + V-Sync o FPS encostou no teto (224,3 FPS a 240 Hz); a versão anterior do perfil usava limite de 230 FPS. Margem de 3 FPS abaixo do refresh é a prática usual para VRR."
+motivo = "Mantém o FPS dentro da janela de VRR nos casos em que o limite automático do modo G-SYNC (G-SYNC + V-Sync + Ultra/Reflex) não existe (Vulkan/OpenGL sem Reflex, baixa latência travada pelo usuário) e coincide com ele onde existe, em vez de ficar acima. Sem refresh conhecido ou com VRR desligado, nenhum limite é gravado."
+evidencia = "Blur Busters G-SYNC 101 (limite pelo menos 3 FPS abaixo do refresh); valores do limite automático do driver ~59/116/138/224 FPS a 60/120/144/240 Hz; heurística Hz − Hz²/3600 (Wccftech; fórum Blur Busters, sem fórmula oficial); laboratório: 224,3 FPS a 240 Hz com G-SYNC + V-Sync + Ultra. Experimental até as medições L1-2 e L1-3."
 
 [regra.quando]
 sincronismo = ["gsync"]
 refresh_conhecido = true
+vrr_ativo = true
 
 [regra.aplicar]
-limite_fps = { refresh_menos = 3 }
+limite_fps = { limite_vrr = true }
+
+[[regra]]
+id = "gsync-reflex-sem-limite-driver"
+descricao = "Com G-SYNC, jogo competitivo com Reflex sem limitador de FPS do driver"
+status = "experimental"
+escopo = "por_jogo"
+impacto_visual = "nenhum"
+prioridade = 60
+motivo = "Com Reflex + V-Sync + G-SYNC, o próprio Reflex limita o FPS abaixo do refresh; o limitador do jogo ou o Reflex fica de meio a um quadro à frente do Max Frame Rate do driver. Só age sem limite de FPS definido pelo usuário."
+evidencia = "Blur Busters G-SYNC 101: limitador do jogo/Reflex tem de ½ a 1 quadro a menos de latência que o Max Frame Rate do driver; NVIDIA: com Reflex + V-Sync + G-SYNC o Reflex limita o FPS automaticamente. Experimental até a medição L1-5."
+
+[regra.quando]
+sincronismo = ["gsync"]
+jogo_reflex = true
+jogo_competitivo = true
+limite_fps_definido = false
+
+[regra.aplicar]
+limite_fps = "off"
 
 [[regra]]
 id = "sincronismo-vsync"

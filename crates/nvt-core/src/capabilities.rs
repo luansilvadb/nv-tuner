@@ -79,8 +79,34 @@ pub struct Capabilities {
     pub rebar_ativo: Option<bool>,
     pub vram_mb: u32,
     pub driver_version: Versao,
-    /// Taxa de atualização do monitor principal, quando conhecida.
-    pub refresh_hz: Option<u32>,
+    /// Taxa de atualização atual do monitor principal em milésimos de Hz
+    /// (`refreshRate1K` da NVAPI; 239_760 = 239,76 Hz), quando conhecida.
+    /// Arredondada para Hz inteiro só no avaliador ([`Capabilities::refresh_hz`]).
+    #[serde(default)]
+    pub refresh_mhz: Option<u32>,
+    /// VRR do monitor principal (`NvAPI_Disp_GetVRRInfo`).
+    #[serde(default)]
+    pub vrr: EstadoVrr,
+}
+
+/// VRR (G-SYNC / G-SYNC Compatible) do monitor principal. `None` =
+/// desconhecido (falha da NVAPI); condições sobre ele nunca casam.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EstadoVrr {
+    /// `bIsVRRPossible`: monitor e conexão suportam VRR.
+    pub possivel: Option<bool>,
+    /// `bIsVRREnabled`: VRR ligado no painel da NVIDIA.
+    pub ativo: Option<bool>,
+}
+
+impl Capabilities {
+    /// Refresh do monitor principal em Hz inteiros (arredondado), quando
+    /// conhecido.
+    pub fn refresh_hz(&self) -> Option<u32> {
+        self.refresh_mhz
+            .map(|m| m.saturating_add(500) / 1000)
+            .filter(|&hz| hz > 0)
+    }
 }
 
 impl Capabilities {
@@ -104,7 +130,8 @@ impl Capabilities {
             rebar_ativo: None,
             vram_mb: 8192,
             driver_version: Versao::default(),
-            refresh_hz: None,
+            refresh_mhz: None,
+            vrr: EstadoVrr::default(),
         }
     }
 }
@@ -122,5 +149,19 @@ mod testes {
             Arquitetura::Unknown(0x140)
         );
         assert_eq!(Arquitetura::Unknown(0x1C0).nome_regra(), "desconhecida");
+    }
+
+    #[test]
+    fn refresh_arredonda_milesimos() {
+        let mut c = Capabilities::tipicas(Arquitetura::Turing);
+        assert_eq!(c.refresh_hz(), None);
+        c.refresh_mhz = Some(239_760);
+        assert_eq!(c.refresh_hz(), Some(240));
+        c.refresh_mhz = Some(59_940);
+        assert_eq!(c.refresh_hz(), Some(60));
+        c.refresh_mhz = Some(144_000);
+        assert_eq!(c.refresh_hz(), Some(144));
+        c.refresh_mhz = Some(400);
+        assert_eq!(c.refresh_hz(), None);
     }
 }

@@ -64,7 +64,8 @@ fn plano_turing_com_dlss_aplica_preset_e() {
         .expect("preset E no plano");
     assert_eq!(preset.mudanca.valor, 5);
     assert_eq!(preset.mudanca.valor_anterior, None);
-    assert_eq!(diff.mudancas_de(&w).count(), 3);
+    // 3 do DLSS + energia por jogo (spec competitivo F1-11).
+    assert_eq!(diff.mudancas_de(&w).count(), 4);
     assert_eq!(
         diff.jogos
             .iter()
@@ -73,12 +74,13 @@ fn plano_turing_com_dlss_aplica_preset_e() {
             .origem,
         OrigemPerfil::Driver
     );
-    // LoL não tem DLSS: nenhuma mudança por jogo.
-    assert_eq!(
-        diff.mudancas_de(&Alvo::Jogo("League of Legends".into()))
-            .count(),
-        0
-    );
+    // LoL não tem DLSS: só a energia por jogo (F1-11; antes, nenhuma mudança),
+    // sobre o predefinido 0 do perfil do driver.
+    let alvo_lol = Alvo::Jogo("League of Legends".into());
+    let lol: Vec<_> = diff.mudancas_de(&alvo_lol).collect();
+    assert_eq!(lol.len(), 1);
+    assert_eq!(lol[0].mudanca.setting, "energia");
+    assert_eq!(lol[0].mudanca.valor_anterior, Some(0));
     // Shader cache já está ligado por padrão: conforme, não gravado.
     assert!(
         diff.conformes_de(&Alvo::Global)
@@ -309,12 +311,15 @@ fn jogo_sem_perfil_ganha_perfil_e_aplicativo() {
 
     let diff = e.planejar(&entrada).unwrap();
     assert_eq!(diff.jogos[0].origem, OrigemPerfil::ACriar);
-    assert_eq!(diff.criar.len(), 1, "só cria perfil quando há mudança");
+    // Spec competitivo F1-11: a energia por jogo vale para todo jogo, então o
+    // jogo sem DLSS também tem mudança e ganha perfil (antes: só um perfil).
+    assert_eq!(diff.criar.len(), 2, "só cria perfil quando há mudança");
     assert_eq!(diff.criar[0].exe, "novo.exe");
+    assert_eq!(diff.criar[1].exe, "semdlss.exe");
 
     e.aplicar(&diff, true).unwrap();
     assert!(d.perfis().contains(&"Jogo Novo".to_string()));
-    assert!(!d.perfis().contains(&"Sem DLSS".to_string()));
+    assert!(d.perfis().contains(&"Sem DLSS".to_string()));
     assert_eq!(d.apps("Jogo Novo"), vec!["novo.exe".to_string()]);
     assert_eq!(
         d.valor(
@@ -323,7 +328,7 @@ fn jogo_sem_perfil_ganha_perfil_e_aplicativo() {
         ),
         Some(5)
     );
-    assert_eq!(e.estado().perfis_criados.len(), 1);
+    assert_eq!(e.estado().perfis_criados.len(), 2);
 
     let diff = e.planejar(&entrada).unwrap();
     assert_eq!(diff.jogos[0].origem, OrigemPerfil::CriadoPeloApp);

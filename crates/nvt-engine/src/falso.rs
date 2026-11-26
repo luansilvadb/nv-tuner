@@ -11,8 +11,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use nvt_drs::{
-    ArchInfo, DriverVersion, Error, GpuInfo, ProfileRef, ProfileSnapshot, Result, SNAPSHOT_FORMAT,
-    Setting, SettingLocation, SettingSnapshot, SettingValue, Snapshot, Status,
+    ArchInfo, DriverVersion, Error, FonteFalsa, GpuInfo, InfoExibicao, ProfileRef, ProfileSnapshot,
+    Result, SNAPSHOT_FORMAT, Setting, SettingLocation, SettingSnapshot, SettingValue, Snapshot,
+    Status,
 };
 
 use crate::store::{DriverStore, PerfilEncontrado};
@@ -46,6 +47,7 @@ struct Interno {
     padroes: BTreeMap<u32, u32>,
     gravacoes: usize,
     salvamentos: usize,
+    exibicao: FonteFalsa,
 }
 
 impl Interno {
@@ -156,6 +158,7 @@ impl DriverFalso {
             padroes: BTreeMap::new(),
             gravacoes: 0,
             salvamentos: 0,
+            exibicao: FonteFalsa::sem_nvapi(),
         })))
     }
 
@@ -174,6 +177,12 @@ impl DriverFalso {
                 vram_kib: Some(8 * 1024 * 1024),
             }],
         )
+    }
+
+    /// Monitor principal visto pela NVAPI (refresh e VRR). Padrão: NVAPI sem as
+    /// funções de exibição (refresh e VRR desconhecidos).
+    pub fn definir_exibicao(&self, fonte: FonteFalsa) {
+        self.0.borrow_mut().exibicao = fonte;
     }
 
     /// Valor padrão do driver para a setting (o que se lê quando ninguém a gravou).
@@ -440,6 +449,10 @@ impl DriverStore for DriverFalso {
             profiles,
             missing_applications: missing,
         })
+    }
+
+    fn exibicao(&self) -> InfoExibicao {
+        nvt_drs::ler_exibicao_principal(&self.0.borrow().exibicao)
     }
 
     fn salvar(&mut self) -> Result<()> {

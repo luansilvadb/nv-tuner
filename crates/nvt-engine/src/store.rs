@@ -5,8 +5,8 @@
 //! é aplicada pelo motor antes de qualquer chamada de gravação.
 
 use nvt_drs::{
-    DriverVersion, Error, GpuInfo, NvApi, Profile, ProfileRef, Result, Session, Setting,
-    SettingValue, Snapshot, Status,
+    DriverVersion, Error, GpuInfo, InfoExibicao, NvApi, Profile, ProfileRef, Result, Session,
+    Setting, SettingValue, Snapshot, Status,
 };
 
 /// Perfil que contém um executável.
@@ -57,6 +57,12 @@ pub trait DriverStore {
     fn capturar(&self, exes: &[&str]) -> Result<Snapshot>;
     /// Persiste a sessão (exige administrador no driver real).
     fn salvar(&mut self) -> Result<()>;
+    /// Refresh e VRR do monitor principal (`nvt_drs::ler_exibicao_principal`).
+    /// Nunca falha: desconhecido vira `None`. O padrão não lê nada (tudo
+    /// desconhecido), para fontes sem NVAPI.
+    fn exibicao(&self) -> InfoExibicao {
+        InfoExibicao::default()
+    }
 }
 
 /// [`DriverStore`] sobre uma sessão DRS real.
@@ -160,5 +166,9 @@ impl DriverStore for DrsReal<'_> {
 
     fn salvar(&mut self) -> Result<()> {
         self.sessao.save()
+    }
+
+    fn exibicao(&self) -> InfoExibicao {
+        nvt_drs::ler_exibicao_principal(self.sessao.api())
     }
 }

@@ -68,10 +68,12 @@ fn perfil_do_app_apagado_nao_trava_o_ciclo_e_e_recriado() {
     let jogos = vec![jogo_novo()];
     aplicar(&mut e, &jogos);
     assert!(f.perfis().iter().any(|p| p == NOME_NOVO));
-    let energia = id(&e, "energia");
+    // Spec competitivo F1-11: energia passou a ser por jogo; o exemplo de
+    // setting global passa a ser a baixa latência Ultra.
+    let global = id(&e, "low_latency_cpl");
     let preset = id(&e, "dlss_preset");
-    let max = valor_nomeado(&e, "energia", "desempenho_maximo");
-    assert_eq!(f.valor(&ProfileRef::Base, energia), Some(max));
+    let max = valor_nomeado(&e, "low_latency_cpl", "ultra");
+    assert_eq!(f.valor(&ProfileRef::Base, global), Some(max));
 
     // Instalação limpa: settings resetadas, versão nova, perfil do app apagado.
     f.resetar_settings();
@@ -87,11 +89,11 @@ fn perfil_do_app_apagado_nao_trava_o_ciclo_e_e_recriado() {
     assert!(t.erros.is_empty(), "{:?}", t.erros);
     assert_eq!(
         t.removidas.len(),
-        3,
-        "as 3 settings do DLSS saem do esperado"
+        4,
+        "as 3 settings do DLSS e a energia por jogo (F1-11) saem do esperado"
     );
     // O global segue.
-    assert_eq!(f.valor(&ProfileRef::Base, energia), Some(max));
+    assert_eq!(f.valor(&ProfileRef::Base, global), Some(max));
     assert!(
         e.estado()
             .esperado
@@ -385,7 +387,16 @@ fn equilibrado_para_fidelidade_remove_as_settings_do_dlss() {
         ids.iter().all(|i| !proprias.contains_key(i)),
         "as 3 settings do DLSS saem do perfil: {proprias:?}"
     );
-    assert!(e.estado().esperado.iter().all(|x| x.perfil != p));
+    // Só a energia por jogo (F1-11, sem impacto visual) continua gerida no
+    // perfil (antes: nenhuma setting do perfil ficava no esperado).
+    let energia = id(&e, "energia");
+    assert!(
+        e.estado()
+            .esperado
+            .iter()
+            .filter(|x| x.perfil == p)
+            .all(|x| x.id == energia)
+    );
     assert!(e.planejar(&jogos).unwrap().vazio());
 }
 
@@ -396,11 +407,17 @@ fn fidelidade_limpa_perfil_criado_pelo_app() {
     let jogos = vec![jogo_novo()];
     aplicar(&mut e, &jogos);
     let p = ProfileRef::Named(NOME_NOVO.into());
-    assert_eq!(d.proprias(&p).len(), 3);
+    // 3 do DLSS + energia por jogo (spec competitivo F1-11).
+    assert_eq!(d.proprias(&p).len(), 4);
     e.definir_preferencias(prefs(Sincronismo::SemSync, Qualidade::Fidelidade, None))
         .unwrap();
     aplicar(&mut e, &jogos);
-    assert!(d.proprias(&p).is_empty());
+    // Fica só a energia por jogo (antes: perfil vazio).
+    let energia = id(&e, "energia");
+    assert_eq!(
+        d.proprias(&p).keys().copied().collect::<Vec<_>>(),
+        [energia]
+    );
 }
 
 #[test]

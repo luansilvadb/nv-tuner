@@ -18,12 +18,39 @@ use crate::capabilities::Capabilities;
 use crate::catalogo::{Catalogo, PreferenciaGovernante};
 use crate::explicacao::{MotivoNaoAplicada, RegraAplicada, RegraNaoAplicada, ResumoJogo};
 use crate::facts::GameFacts;
-use crate::plan::{Descarte, Origem, Plan, Respeitada, SettingChange, Sugestao};
-use crate::preferences::{Alvo, Preferences};
+use crate::jogos::filtrar_orientacoes;
+use crate::plan::{AvisoPlano, Descarte, Origem, Plan, Respeitada, SettingChange, Sugestao};
+use crate::preferences::{Alvo, Preferences, Sincronismo};
 use crate::rules::{ConjuntoRegras, Escopo, Rule, Status, ValorAcao};
 
 /// Setting do catálogo usada pela preferência `limite_fps`.
 pub const SETTING_LIMITE_FPS: &str = "limite_fps";
+
+/// Limite de FPS para VRR (`limite_fps = { limite_vrr = true }`):
+/// `min(Hz − 3, floor(Hz − Hz²/3600))`. Coincide com o limite automático do
+/// driver no modo G-SYNC (≈224 a 240 Hz) e nunca fica a menos de 3 FPS do
+/// refresh (spec competitivo §7.4). `None` se o resultado não for positivo.
+pub fn limite_vrr(hz: u32) -> Option<u32> {
+    let hz = u64::from(hz);
+    // floor(Hz − Hz²/3600) = Hz − ceil(Hz²/3600), em inteiros.
+    let heuristica = hz.checked_sub((hz * hz).div_ceil(3600))?;
+    let margem = hz.checked_sub(3)?;
+    u32::try_from(heuristica.min(margem))
+        .ok()
+        .filter(|&v| v > 0)
+}
+
+/// Avisos do plano sobre o sincronismo (F1-15): só com `sincronismo = gsync`.
+fn avisos(caps: &Capabilities, prefs: &Preferences) -> Vec<AvisoPlano> {
+    if prefs.sincronismo != Sincronismo::GSync {
+        return Vec::new();
+    }
+    match (caps.vrr.possivel, caps.vrr.ativo) {
+        (Some(false), _) => vec![AvisoPlano::GsyncSemVrr],
+        (Some(true), Some(false)) => vec![AvisoPlano::VrrDesligadoNoPainel],
+        _ => Vec::new(),
+    }
+}
 
 /// Chave de precedência; maior vence.
 type Chave = (u8, u8, usize, i32, Reverse<String>);
@@ -42,7 +69,10 @@ pub fn avaliar(
 ) -> Plan {
     let catalogo = &conjunto.catalogo;
     let teto = prefs.qualidade.impacto_maximo();
-    let mut plan = Plan::default();
+    let mut plan = Plan {
+        avisos: avisos(caps, prefs),
+        ..Plan::default()
+    };
     let mut candidatos: BTreeMap<(Alvo, String), Vec<Candidato>> = BTreeMap::new();
     // Explicação por jogo: motivos de regras por jogo que ficaram de fora.
     let mut nao_aplicadas: BTreeMap<String, Vec<RegraNaoAplicada>> = BTreeMap::new();
@@ -261,6 +291,7 @@ pub fn avaliar(
                 aplicadas,
                 nao_aplicadas,
                 herda_do_global,
+                orientacoes: filtrar_orientacoes(&j.orientacoes, prefs.sincronismo),
             },
         );
     }
@@ -316,9 +347,31 @@ fn resolver(
         let (valor, extra) = match acao {
             ValorAcao::Nome(n) => (def.valores[n], String::new()),
             ValorAcao::Numero(v) => (*v, String::new()),
+            ValorAcao::LimiteVrr => match caps
+                .refresh_hz()
+                .and_then(|hz| limite_vrr(hz).map(|v| (hz, v)))
+            {
+                Some((hz, v)) if def.aceita(v) => (
+                    v,
+                    format!(" Valor: mínimo entre {hz} Hz − 3 e ⌊{hz} − {hz}²/3600⌋ = {v}."),
+                ),
+                _ => {
+                    descartes.push(Descarte {
+                        regra: Some(regra.id.clone()),
+                        alvo: alvo.clone(),
+                        setting: Some(setting.clone()),
+                        motivo: format!(
+                            "limite para VRR com refresh {:?} Hz não gera valor aceito ({})",
+                            caps.refresh_hz(),
+                            def.valores_aceitos()
+                        ),
+                    });
+                    continue;
+                }
+            },
             ValorAcao::RefreshMenos(margem) => {
                 let calculado = caps
-                    .refresh_hz
+                    .refresh_hz()
                     .and_then(|hz| hz.checked_sub(*margem).map(|v| (hz, v)));
                 match calculado {
                     Some((hz, v)) if def.aceita(v) => {
@@ -331,7 +384,7 @@ fn resolver(
                             setting: Some(setting.clone()),
                             motivo: format!(
                                 "refresh {:?} Hz menos {margem} não gera valor aceito ({})",
-                                caps.refresh_hz,
+                                caps.refresh_hz(),
                                 def.valores_aceitos()
                             ),
                         });

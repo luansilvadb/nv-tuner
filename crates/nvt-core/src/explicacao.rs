@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::capabilities::Arquitetura;
+use crate::jogos::Orientacao;
 use crate::preferences::Qualidade;
 use crate::rules::ImpactoVisual;
 
@@ -174,4 +175,9 @@ pub struct ResumoJogo {
     /// Settings do perfil global que o jogo herda (as que o perfil do jogo
     /// não sobrescreve no plano), ordenadas.
     pub herda_do_global: Vec<String>,
+    /// Códigos de orientação da base curada para o jogo, filtrados pelas
+    /// preferências (F1-12; ver [`crate::jogos::filtrar_orientacoes`]). Vazio
+    /// para jogo fora da base. A UI traduz cada código.
+    #[serde(default)]
+    pub orientacoes: Vec<Orientacao>,
 }

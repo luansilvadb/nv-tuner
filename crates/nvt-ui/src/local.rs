@@ -1057,6 +1057,9 @@ mod testes {
         &jogos.iter().find(|j| j.nome == nome).unwrap().resumo
     }
 
+    /// Descrição da regra `energia-desempenho-maximo-por-jogo` (regras/base.toml).
+    const ENERGIA_TXT: &str = "Gerenciamento de energia em desempenho máximo no perfil do jogo";
+
     #[test]
     fn jogos_locais_tem_o_mesmo_formato_do_servico() {
         let falso = DriverFalso::turing();
@@ -1067,10 +1070,15 @@ mod testes {
         let w = jogos.iter().find(|j| j.nome == "WARDOGS").unwrap();
         assert_eq!((w.launcher.as_str(), w.api.as_str()), ("Steam", "dx12"));
         assert_eq!(w.origem_perfil, OrigemPerfilIpc::ACriar);
-        assert_eq!(textos::resumo_curto(&w.resumo), "Preset E do DLSS (Turing)");
+        // Spec competitivo F1-11: a energia por jogo vale para todo jogo e entra
+        // no resumo (antes: só o DLSS, e "nenhum ajuste" no jogo sem DLSS).
+        assert_eq!(
+            textos::resumo_curto(&w.resumo),
+            format!("Preset E do DLSS (Turing) + {ENERGIA_TXT}")
+        );
         assert_eq!(
             textos::resumo_curto(resumo(&jogos, "League of Legends")),
-            "Nenhum ajuste específico — jogo sem DLSS"
+            ENERGIA_TXT
         );
         assert!(!w.resumo.herda_do_global.is_empty());
         assert_eq!((falso.gravacoes(), falso.salvamentos()), (0, 0));
@@ -1092,13 +1100,12 @@ mod testes {
         let fatos: Vec<_> = diff.jogos.iter().map(|j| j.fatos.clone()).collect();
         diff.plano = nvt_core::avaliar(&caps, &fatos, &Default::default(), e.regras());
         let jogos = jogos_ipc(&e, &diff);
-        assert_eq!(
-            textos::resumo_curto(resumo(&jogos, "WARDOGS")),
-            "Nenhum ajuste específico — GPU Ada roda o DLSS padrão sem custo extra"
-        );
+        // Spec competitivo F1-11: com a energia por jogo aplicada, o resumo
+        // curto não diz mais "nenhum ajuste específico" (antes: o motivo do DLSS).
+        assert_eq!(textos::resumo_curto(resumo(&jogos, "WARDOGS")), ENERGIA_TXT);
         assert_eq!(
             textos::resumo_curto(resumo(&jogos, "League of Legends")),
-            "Nenhum ajuste específico — jogo sem DLSS"
+            ENERGIA_TXT
         );
     }
 

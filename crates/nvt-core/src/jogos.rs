@@ -11,6 +11,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::preferences::Sincronismo;
+
 /// Conteúdo de `regras/jogos.toml`, embutido no binário.
 pub const JOGOS_TOML: &str = include_str!("../../../regras/jogos.toml");
 
@@ -336,6 +338,36 @@ impl BaseJogos {
             .map(|p| p.to_lowercase())
             .collect()
     }
+
+    /// Base sem nenhum jogo (todo jogo fica fora da base).
+    pub fn vazia() -> Self {
+        Self { jogos: Vec::new() }
+    }
+}
+
+/// Orientações de um jogo filtradas pelas preferências (F1-12), sem
+/// repetição e na ordem da base:
+///
+/// - com `sincronismo = gsync`, `vsync_jogo_off` vira `vsync_driver_com_gsync`
+///   (V-Sync desligado no jogo e ligado no driver);
+/// - sem G-SYNC, `vsync_driver_com_gsync` sai.
+pub fn filtrar_orientacoes(
+    orientacoes: &[Orientacao],
+    sincronismo: Sincronismo,
+) -> Vec<Orientacao> {
+    let gsync = sincronismo == Sincronismo::GSync;
+    let mut saida = Vec::with_capacity(orientacoes.len());
+    for &o in orientacoes {
+        let o = match o {
+            Orientacao::VsyncJogoOff if gsync => Orientacao::VsyncDriverComGsync,
+            Orientacao::VsyncDriverComGsync if !gsync => continue,
+            outra => outra,
+        };
+        if !saida.contains(&o) {
+            saida.push(o);
+        }
+    }
+    saida
 }
 
 fn validar(

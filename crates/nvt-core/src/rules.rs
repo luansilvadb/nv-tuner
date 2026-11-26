@@ -54,6 +54,10 @@ pub enum ValorAcao {
     /// Refresh do monitor menos uma margem (`{ refresh_menos = 3 }`);
     /// exige `quando.refresh_conhecido = true`.
     RefreshMenos(u32),
+    /// Limite para VRR (`{ limite_vrr = true }`):
+    /// `min(Hz − 3, floor(Hz − Hz²/3600))` ([`crate::evaluator::limite_vrr`]);
+    /// exige `quando.refresh_conhecido = true` e `quando.vrr_ativo = true`.
+    LimiteVrr,
 }
 
 /// Condições (`quando`). Todas as presentes precisam valer (E lógico).
@@ -72,12 +76,20 @@ pub struct Condicoes {
     pub vram_mb_min: Option<u32>,
     pub driver_min: Option<Versao>,
     pub refresh_conhecido: Option<bool>,
+    /// VRR possível no monitor principal; não casa se desconhecido.
+    pub vrr_possivel: Option<bool>,
+    /// VRR ligado no painel; não casa se desconhecido.
+    pub vrr_ativo: Option<bool>,
     // Fatos do jogo (só em escopo `por_jogo`).
     pub jogo_api: Option<Vec<String>>,
     pub jogo_dlss: Option<bool>,
     pub jogo_dlss_min: Option<Versao>,
     pub jogo_reflex: Option<bool>,
     pub jogo_anticheat_kernel: Option<bool>,
+    /// Jogo da base curada.
+    pub jogo_competitivo: Option<bool>,
+    /// Limitador de FPS nativo (base curada); não casa se desconhecido.
+    pub jogo_limitador_nativo: Option<bool>,
     // Preferências.
     pub sincronismo: Option<Vec<String>>,
     pub qualidade: Option<Vec<String>>,
@@ -98,11 +110,15 @@ impl Condicoes {
             self.vram_mb_min.is_some(),
             self.driver_min.is_some(),
             self.refresh_conhecido.is_some(),
+            self.vrr_possivel.is_some(),
+            self.vrr_ativo.is_some(),
             self.jogo_api.is_some(),
             self.jogo_dlss.is_some(),
             self.jogo_dlss_min.is_some(),
             self.jogo_reflex.is_some(),
             self.jogo_anticheat_kernel.is_some(),
+            self.jogo_competitivo.is_some(),
+            self.jogo_limitador_nativo.is_some(),
             self.sincronismo.is_some(),
             self.qualidade.is_some(),
             self.limite_fps_definido.is_some(),
@@ -118,6 +134,8 @@ impl Condicoes {
             || self.jogo_dlss_min.is_some()
             || self.jogo_reflex.is_some()
             || self.jogo_anticheat_kernel.is_some()
+            || self.jogo_competitivo.is_some()
+            || self.jogo_limitador_nativo.is_some()
     }
 
     /// Verdadeiro se a regra está condicionada à preferência.
@@ -209,6 +227,18 @@ impl Condicoes {
                 self.jogo_anticheat_kernel,
                 j.anticheat_kernel,
             );
+            booleano(
+                &mut f,
+                "jogo_competitivo",
+                self.jogo_competitivo,
+                Some(j.competitivo),
+            );
+            booleano(
+                &mut f,
+                "jogo_limitador_nativo",
+                self.jogo_limitador_nativo,
+                j.limitador_nativo,
+            );
         }
 
         booleano(
@@ -258,8 +288,10 @@ impl Condicoes {
             &mut f,
             "refresh_conhecido",
             self.refresh_conhecido,
-            Some(caps.refresh_hz.is_some()),
+            Some(caps.refresh_hz().is_some()),
         );
+        booleano(&mut f, "vrr_possivel", self.vrr_possivel, caps.vrr.possivel);
+        booleano(&mut f, "vrr_ativo", self.vrr_ativo, caps.vrr.ativo);
 
         lista(
             &mut f,
@@ -297,11 +329,15 @@ impl Condicoes {
             "vram_mb_min" => self.vram_mb_min.is_some(),
             "driver_min" => self.driver_min.is_some(),
             "refresh_conhecido" => self.refresh_conhecido.is_some(),
+            "vrr_possivel" => self.vrr_possivel.is_some(),
+            "vrr_ativo" => self.vrr_ativo.is_some(),
             "jogo_api" => self.jogo_api.is_some(),
             "jogo_dlss" => self.jogo_dlss.is_some(),
             "jogo_dlss_min" => self.jogo_dlss_min.is_some(),
             "jogo_reflex" => self.jogo_reflex.is_some(),
             "jogo_anticheat_kernel" => self.jogo_anticheat_kernel.is_some(),
+            "jogo_competitivo" => self.jogo_competitivo.is_some(),
+            "jogo_limitador_nativo" => self.jogo_limitador_nativo.is_some(),
             "sincronismo" => self.sincronismo.is_some(),
             "qualidade" => self.qualidade.is_some(),
             "limite_fps_definido" => self.limite_fps_definido.is_some(),
@@ -747,6 +783,20 @@ fn validar(
                 Ok(v) if def.aceita(v) => Some(ValorAcao::Numero(v)),
                 _ => None,
             },
+            toml::Value::Table(t)
+                if t.len() == 1 && t.get("limite_vrr") == Some(&toml::Value::Boolean(true)) =>
+            {
+                if def.faixa.is_some() {
+                    if q.refresh_conhecido != Some(true) || q.vrr_ativo != Some(true) {
+                        erros.push(cond(
+                            "`limite_vrr` exige `quando.refresh_conhecido = true` e `quando.vrr_ativo = true`",
+                        ));
+                    }
+                    Some(ValorAcao::LimiteVrr)
+                } else {
+                    None
+                }
+            }
             toml::Value::Table(t) => match (t.len(), t.get("refresh_menos")) {
                 (1, Some(toml::Value::Integer(m))) => match u32::try_from(*m) {
                     Ok(m) if def.faixa.is_some() => {

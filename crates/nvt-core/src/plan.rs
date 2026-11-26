@@ -76,6 +76,18 @@ pub struct Descarte {
     pub motivo: String,
 }
 
+/// Aviso do plano para a UI (F1-15). O núcleo não gera texto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AvisoPlano {
+    /// `sincronismo = gsync` num monitor sem VRR (`vrr.possivel = Some(false)`):
+    /// a combinação vira V-Sync comum, com fila; orientar "sem sincronismo".
+    GsyncSemVrr,
+    /// `sincronismo = gsync`, VRR possível mas desligado no painel da NVIDIA
+    /// (`possivel = true`, `ativo = false`). O app não liga o VRR do monitor.
+    VrrDesligadoNoPainel,
+}
+
 /// Resultado do avaliador.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Plan {
@@ -94,6 +106,9 @@ pub struct Plan {
     /// avaliado tem uma entrada.
     #[serde(default)]
     pub resumos: BTreeMap<String, ResumoJogo>,
+    /// Avisos sobre a combinação preferências × monitor (F1-15).
+    #[serde(default)]
+    pub avisos: Vec<AvisoPlano>,
 }
 
 impl Plan {
