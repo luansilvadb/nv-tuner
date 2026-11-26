@@ -4,9 +4,10 @@
 //! incorpora. A renderização só lê o estado e emite [`Comando`]s.
 
 use nvt_ipc::{
-    Adiamento, AlertaDeriva, Aviso, Camada, EntradaHistorico, Estado, EstadoExperimental,
-    ImpactoVisual, Jogo, JogoIgnorado, Plano, Preferencias, Qualidade, Resposta, ResumoSistema,
-    Reversao, SettingUsuario, Sincronismo, StatusMudanca, SugestaoExperimental, codigo_aviso,
+    Adiamento, AlertaDeriva, Aviso, Camada, EntradaHistorico, Estado, EstadoAtualizacao,
+    EstadoExperimental, ImpactoVisual, Jogo, JogoIgnorado, MotivoPendente, Plano, Preferencias,
+    Qualidade, Resposta, ResumoSistema, Reversao, SettingUsuario, Sincronismo, StatusMudanca,
+    SugestaoExperimental, codigo_aviso,
 };
 
 use crate::textos;
@@ -170,9 +171,21 @@ pub enum Comando {
     RestaurarOriginal,
     Reescanear,
     DefinirPreferencias(Preferencias),
-    Destravar { perfil: String, setting: String },
-    DefinirAceiteExperimental { regra: String, aceito: bool },
-    ReverterAjusteUsuario { destino: SettingUsuario },
+    Destravar {
+        perfil: String,
+        setting: String,
+    },
+    DefinirAceiteExperimental {
+        regra: String,
+        aceito: bool,
+    },
+    ReverterAjusteUsuario {
+        destino: SettingUsuario,
+    },
+    /// O usuário dispensou o aviso “Atualizado para a vX” (U-47).
+    MarcarAtualizacaoVista {
+        versao: String,
+    },
 }
 
 pub fn destino_usuario(setting: &str, alvo_tela: Option<&str>) -> Option<SettingUsuario> {
@@ -203,6 +216,7 @@ impl Comando {
             Comando::Destravar { .. } => Some(textos::OK_DESTRAVADO),
             Comando::DefinirAceiteExperimental { .. } => Some(textos::OK_ACEITE),
             Comando::ReverterAjusteUsuario { .. } => Some(textos::OK_REVERSAO_USUARIO),
+            Comando::MarcarAtualizacaoVista { .. } => None,
         }
     }
 }
@@ -250,6 +264,9 @@ pub enum Evento {
     /// Serviço com versão de protocolo diferente (mensagem com a instrução
     /// de atualizar) ou `None` quando deixa de valer.
     Incompativel(Option<String>),
+    /// O serviço foi trocado por uma atualização (U-42): a janela deve ser
+    /// reaberta; a thread de comunicação para de reconectar.
+    Atualizado,
     /// Uma operação começou.
     Ocupado(Comando),
     /// Uma operação terminou.
@@ -308,6 +325,10 @@ pub struct EstadoUi {
     pub ocupado: Option<Comando>,
     /// Preferências em edição (ainda não enviadas).
     pub rascunho: Preferencias,
+    /// O nv-tuner foi atualizado com esta janela aberta (U-42).
+    pub atualizado: bool,
+    /// Versão cujo aviso “Atualizado para” já foi dispensado nesta janela.
+    pub atualizacao_dispensada: Option<String>,
 }
 
 pub fn preferencias_padrao() -> Preferencias {
@@ -329,6 +350,8 @@ impl EstadoUi {
             mensagem: None,
             ocupado: None,
             rascunho: preferencias_padrao(),
+            atualizado: false,
+            atualizacao_dispensada: None,
         }
     }
 
@@ -347,14 +370,14 @@ impl EstadoUi {
 
     /// Ações de escrita só existem com o serviço conectado e ocioso.
     pub fn pode_escrever(&self) -> bool {
-        self.conexao == Conexao::Servico && self.ocupado.is_none()
+        self.conexao == Conexao::Servico && self.ocupado.is_none() && !self.atualizado
     }
 
     pub fn pode_executar(&self, c: &Comando) -> bool {
         if c.escreve() {
             self.pode_escrever()
         } else {
-            self.ocupado.is_none()
+            self.ocupado.is_none() && !self.atualizado
         }
     }
 
@@ -435,6 +458,39 @@ impl EstadoUi {
         }
     }
 
+    /// Estado da atualização automática, só com o serviço conectado.
+    pub fn atualizacao(&self) -> Option<&EstadoAtualizacao> {
+        self.dados
+            .estado
+            .as_ref()
+            .filter(|_| self.conexao == Conexao::Servico)
+            .map(|e| &e.atualizacao)
+    }
+
+    /// Versão do aviso “Atualizado para a vX”, enquanto não visto (U-47).
+    pub fn aviso_atualizado(&self) -> Option<&str> {
+        self.atualizacao()
+            .filter(|a| a.nao_vista)
+            .and_then(|a| a.ultima_atualizacao.as_ref())
+            .map(|u| u.para.as_str())
+            .filter(|v| self.atualizacao_dispensada.as_deref() != Some(*v))
+    }
+
+    /// Dispensa o aviso: some na hora e devolve o comando que grava a
+    /// versão como vista no serviço.
+    pub fn dispensar_aviso_atualizado(&mut self) -> Option<Comando> {
+        let versao = self.aviso_atualizado()?.to_owned();
+        self.atualizacao_dispensada = Some(versao.clone());
+        Some(Comando::MarcarAtualizacaoVista { versao })
+    }
+
+    /// Linhas de estado da atualização para a Visão geral (U-48).
+    pub fn linhas_atualizacao(&self, agora_unix: u64) -> Vec<String> {
+        self.atualizacao()
+            .map(|a| textos::linhas_atualizacao(a, agora_unix))
+            .unwrap_or_default()
+    }
+
     pub fn restauracao_usuario_pendente(&self) -> bool {
         self.dados
             .estado
@@ -487,6 +543,11 @@ impl EstadoUi {
                 }
             }
             Evento::Incompativel(m) => self.incompativel = m,
+            Evento::Atualizado => {
+                self.atualizado = true;
+                self.ocupado = None;
+                self.incompativel = None;
+            }
             Evento::Ocupado(c) => {
                 self.ocupado = Some(c);
                 self.mensagem = None;
@@ -515,8 +576,35 @@ impl EstadoUi {
                 if matches!(comando, Comando::DefinirPreferencias(_)) {
                     self.rascunho = self.preferencias_atuais();
                 }
+                if self.atualizado {
+                    // A faixa “foi atualizado” já explica; sem erro de transporte.
+                    self.mensagem = None;
+                }
             }
         }
+    }
+}
+
+/// A troca do serviço é uma atualização do nv-tuner (U-42)? `atual` é o
+/// estado recém-lido (`None` quando o pipe caiu depois de já ter conectado);
+/// `anterior`, o último estado lido. Com o pipe caído, só conta como
+/// atualização se o serviço estava baixando ou instalando uma versão; fora
+/// disso é serviço parado (modo de visualização).
+pub fn upgrade_detectado(
+    anterior: Option<&Estado>,
+    atual: Option<&Estado>,
+    versao_ui: &str,
+) -> bool {
+    match atual {
+        Some(e) => !e.versao_servico.is_empty() && e.versao_servico != versao_ui,
+        None => anterior
+            .and_then(|e| e.atualizacao.pendente.as_ref())
+            .is_some_and(|p| {
+                matches!(
+                    p.motivo,
+                    MotivoPendente::Baixando | MotivoPendente::Instalando
+                )
+            }),
     }
 }
 
@@ -1068,6 +1156,226 @@ mod testes {
         assert_eq!(ui.incompativel.as_deref(), Some(m.as_str()));
         ui.aplicar(Evento::Servico(Dados::default()));
         assert_eq!(ui.incompativel, None, "serviço compatível limpa o aviso");
+    }
+
+    fn com_atualizacao(a: EstadoAtualizacao) -> Dados {
+        Dados {
+            estado: Some(Estado {
+                atualizacao: a,
+                ..estado(preferencias_padrao())
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn concluida(para: &str, reinicio: bool) -> nvt_ipc::AtualizacaoConcluida {
+        nvt_ipc::AtualizacaoConcluida {
+            de: "1.0.0".into(),
+            para: para.into(),
+            quando_unix: 100,
+            reinicio_pendente: reinicio,
+        }
+    }
+
+    #[test]
+    fn aviso_atualizado_uma_vez_e_marca_vista() {
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        let a = EstadoAtualizacao {
+            versao_instalada: "1.1.0".into(),
+            ultima_atualizacao: Some(concluida("1.1.0", false)),
+            nao_vista: true,
+            ..Default::default()
+        };
+        ui.aplicar(Evento::Servico(com_atualizacao(a.clone())));
+        assert_eq!(ui.aviso_atualizado(), Some("1.1.0"));
+        assert_eq!(
+            textos::atualizado_para("1.1.0"),
+            "Atualizado para a v1.1.0."
+        );
+        let c = ui.dispensar_aviso_atualizado();
+        assert_eq!(
+            c,
+            Some(Comando::MarcarAtualizacaoVista {
+                versao: "1.1.0".into()
+            })
+        );
+        assert!(c.as_ref().unwrap().escreve());
+        assert_eq!(c.unwrap().mensagem_sucesso(), None);
+        // Some na hora, mesmo antes de o serviço gravar a marca.
+        ui.aplicar(Evento::Servico(com_atualizacao(a.clone())));
+        assert_eq!(ui.aviso_atualizado(), None);
+        assert_eq!(ui.dispensar_aviso_atualizado(), None);
+        // Já vista no serviço: nada a mostrar.
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        ui.aplicar(Evento::Servico(com_atualizacao(EstadoAtualizacao {
+            nao_vista: false,
+            ..a.clone()
+        })));
+        assert_eq!(ui.aviso_atualizado(), None);
+        // Uma versão mais nova volta a mostrar o aviso.
+        let mut ui2 = EstadoUi::new(Tela::VisaoGeral);
+        ui2.atualizacao_dispensada = Some("1.1.0".into());
+        ui2.aplicar(Evento::Servico(com_atualizacao(EstadoAtualizacao {
+            ultima_atualizacao: Some(concluida("1.2.0", false)),
+            ..a
+        })));
+        assert_eq!(ui2.aviso_atualizado(), Some("1.2.0"));
+    }
+
+    #[test]
+    fn linhas_de_estado_da_atualizacao() {
+        use nvt_ipc::{AtualizacaoPendente, ErroVerificacao, FalhaAtualizacao};
+        let agora = 10_000;
+        let mut a = EstadoAtualizacao {
+            versao_instalada: "1.1.0".into(),
+            ultima_verificacao_unix: Some(agora - 5 * 60),
+            proxima_verificacao_unix: Some(agora + 6 * 3600),
+            ..Default::default()
+        };
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        assert!(ui.linhas_atualizacao(agora).is_empty(), "sem serviço");
+        ui.aplicar(Evento::Servico(com_atualizacao(a.clone())));
+        assert_eq!(
+            ui.linhas_atualizacao(agora),
+            vec!["Versão 1.1.0 · última verificação há 5 min · próxima em 6 h"]
+        );
+        assert!(
+            textos::linha_versao_atualizacao(&EstadoAtualizacao::default(), agora)
+                .contains("ainda não verificou")
+        );
+
+        let motivos = [
+            (MotivoPendente::JogoAberto, "pendente: jogo aberto"),
+            (
+                MotivoPendente::OutraInstalacao,
+                "aguardando outra instalação do Windows",
+            ),
+            (
+                MotivoPendente::ListaIndisponivel,
+                "não foi possível conferir",
+            ),
+            (MotivoPendente::Baixando, "Baixando a atualização v1.2.0"),
+            (
+                MotivoPendente::Instalando,
+                "Instalando a atualização v1.2.0",
+            ),
+        ];
+        for (motivo, esperado) in motivos {
+            let t = textos::pendencia_atualizacao(&AtualizacaoPendente {
+                versao: "1.2.0".into(),
+                motivo,
+                desde_unix: 0,
+            });
+            assert!(t.contains(esperado), "{t}");
+        }
+
+        a.ultima_atualizacao = Some(concluida("1.1.0", true));
+        a.falha = Some(FalhaAtualizacao {
+            versao: "1.2.0".into(),
+            codigo: 1603,
+            tentativas: 1,
+            abandonada: false,
+            quando_unix: 0,
+        });
+        a.erro_verificacao = Some(ErroVerificacao::SemConexao);
+        let linhas = textos::linhas_atualizacao(&a, agora);
+        assert_eq!(linhas.len(), 4);
+        assert_eq!(
+            linhas[1],
+            "Reinicie o Windows quando puder para concluir a atualização."
+        );
+        assert_eq!(
+            linhas[2],
+            "Falha ao instalar v1.2.0 (código 1603); nova tentativa em 6 h."
+        );
+        assert_eq!(
+            linhas[3],
+            "Sem conexão com o GitHub; nova tentativa em 6 h."
+        );
+        let abandonada = textos::falha_atualizacao(
+            &FalhaAtualizacao {
+                abandonada: true,
+                tentativas: 3,
+                ..a.falha.clone().unwrap()
+            },
+            None,
+            agora,
+        );
+        assert!(abandonada.contains("código 1603") && abandonada.contains("3 tentativas"));
+        for (e, esperado) in [
+            (ErroVerificacao::RecusadoHttp(403), "HTTP 403"),
+            (ErroVerificacao::Assinatura, "assinatura"),
+            (ErroVerificacao::Manifesto, "inválido"),
+            (ErroVerificacao::Disco, "disco"),
+        ] {
+            let t = textos::erro_verificacao(e, None, agora);
+            assert!(t.contains(esperado) && t.ends_with('.'), "{t}");
+        }
+        // U-49: nada oferece desligar, adiar ou voltar de versão.
+        for l in linhas {
+            let l = l.to_lowercase();
+            assert!(!l.contains("deslig") && !l.contains("adiar") && !l.contains("voltar"));
+        }
+    }
+
+    #[test]
+    fn tempos_relativos() {
+        assert_eq!(textos::ha(100, 130), "agora há pouco");
+        assert_eq!(textos::ha(0, 3 * 3600), "há 3 h");
+        assert_eq!(textos::ha(0, 86_400), "há 1 dia");
+        assert_eq!(textos::ha(0, 3 * 86_400), "há 3 dias");
+        assert_eq!(textos::em(0, 10), "em instantes");
+        assert_eq!(textos::em(90, 0), "em 2 min");
+        assert_eq!(textos::em(2 * 86_400, 0), "em 2 dias");
+    }
+
+    #[test]
+    fn queda_durante_upgrade_vira_aviso_de_reabrir() {
+        let versao_ui = "1.1.0";
+        let com = |versao: &str, motivo: Option<MotivoPendente>| Estado {
+            versao_servico: versao.into(),
+            atualizacao: EstadoAtualizacao {
+                pendente: motivo.map(|motivo| nvt_ipc::AtualizacaoPendente {
+                    versao: "1.2.0".into(),
+                    motivo,
+                    desde_unix: 0,
+                }),
+                ..Default::default()
+            },
+            ..estado(preferencias_padrao())
+        };
+        let mesma = com(versao_ui, None);
+        let instalando = com(versao_ui, Some(MotivoPendente::Instalando));
+        let baixando = com(versao_ui, Some(MotivoPendente::Baixando));
+        let jogo = com(versao_ui, Some(MotivoPendente::JogoAberto));
+        // Pipe caiu: só é atualização se estava baixando/instalando.
+        assert!(upgrade_detectado(Some(&instalando), None, versao_ui));
+        assert!(upgrade_detectado(Some(&baixando), None, versao_ui));
+        assert!(!upgrade_detectado(Some(&mesma), None, versao_ui));
+        assert!(!upgrade_detectado(Some(&jogo), None, versao_ui));
+        assert!(!upgrade_detectado(None, None, versao_ui));
+        // Serviço respondeu com outra versão.
+        assert!(upgrade_detectado(
+            None,
+            Some(&com("1.2.0", None)),
+            versao_ui
+        ));
+        assert!(!upgrade_detectado(None, Some(&mesma), versao_ui));
+        assert!(!upgrade_detectado(None, Some(&com("", None)), versao_ui));
+
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(instalando),
+            ..Default::default()
+        }));
+        ui.aplicar(Evento::Ocupado(Comando::AplicarAgora));
+        ui.aplicar(Evento::Atualizado);
+        assert!(ui.atualizado);
+        assert_eq!(ui.ocupado, None);
+        assert!(!ui.pode_escrever());
+        assert!(!ui.pode_executar(&Comando::Atualizar));
+        assert!(textos::ATUALIZADO_REABRA.contains("foi atualizado"));
+        assert!(textos::ATUALIZADO_REABRA.contains("abra de novo"));
     }
 
     #[test]

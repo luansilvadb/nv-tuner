@@ -672,16 +672,21 @@ fn sai_quando_servico_some_e_instalacao_foi_removida() {
     let (p, mut a, agora) = preparar(ProcessosFalsos::default());
     let removida = InstalacaoFalsa(Cell::new(false));
     let presente = InstalacaoFalsa(Cell::new(true));
-    assert!(!a.desinstalado(agora + Duration::from_secs(600), &removida));
+    assert!(!a.desinstalado(agora, &removida));
+    assert!(!a.desinstalado(agora, &presente));
 
     a.transporte
         .respostas
         .push_back(Err(io::Error::other("pipe indisponível")));
     assert!(a.passo(&p, agora, false).is_err());
     let depois = agora + Duration::from_secs(121);
+    assert!(!a.desinstalado(agora + Duration::from_secs(1), &removida));
     assert!(!a.desinstalado(agora + Duration::from_secs(60), &removida));
     assert!(!a.desinstalado(depois, &presente));
-    assert!(a.desinstalado(depois, &removida));
+    // Presença zera a ausência: precisa de nova ausência contínua.
+    assert!(!a.desinstalado(depois, &removida));
+    assert!(a.desinstalado(depois + Duration::from_secs(120), &removida));
+    let depois = depois + Duration::from_secs(120);
 
     // A falha persiste desde a primeira; o serviço voltar zera a contagem.
     a.transporte
@@ -696,4 +701,59 @@ fn sai_quando_servico_some_e_instalacao_foi_removida() {
     a.passo(&p, agora + Duration::from_secs(200), false)
         .unwrap();
     assert!(!a.desinstalado(agora + Duration::from_secs(900), &removida));
+}
+
+#[test]
+fn versao_incompativel_no_upgrade_e_indisponivel_temporario() {
+    let (p, mut a, agora) = preparar(ProcessosFalsos::default());
+    let removida = InstalacaoFalsa(Cell::new(false));
+    responder(&mut a, [plano(1, 0, OperacaoUsuario::Aplicar, Vec::new())]);
+    a.passo(&p, agora, false).unwrap();
+    let antes = p.0.borrow().clone();
+
+    // Serviço novo (v7) responde erro estável; serviço antigo manda envelope
+    // de outra versão: os dois são "indisponível temporário", sem sair.
+    a.transporte.respostas.push_back(Ok(Resposta::erro(
+        nvt_ipc::CodigoErro::VersaoIncompativel,
+        "v7",
+    )));
+    a.transporte.respostas.push_back(Err(io::Error::other(
+        nvt_ipc::ErroIpc::VersaoIncompativel {
+            recebida: 5,
+            esperada: nvt_ipc::PROTOCOL_VERSION,
+        },
+    )));
+    let mut t = agora + Duration::from_secs(61);
+    for _ in 0..2 {
+        assert!(a.passo(&p, t, false).is_err());
+        assert_eq!(*p.0.borrow(), antes, "estado local intocado");
+        assert!(a.armazem.gravacoes.is_empty());
+        assert!(!a.desinstalado(t, &removida));
+        t += Duration::from_secs(300);
+        assert!(!a.desinstalado(t, &removida));
+    }
+
+    // Serviço compatível de volta: retoma normalmente.
+    responder(&mut a, [plano(1, 0, OperacaoUsuario::Aplicar, Vec::new())]);
+    assert_eq!(a.passo(&p, t, false).unwrap(), Controle::Continuar);
+    assert!(!a.desinstalado(t + Duration::from_secs(900), &removida));
+}
+
+#[test]
+fn ausencia_momentanea_da_instalacao_no_upgrade_nao_e_desinstalacao() {
+    let (p, mut a, agora) = preparar(ProcessosFalsos::default());
+    let removida = InstalacaoFalsa(Cell::new(false));
+    let presente = InstalacaoFalsa(Cell::new(true));
+    a.transporte
+        .respostas
+        .push_back(Err(io::Error::other("pipe indisponível")));
+    assert!(a.passo(&p, agora, false).is_err());
+    // Serviço fora há muito, mas o MSI regrava exe e Run entre as checagens.
+    let mut t = agora + Duration::from_secs(300);
+    for _ in 0..5 {
+        assert!(!a.desinstalado(t, &removida));
+        t += Duration::from_secs(60);
+        assert!(!a.desinstalado(t, &presente));
+        t += Duration::from_secs(1);
+    }
 }

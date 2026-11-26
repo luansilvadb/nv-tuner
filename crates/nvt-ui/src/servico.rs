@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use nvt_ipc::{ErroIpc, Requisicao, Resposta};
 
 use crate::local;
-use crate::modelo::{Comando, Dados, Desfecho, Evento, grupos_do_plano};
+use crate::modelo::{Comando, Dados, Desfecho, Evento, grupos_do_plano, upgrade_detectado};
 use crate::textos;
 
 /// Intervalo entre tentativas de conexão no modo de visualização.
@@ -67,6 +67,10 @@ struct Trabalhador {
     eventos: Sender<Evento>,
     servico: bool,
     ultima_tentativa: Option<Instant>,
+    /// Último estado lido do serviço (para reconhecer a queda num upgrade).
+    ultimo_estado: Option<nvt_ipc::Estado>,
+    /// O nv-tuner foi atualizado (U-42): não reconecta mais.
+    encerrado: bool,
 }
 
 impl Trabalhador {
@@ -76,6 +80,8 @@ impl Trabalhador {
             eventos,
             servico: false,
             ultima_tentativa: None,
+            ultimo_estado: None,
+            encerrado: false,
         }
     }
 
@@ -149,6 +155,9 @@ impl Trabalhador {
     /// Atualiza os dados. No modo de visualização, só tenta reconectar a
     /// cada [`RECONEXAO`]; o cálculo local é refeito apenas quando `forcar`.
     fn atualizar(&mut self, forcar: bool) {
+        if self.encerrado {
+            return;
+        }
         if !self.servico
             && !forcar
             && self
@@ -159,12 +168,19 @@ impl Trabalhador {
         }
         self.ultima_tentativa = Some(Instant::now());
         let resultado = self.buscar();
+        if self.upgrade(&resultado) {
+            self.encerrado = true;
+            self.servico = false;
+            self.enviar(Evento::Atualizado);
+            return;
+        }
         if let Err(Falha::Ausente(m)) = &resultado {
             self.enviar(Evento::Incompativel(m.clone()));
         }
         match resultado {
             Ok(d) => {
                 self.servico = true;
+                self.ultimo_estado = d.estado.clone();
                 self.enviar(Evento::Servico(d));
             }
             Err(Falha::Ausente(_)) | Err(Falha::Comunicacao(_)) | Err(Falha::Recusa(_))
@@ -176,6 +192,24 @@ impl Trabalhador {
         }
     }
 
+    /// O resultado indica que o serviço foi trocado por uma atualização?
+    /// Versão diferente da interface, ou queda (inclusive protocolo novo)
+    /// depois de conectar enquanto o serviço baixava ou instalava.
+    fn upgrade(&self, r: &Result<Dados, Falha>) -> bool {
+        let versao = env!("CARGO_PKG_VERSION");
+        match r {
+            Ok(d) => d
+                .estado
+                .as_ref()
+                .is_some_and(|e| upgrade_detectado(None, Some(e), versao)),
+            Err(Falha::Ausente(Some(_))) if self.servico => true,
+            Err(Falha::Ausente(_) | Falha::Comunicacao(_)) if self.servico => {
+                upgrade_detectado(self.ultimo_estado.as_ref(), None, versao)
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Calcula os dados localmente, somente leitura.
     fn modo_visualizacao(&mut self) {
         self.servico = false;
@@ -183,6 +217,10 @@ impl Trabalhador {
     }
 
     fn tratar(&mut self, c: Comando) {
+        if self.encerrado {
+            self.concluir(c, Err(textos::ATUALIZADO_REABRA.into()));
+            return;
+        }
         match &c {
             Comando::Atualizar => {
                 self.enviar(Evento::Ocupado(c.clone()));
@@ -229,6 +267,9 @@ impl Trabalhador {
                     _ => None,
                 },
                 destino: destino.clone(),
+            },
+            Comando::MarcarAtualizacaoVista { versao } => Requisicao::MarcarAtualizacaoVista {
+                versao: versao.clone(),
             },
             Comando::Atualizar => unreachable!("tratado acima"),
         };

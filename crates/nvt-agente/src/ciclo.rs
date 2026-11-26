@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     io,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -53,6 +54,16 @@ pub struct Agente<A, T> {
     proxima_deriva: Instant,
     falhas: u32,
     indisponivel_desde: Option<Instant>,
+    /// Primeira observação da instalação ausente, zerada ao vê-la presente.
+    ausente_desde: Cell<Option<Instant>>,
+}
+
+/// Envelope de outra versão (serviço novo ou antigo no meio de um upgrade):
+/// o serviço existe, só não fala o nosso protocolo agora (U-41).
+fn versao_incompativel(erro: &io::Error) -> bool {
+    erro.get_ref()
+        .and_then(|e| e.downcast_ref::<nvt_ipc::ErroIpc>())
+        .is_some_and(|e| matches!(e, nvt_ipc::ErroIpc::VersaoIncompativel { .. }))
 }
 
 fn erro(mensagem: &'static str) -> io::Error {
@@ -92,6 +103,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             proxima_deriva: agora,
             falhas: 0,
             indisponivel_desde: None,
+            ausente_desde: Cell::new(None),
         })
     }
 
@@ -102,11 +114,18 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
     }
 
     /// Depois de `ABANDONO` sem serviço, a ausência do executável ou da
-    /// entrada Run indica desinstalação: o agente sai e libera o arquivo.
+    /// entrada Run, contínua também por `ABANDONO`, indica desinstalação: o
+    /// agente sai e libera o arquivo. Um upgrade do MSI remove e regrava os
+    /// dois; uma ausência momentânea não basta (U-41).
     pub fn desinstalado(&self, agora: Instant, instalacao: &impl Instalacao) -> bool {
-        self.indisponivel_desde
-            .is_some_and(|desde| agora.saturating_duration_since(desde) >= ABANDONO)
-            && !instalacao.presente()
+        if instalacao.presente() {
+            self.ausente_desde.set(None);
+            return false;
+        }
+        let ausente = self.ausente_desde.get().map_or(agora, |d| d.min(agora));
+        self.ausente_desde.set(Some(ausente));
+        let passou = |desde: Instant| agora.saturating_duration_since(desde) >= ABANDONO;
+        passou(ausente) && self.indisponivel_desde.is_some_and(passou)
     }
 
     pub fn passo(
@@ -189,10 +208,21 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             ultima_tarefa,
             geracao_restaurada,
         });
-        exec.agente.indisponivel_desde = match resposta {
-            Ok(_) => None,
-            Err(_) => Some(exec.agente.indisponivel_desde.unwrap_or(agora)),
+        let incompativel = match &resposta {
+            Ok(Resposta::Erro { codigo, .. }) => *codigo == nvt_ipc::CodigoErro::VersaoIncompativel,
+            Ok(_) => false,
+            Err(erro) => versao_incompativel(erro),
         };
+        // Serviço presente em outra versão não conta para desinstalação.
+        exec.agente.indisponivel_desde = match resposta {
+            Err(_) if !incompativel => Some(exec.agente.indisponivel_desde.unwrap_or(agora)),
+            _ => None,
+        };
+        if incompativel {
+            // Indisponível temporário durante o upgrade: nada é gravado nem
+            // aplicado; a consulta seguinte, com recuo, tenta de novo.
+            return Err(erro("serviço com versão de protocolo diferente"));
+        }
         let resposta = resposta.map_err(|erro| {
             io::Error::other(format!("lista atual do serviço indisponível: {erro}"))
         })?;

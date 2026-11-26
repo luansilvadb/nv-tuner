@@ -4523,6 +4523,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvt-assinar"
+version = "0.0.2"
+dependencies = [
+ "minisign",
+ "nvt-atualizacao",
+]
+
+[[package]]
 name = "nvt-atualizacao"
 version = "0.0.2"
 dependencies = [

@@ -138,12 +138,18 @@ impl Janela {
 
     fn avisos(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut v = v_flex().gap_2();
+        if self.ui.atualizado {
+            v = v.child(
+                Alert::info("atualizado-reabra", t::ATUALIZADO_REABRA)
+                    .title(t::ATUALIZADO_REABRA_TITULO),
+            );
+        }
         if let Some(m) = &self.ui.incompativel {
             v = v.child(
                 Alert::error("versao-incompativel", m.clone()).title(t::INCOMPATIVEL_TITULO),
             );
         }
-        if self.ui.conexao == Conexao::Visualizacao {
+        if self.ui.conexao == Conexao::Visualizacao && !self.ui.atualizado {
             v = v.child(
                 Alert::warning("aviso-visualizacao", t::AVISO_VISUALIZACAO)
                     .title(t::AVISO_VISUALIZACAO_TITULO),
@@ -300,6 +306,39 @@ impl Janela {
             &tema,
         );
 
+        let linhas_atualizacao = self.ui.linhas_atualizacao(agora_unix());
+        let atualizacao = (!linhas_atualizacao.is_empty()).then(|| {
+            cartao(
+                t::SECAO_ATUALIZACAO,
+                v_flex().gap_1().children(
+                    linhas_atualizacao
+                        .into_iter()
+                        .map(|l| div().text_sm().child(l)),
+                ),
+                &tema,
+            )
+        });
+        let aviso_atualizado = self.ui.aviso_atualizado().map(|versao| {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().flex_1().child(Alert::success(
+                    "atualizado-para",
+                    t::atualizado_para(versao),
+                )))
+                .child(
+                    Button::new("atualizado-ok")
+                        .primary()
+                        .label(t::BOTAO_OK)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(c) = this.ui.dispensar_aviso_atualizado() {
+                                this.enviar(c, cx);
+                            }
+                            cx.notify();
+                        })),
+                )
+        });
+
         let c = self.ui.conformidade();
         let numero = |n: usize, rotulo: &'static str, cor: Hsla| {
             v_flex()
@@ -422,6 +461,7 @@ impl Janela {
                     ),
             )
             .child(avisos)
+            .children(aviso_atualizado)
             .child(
                 h_flex()
                     .gap_4()
@@ -436,6 +476,7 @@ impl Janela {
                     .child(div().flex_1().min_w_0().child(servico))
                     .child(div().flex_1().min_w_0().child(conformidade)),
             )
+            .children(atualizacao)
             .child(deriva)
     }
 
@@ -1645,4 +1686,11 @@ fn grupo(g: &GrupoMudancas, tema: &Theme) -> Div {
                 ),
         )
         .children(g.itens.iter().map(|m| item(m, tema)))
+}
+
+/// Instante atual (Unix, segundos) para os tempos relativos da atualização.
+fn agora_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }

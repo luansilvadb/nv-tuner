@@ -1046,3 +1046,148 @@ pub fn faca_no_jogo_resumo(n: usize) -> String {
         n => format!("{DETALHE_FACA_NO_JOGO}: {n} itens"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Atualização automática (docs/spec/atualizacao.md U-42, U-47, U-48)
+// ---------------------------------------------------------------------------
+
+pub const SECAO_ATUALIZACAO: &str = "Atualização do nv-tuner";
+pub const BOTAO_OK: &str = "OK";
+pub const REINICIO_PENDENTE: &str = "Reinicie o Windows quando puder para concluir a atualização.";
+pub const ATUALIZADO_REABRA_TITULO: &str = "O nv-tuner foi atualizado";
+pub const ATUALIZADO_REABRA: &str =
+    "O nv-tuner foi atualizado. Feche esta janela e abra de novo para usar a versão nova.";
+
+/// Banner exibido uma vez depois de uma atualização (U-47).
+pub fn atualizado_para(versao: &str) -> String {
+    format!("Atualizado para a v{versao}.")
+}
+
+/// Tempo decorrido em linguagem simples: “agora há pouco”, “há 5 min”…
+pub fn ha(quando_unix: u64, agora_unix: u64) -> String {
+    let s = agora_unix.saturating_sub(quando_unix);
+    match s {
+        0..60 => "agora há pouco".into(),
+        60..3600 => format!("há {} min", s / 60),
+        3600..86_400 => format!("há {} h", s / 3600),
+        _ => match s / 86_400 {
+            1 => "há 1 dia".into(),
+            d => format!("há {d} dias"),
+        },
+    }
+}
+
+/// Tempo até um instante futuro: “em instantes”, “em 5 min”…
+pub fn em(quando_unix: u64, agora_unix: u64) -> String {
+    let s = quando_unix.saturating_sub(agora_unix);
+    match s {
+        0..60 => "em instantes".into(),
+        60..3600 => format!("em {} min", s.div_ceil(60)),
+        3600..86_400 => format!("em {} h", s / 3600),
+        _ => match s / 86_400 {
+            1 => "em 1 dia".into(),
+            d => format!("em {d} dias"),
+        },
+    }
+}
+
+/// “; nova tentativa em …” quando há próxima verificação agendada.
+fn nova_tentativa(proxima: Option<u64>, agora: u64) -> String {
+    proxima.map_or_else(String::new, |p| {
+        format!("; nova tentativa {}", em(p, agora))
+    })
+}
+
+/// Primeira linha de estado: versão e verificações (U-48).
+pub fn linha_versao_atualizacao(e: &nvt_ipc::EstadoAtualizacao, agora: u64) -> String {
+    let versao = if e.versao_instalada.is_empty() {
+        DESCONHECIDO.to_owned()
+    } else {
+        e.versao_instalada.clone()
+    };
+    let mut s = format!("Versão {versao}");
+    match e.ultima_verificacao_unix {
+        Some(u) => s.push_str(&format!(" · última verificação {}", ha(u, agora))),
+        None => s.push_str(" · ainda não verificou atualizações"),
+    }
+    if let Some(p) = e.proxima_verificacao_unix {
+        s.push_str(&format!(" · próxima {}", em(p, agora)));
+    }
+    s
+}
+
+/// Por que a atualização encontrada ainda não foi instalada.
+pub fn pendencia_atualizacao(p: &nvt_ipc::AtualizacaoPendente) -> String {
+    use nvt_ipc::MotivoPendente as M;
+    let v = &p.versao;
+    match p.motivo {
+        M::JogoAberto => format!("Atualização v{v} pendente: jogo aberto."),
+        M::ListaIndisponivel => {
+            format!("Atualização v{v} pendente: não foi possível conferir se há jogo aberto.")
+        }
+        M::OutraInstalacao => {
+            format!("Atualização v{v} pendente: aguardando outra instalação do Windows.")
+        }
+        M::Baixando => format!("Baixando a atualização v{v}…"),
+        M::Instalando => format!("Instalando a atualização v{v}…"),
+    }
+}
+
+/// Falha de instalação, com o código do instalador.
+pub fn falha_atualizacao(
+    f: &nvt_ipc::FalhaAtualizacao,
+    proxima: Option<u64>,
+    agora: u64,
+) -> String {
+    if f.abandonada {
+        format!(
+            "Falha ao instalar v{} (código {}) após {} tentativas; o nv-tuner não tentará \
+             de novo esta versão e aguarda a próxima.",
+            f.versao, f.codigo, f.tentativas
+        )
+    } else {
+        format!(
+            "Falha ao instalar v{} (código {}){}.",
+            f.versao,
+            f.codigo,
+            nova_tentativa(proxima, agora)
+        )
+    }
+}
+
+/// Erro da última verificação, em linguagem simples.
+pub fn erro_verificacao(e: nvt_ipc::ErroVerificacao, proxima: Option<u64>, agora: u64) -> String {
+    use nvt_ipc::ErroVerificacao as E;
+    let base = match e {
+        E::SemConexao => "Sem conexão com o GitHub".to_owned(),
+        E::RecusadoHttp(s) => format!("O GitHub recusou a verificação (HTTP {s})"),
+        E::Assinatura => {
+            "A atualização encontrada não tem assinatura válida e foi descartada".to_owned()
+        }
+        E::Manifesto => "O aviso de nova versão publicado está inválido e foi ignorado".to_owned(),
+        E::Disco => "Não foi possível gravar a atualização no disco".to_owned(),
+    };
+    format!("{base}{}.", nova_tentativa(proxima, agora))
+}
+
+/// Todas as linhas de estado da atualização para a Visão geral (U-48).
+/// Nenhuma oferece desligar, adiar ou voltar de versão (U-49).
+pub fn linhas_atualizacao(e: &nvt_ipc::EstadoAtualizacao, agora: u64) -> Vec<String> {
+    let mut v = vec![linha_versao_atualizacao(e, agora)];
+    if e.ultima_atualizacao
+        .as_ref()
+        .is_some_and(|u| u.reinicio_pendente)
+    {
+        v.push(REINICIO_PENDENTE.to_owned());
+    }
+    if let Some(p) = &e.pendente {
+        v.push(pendencia_atualizacao(p));
+    }
+    if let Some(f) = &e.falha {
+        v.push(falha_atualizacao(f, e.proxima_verificacao_unix, agora));
+    }
+    if let Some(er) = e.erro_verificacao {
+        v.push(erro_verificacao(er, e.proxima_verificacao_unix, agora));
+    }
+    v
+}

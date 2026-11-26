@@ -125,6 +125,23 @@ capacidades relevantes (DLSS, geração de quadros, Reflex, Resizable BAR,
 deriva (setting cujo valor no driver diverge do que foi aplicado). Botões
 **Aplicar agora** (só com serviço), **Reescanear jogos** e **Atualizar**.
 
+Cartão **Atualização do nv-tuner** (só com serviço, U-48): “Versão X · última
+verificação há N min · próxima em N h”, mais, quando houver, “Reinicie o Windows
+quando puder para concluir a atualização.” (instalador terminou com 3010; nunca
+reinicia sozinho), a pendência (jogo aberto, lista de processos ilegível, outra
+instalação do Windows, baixando, instalando), a falha de instalação com o código
+(com nova tentativa ou abandonada) e o erro da última verificação (sem conexão,
+recusa HTTP, assinatura, manifesto, disco). Não há opção de desligar, adiar ou
+voltar de versão (U-49). Depois de uma atualização não vista pelo usuário
+(`nao_vista`), a Visão geral mostra “Atualizado para a vX.Y.Z.” com **OK**, que
+esconde o aviso e envia `MarcarAtualizacaoVista` (U-47).
+
+Se o pipe cair depois de conectar enquanto o serviço baixava ou instalava uma
+versão, ou se o serviço responder com versão diferente da interface (ou outro
+protocolo depois de conectar), a UI mostra “O nv-tuner foi atualizado. Feche esta
+janela e abra de novo…”, desabilita as ações e para de reconectar (U-42). Queda
+fora disso é serviço parado: modo de visualização, como antes.
+
 Os avisos `gsync_sem_vrr` e `vrr_desligado_no_painel` (F1-15) usam textos
 próprios da UI (`textos::GSYNC_SEM_VRR`, `textos::VRR_DESLIGADO_NO_PAINEL`):
 “Seu monitor não tem G-SYNC/VRR: escolha “sem sincronismo”…” e “Ative o

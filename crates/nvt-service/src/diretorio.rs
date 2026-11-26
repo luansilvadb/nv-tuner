@@ -455,6 +455,46 @@ pub fn criar_seguro(dir: &Path) -> io::Result<()> {
     }
 }
 
+/// Prepara uma subpasta privada do diretório de estado (ex.:
+/// `%ProgramData%\nv-tuner\atualizacao`, spec U-20): cria, se faltar, com
+/// dono Administradores e DACL protegida só SYSTEM/Administradores (sem a
+/// leitura de Usuários da raiz) e confere, sem seguir reparse points, a
+/// subpasta e o conteúdo ([`verificar`], com o limite de itens de
+/// [`Problema::Demais`]) e a DACL privada da própria subpasta. Não corrige
+/// nem põe em quarentena: qualquer problema é recusa. Devolve `true` se criou.
+pub fn preparar_subpasta_privada(dir: &Path) -> Result<bool, Vec<Problema>> {
+    const SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+    const SDDL_SEM_DONO: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+    let io_erro = |e: io::Error| vec![Problema::Io(dir.to_owned(), e.to_string())];
+    let criada = match fs::symlink_metadata(dir) {
+        Ok(_) => false,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            match criar_com(dir, SDDL) {
+                Err(e) if e.raw_os_error() == Some(ERROR_INVALID_OWNER as i32) => {
+                    criar_com(dir, SDDL_SEM_DONO)
+                }
+                r => r,
+            }
+            .map_err(io_erro)?;
+            true
+        }
+        Err(e) => return Err(io_erro(e)),
+    };
+    let mut problemas = verificar(dir);
+    if problemas.is_empty() {
+        // `verificar` já recusou reparse point na raiz; aqui só a DACL privada.
+        match abrir_item(dir) {
+            Ok(f) => conferir_seguranca(&f, dir, &mut problemas, true),
+            Err(e) => problemas.push(Problema::Io(dir.to_owned(), e.to_string())),
+        }
+    }
+    if problemas.is_empty() {
+        Ok(criada)
+    } else {
+        Err(problemas)
+    }
+}
+
 fn criar_com(dir: &Path, sddl: &str) -> io::Result<()> {
     com_descritor(sddl, |sa| {
         let nome = utf16(dir);

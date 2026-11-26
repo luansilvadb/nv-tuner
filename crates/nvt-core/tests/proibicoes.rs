@@ -55,17 +55,15 @@ const PROIBIDOS: &[&str] = &[
 /// termo, linhas com ocorrência). Fora desta lista, qualquer ocorrência falha; no arquivo
 /// listado, contagem diferente (a mais ou a menos) falha quando o arquivo existe.
 const PERMITIDOS: &[(&str, &str, usize)] = &[
-    // lote 2: sobe para 1 quando o lançador auditado existir.
     (
         "crates/nvt-service/src/atualizacao/lancador.rs",
         "CreateProcessW",
-        0,
+        1,
     ),
-    // lote 2: sobe para 1 quando o lançador auditado existir.
     (
         "crates/nvt-service/src/atualizacao/lancador.rs",
         "CreateProcessAsUserW",
-        0,
+        1,
     ),
 ];
 
@@ -406,6 +404,22 @@ fn nenhuma_api_proibida_em_codigo_de_producao() {
          código de produção:\n{}\n",
         relatorio.len(),
         relatorio.join("\n")
+    );
+}
+
+/// §9.6: o lançador monta o msiexec pela pasta de sistema, nunca pelo PATH.
+#[test]
+fn lancador_usa_msiexec_da_pasta_de_sistema() {
+    let caminho = raiz_workspace().join("crates/nvt-service/src/atualizacao/lancador.rs");
+    let fonte = fs::read_to_string(&caminho).expect("ler lancador.rs");
+    let codigo: String = lexer(&fonte).into_iter().map(|l| l.busca + "\n").collect();
+    assert!(
+        codigo.contains("const MSIEXEC: &str = \"msiexec.exe\""),
+        "lancador.rs deve conter `MSIEXEC: &str = \"msiexec.exe\"`"
+    );
+    assert!(
+        contem_palavra(&codigo, "GetSystemDirectoryW"),
+        "lancador.rs deve montar o caminho por GetSystemDirectoryW"
     );
 }
 
