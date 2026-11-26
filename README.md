@@ -142,18 +142,21 @@ caminhos da sua máquina, números de série). Vulnerabilidades de segurança
   privilégios de administrador.
 - Prioridade das decisões: **estabilidade > latência > FPS**, respeitando um
   teto de qualidade (padrão: "Equilibrado") e as escolhas manuais do usuário.
-- Ajusta, por mecanismos oficiais, duas camadas: o **driver NVIDIA** (perfis
-  DRS via NVAPI) e o **Windows** (configurações documentadas, por APIs do
+- Ajusta, por mecanismos oficiais, três camadas: o **driver NVIDIA** (perfis
+  DRS via NVAPI), o **Windows** (configurações documentadas, por APIs do
   sistema, só itens de uma lista permitida — veja [Ajustes do
-  Windows](#ajustes-do-windows-experimental)); ajustes em arquivos de
-  configuração de jogos chegam numa próxima versão.
+  Windows](#ajustes-do-windows-experimental)) e os **arquivos de configuração
+  do usuário de alguns jogos (nunca a pasta de instalação)**, incluindo as
+  opções de inicialização da Steam, sempre com valores que o próprio jogo
+  oferece no menu (veja [Configuração de
+  jogos](#configuração-de-jogos-experimental)).
 - Toda alteração é registrada, explicada e pode ser desfeita com **Restaurar
   original**.
 - Nunca injeta código, nunca abre processos de jogos ou de anticheats (vê os
   jogos abertos só pela lista de processos, por nome), nunca altera
   executáveis nem arquivos da pasta de instalação dos jogos (só os lê, com
   compartilhamento total), nunca mexe em recursos de segurança (Secure Boot,
-  TPM, VBS/HVCI) nem no BCD e adia qualquer gravação (no driver e no Windows) enquanto detecta
+  TPM, VBS/HVCI) nem no BCD e adia qualquer gravação (no driver, no Windows e nos arquivos de jogo) enquanto detecta
   um jogo (instalado detectado ou da base competitiva) ou anticheat aberto.
   Como a detecção é por nome, ela pode falhar; por isso a promessa é “adia
   enquanto detecta”. Enquanto isso, a faixa **Jogo aberto** da interface
@@ -214,6 +217,36 @@ Além do driver, o nv-tuner pode corrigir quatro configurações do Windows do
   Mode, VRR do Windows, HAGS, MPO, plano de energia, TPM, Secure Boot e
   VBS/HVCI. O app nunca altera TPM, Secure Boot, VBS nem o BCD.
 
+## Configuração de jogos (experimental)
+
+Em alguns jogos, o nv-tuner pode gravar uma chave no **arquivo de
+configuração do seu usuário** (em Documentos ou na pasta `userdata` da
+Steam), nunca na pasta de instalação. Hoje grava apenas:
+
+| Jogo | O que grava | Onde |
+|---|---|---|
+| Rainbow Six Siege | `FPSLimit` (30 a 360), com o seu limite de FPS | `GameSettings.ini` da conta Ubisoft, em Documentos |
+| Counter-Strike 2 | `+fps_max` (60 a 360, nunca 0) nas opções de inicialização, com o seu limite de FPS | `localconfig.vdf` da conta Steam |
+| Dota 2 | `+fps_max` (60 a 240) nas opções de inicialização, com o seu limite de FPS; sem limite seu, sobe o padrão de 120 até a taxa do monitor (máximo 240) | `localconfig.vdf` da conta Steam |
+| Rocket League | `OneFrameThreadLag` desligado | `TASystemSettings.ini`, em Documentos |
+
+- **Tudo é experimental e só vale depois de Aceitar**, como nas outras
+  camadas, e pode ser retirado a qualquer momento.
+- Quando o seu limite de FPS vai para o jogo, o limite do driver **daquele
+  perfil** é desligado (para não empilhar dois limitadores), e só quando o
+  limite no jogo foi de fato aplicado.
+- O **agente** grava só com o jogo, os processos protegidos dele e, nos jogos
+  da Steam, o `steam.exe` **fechados**; nunca fecha processo algum. Faz
+  backup do arquivo antes da primeira gravação, troca o arquivo de forma
+  atômica, altera só o trecho do valor e restaura o original na reversão e em
+  **Restaurar original**. Arquivo somente leitura, cópia sincronizada pela
+  Steam Cloud ou conta ambígua não são tocados.
+- **Ficam a confirmar, sem gravação:** `FrameRateLimit` do Fortnite, Max FPS
+  do Rocket League, `+fps_max` do Deadlock e as chaves de Reflex.
+- **Nunca têm arquivo editado:** VALORANT, League of Legends, Marvel Rivals e
+  Call of Duty (proibidos) e Apex Legends, Overwatch 2, PUBG: Battlegrounds e
+  THE FINALS (só orientação).
+
 Plataforma: somente Windows com GPU NVIDIA. Licença: [MIT](LICENSE).
 
 ## Arquitetura em camadas
@@ -227,7 +260,8 @@ Plataforma: somente Windows com GPU NVIDIA. Licença: [MIT](LICENSE).
 | Protocolo | `nvt-ipc` | Mensagens do named pipe entre UI e serviço |
 | Serviço | `nvt-service` | Serviço do Windows privilegiado: único avaliador, aplica planos no driver |
 | Windows | `nvt-windows` | Ajustes do usuário e diagnósticos somente leitura |
-| Agente | `nvt-agente` | Processo do usuário, sem privilégios, que grava a camada Windows |
+| Config de jogo | `nvt-jogocfg` | Editores INI/VDF que preservam bytes, gravação atômica, backup e contas Steam/Ubisoft |
+| Agente | `nvt-agente` | Processo do usuário, sem privilégios, que grava a camada Windows e os arquivos de jogo |
 | Interface | `nvt-ui` | Aplicativo do usuário, sem privilégios |
 
 Detalhes em [`docs/arquitetura.md`](docs/arquitetura.md).

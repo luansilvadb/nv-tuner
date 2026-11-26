@@ -9,6 +9,23 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
+*Configuração de jogos*
+
+### Adicionado
+
+- **Configuração de jogos (experimental, só com Aceitar).** O agente grava, no arquivo de configuração do usuário (nunca na pasta de instalação): `FPSLimit` do Rainbow Six Siege (30 a 360), `+fps_max` do Counter-Strike 2 (60 a 360, nunca 0) e do Dota 2 (60 a 240) nas opções de inicialização da Steam, o teto do Dota 2 acima do padrão 120 (até a taxa do monitor, máximo 240) e `OneFrameThreadLag` desligado no Rocket League.
+- **Seção "Arquivo do jogo"** no cartão do jogo, com valor antes/depois, estado do backup, caminho sem o nome do usuário e reversão individual; mensagens como "feche a Steam para aplicar".
+- Crate **`nvt-jogocfg`**: editores INI e KeyValues/VDF que alteram só o trecho do valor (codificação, fim de linha, comentários e ordem preservados), gravação atômica sem seguir links, backup com SHA-256 antes da primeira gravação, restauração e resolução das contas Steam e Ubisoft.
+- Catálogo de arquivos e chaves em `regras/jogos.toml` (schema 2), com as faixas do menu e chaves `a_confirmar` que nunca são gravadas: `FrameRateLimit` do Fortnite, Max FPS do Rocket League, `+fps_max` do Deadlock e chaves de Reflex.
+- `nvt-service status` mostra a config de jogo da própria sessão (arquivos geridos e pendências), sem caminhos nem contas.
+
+### Alterado
+
+- **Limite de FPS no jogo:** com limite definido e a regra aceita, o limite vai para o jogo e o limite do driver daquele perfil é desligado, só quando o limite no jogo foi aplicado.
+- O agente grava arquivos de jogo só com o jogo, os processos protegidos e o `steam.exe` fechados; arquivo somente leitura, sincronizado pela Steam Cloud ou de conta ambígua não é tocado.
+- VALORANT, League of Legends, Marvel Rivals e Call of Duty (proibidos) e Apex Legends, Overwatch 2, PUBG e THE FINALS (só orientação) continuam sem nenhuma escrita possível em arquivo.
+- Protocolo **v7**: interface, serviço e agente precisam ser da mesma versão; o MSI instala tudo junto.
+
 ## [0.1.0] - 2026-11-26
 
 *Competitivo, ajustes do Windows e atualização automática*

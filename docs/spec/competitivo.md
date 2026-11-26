@@ -135,8 +135,9 @@ estendida nas fases 2 e 3; esta especificação só define o texto.
 
 > - Ajusta, por mecanismos oficiais, três camadas: o **driver NVIDIA** (perfis DRS via
 >   NVAPI), o **Windows** (configurações documentadas, por APIs do sistema) e, em jogos
->   selecionados, os **arquivos de configuração do usuário** e as opções de inicialização
->   da Steam — sempre com valores que o próprio jogo oferece no menu.
+>   selecionados, os **arquivos de configuração do usuário de alguns jogos (nunca a pasta
+>   de instalação)** e as opções de inicialização da Steam — sempre com valores que o
+>   próprio jogo oferece no menu.
 > - Toda alteração é registrada, explicada e pode ser desfeita com **Restaurar original**.
 > - Nunca injeta código, nunca abre processos de jogos ou de anticheats, nunca altera
 >   executáveis nem a pasta de instalação dos jogos, nunca mexe em recursos de segurança
@@ -149,6 +150,10 @@ ter falso negativo; a promessa não pode ser absoluta.
 Enquanto só a fase 1 estiver lançada, o primeiro item fica restrito ao driver (“Ajusta o
 driver NVIDIA…; ajustes do Windows e de jogos chegam nas próximas versões”), para a
 promessa nunca anunciar o que ainda não existe.
+
+**Fase 3 (F3-14):** a redação completa acima está no `README.md` (“O que é”) e no
+`docs/arquitetura.md` (“Escopo”), com a seção “Configuração de jogos (experimental)”
+listando exatamente o que é gravado e os jogos que nunca são tocados.
 
 **`docs/arquitetura.md`, seção “Escopo”:**
 
@@ -826,7 +831,14 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
     nuvem; Rocket League (cópia na pasta de instalação, chaves exatas de Max FPS);
     R6 (pasta por conta, nome da chave de Reflex); Fortnite (chave de Reflex, valores do
     menu de `FrameRateLimit`); chave de Reflex em `cs2_video.txt`.
+    **Fase 3:** pasta por conta do R6 e `localconfig.vdf`/`cs2_video.txt` confirmados
+    pela pesquisa; Steam Cloud, Max FPS do Rocket League, lista do Fortnite e chaves de
+    Reflex continuam `a_confirmar` (sem gravação) e vão para
+    `docs/spec/fase3-laboratorio.md`.
 12. **Faixas do menu**: Dota 2 (`fps_max` até 240?), Deadlock, Rocket League, Fortnite.
+    **Fase 3:** adotadas R6 30–360 (mínimo da Ubisoft, teto conservador), CS2 60–360
+    (nunca 0, conservadora) e Dota 2 60–240 (menu); Deadlock, Rocket League e Fortnite
+    sem faixa, `a_confirmar`. Medição em L3-1, L3-3 e L3-5.
 13. **Codificação real** dos arquivos (UTF-16LE em algum INI do Unreal?).
 14. **Resolvido (D2):** aceite e retirada por regra, nas duas camadas, com persistência por usuário.
 15. **Energia por jogo** em notebook na bateria: falta o fato `em_bateria`
@@ -906,3 +918,15 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
 | D4 | Mantida §6.2: `nvt-agente` grava `Usuario` na sessão interativa; o serviço é o único avaliador. |
 | D5 | F1-13 limitado à camada `Usuario`: modelo paralelo com snapshot, releitura, histórico e travas, preservando o motor e estado DRS. Explicação, histórico e “Restaurar original” cobrem as duas camadas. Substitui a previsão de migração geral no início da Fase 2. |
 | D6 | IPC v5, sem negociação com v4; o instalador atualiza os componentes juntos. |
+
+### Decisões da Fase 3 (configuração de jogo)
+
+| ID | Decisão |
+|---|---|
+| F3-D1 | Só gravam: R6 `FPSLimit` (30–360), `+fps_max` do CS2 (60–360, nunca 0) e do Dota 2 (60–240), a regra que sobe o padrão 120 do Dota 2 (`min(refresh, 240)`) e `OneFrameThreadLag` do Rocket League. |
+| F3-D2 | Ficam `a_confirmar`, sem gravação (a carga recusa regra que as use): Fortnite `FrameRateLimit` (falta a lista do menu), Max FPS do Rocket League (chave e valores), `+fps_max` do Deadlock (faixa) e as chaves de Reflex (R6, Fortnite, CS2). As regras `jogo-limite-no-jogo-fortnite`, `jogo-limite-no-jogo-rocket-league` e `jogo-cs2-reflex-video` de 9.3 não entram nesta fase; Deadlock sai de `jogo-limite-launch-source2`. |
+| F3-D3 | Todas as regras `config_jogo` são experimentais e só valem com Aceitar (D2); promoção a estável depende do laboratório (`docs/spec/fase3-laboratorio.md`). |
+| F3-D4 | F3-13: o limite de FPS do usuário vai para o jogo e o limite do driver desse perfil é desligado só quando o limite no jogo está aplicado; se o jogo não pôde ser gravado, o limite do driver permanece. |
+| F3-D5 | O agente grava só com o jogo, os processos protegidos e o `steam.exe` fechados; faz backup antes da primeira gravação e restaura. Nunca fecha processo. |
+| F3-D6 | Proibidos (VALORANT, LoL, Marvel Rivals, CoD) e só orientação (Apex, OW2, PUBG, THE FINALS) nunca têm arquivo editado: `[[arquivo]]` ou regra para eles é erro de carga. |
+| F3-D7 | IPC v7, sem negociação com v6; o instalador atualiza os componentes juntos. |

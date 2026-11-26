@@ -28,7 +28,7 @@ binário (`ConjuntoRegras::embutido()` e `BaseJogos::embutida()`).
 | `regras/windows.toml` | Camada de usuário (Windows): catálogo embutido dos quatro destinos e suas regras (ver “Camada de usuário”) |
 
 Os arquivos da camada de driver começam com `versao_schema = 1`;
-`regras/windows.toml` usa `versao_schema = 2`.
+`regras/windows.toml` e `regras/jogos.toml` usam `versao_schema = 2`.
 
 ## Catálogo (`settings.toml`)
 
@@ -162,11 +162,11 @@ contraditórias detectáveis (`jogo_dlss = false` com `jogo_dlss_min`) são erro
 ## Base curada de jogos (`jogos.toml`)
 
 Lista os jogos competitivos que o app reconhece (`nvt_core::BaseJogos`,
-módulo `jogos`). Não grava nada por si: fornece fatos curados e códigos de
-orientação.
+módulo `jogos`). Fornece fatos curados e códigos de orientação e, desde o
+schema 2, o catálogo de configuração de jogo (ver “Configuração de jogo”).
 
 ```toml
-versao_schema = 1
+versao_schema = 2
 
 [[jogo]]
 id = "cs2"                                   # kebab-case, único
@@ -188,7 +188,8 @@ base embutida):
 
 - TOML malformado, campo desconhecido ou ausente, `anticheat`, `config` ou
   código de orientação desconhecido → `ErroJogo::Toml`;
-- `versao_schema` diferente de 1 → `VersaoSchema`;
+- `versao_schema` fora de 1 a 2, ou schema 1 com `[[arquivo]]`/`[[regra]]`
+  → `VersaoSchema`;
 - `id` fora do kebab-case (começa com `a-z`; só `a-z`, `0-9` e `-`; sem `-`
   no fim nem `--`) → `IdInvalido`; repetido → `IdDuplicado`;
 - `nome` ou `evidencia` vazios, `executaveis` vazio ou com item vazio, item
@@ -211,6 +212,80 @@ quem chama informou um AppID **diferente**, não casa (exes genéricos como
 vence a detecção em disco, que não acha Reflex via NVAPI). Fora da base:
 fatos da detecção, `competitivo = false`, `limitador_nativo` desconhecido e
 nenhuma orientação.
+
+### Configuração de jogo (`[[arquivo]]` e `[[regra]]`, Fase 3)
+
+Catálogo (`nvt_core::config_jogo`) dos arquivos de configuração **do
+usuário** que o agente pode editar. Nunca a pasta de instalação.
+
+```toml
+[[arquivo]]
+id = "r6-game-settings"
+jogo = "r6-siege"                            # id de um [[jogo]] com config edicao/opcoes_inicializacao
+raiz = "documentos"                          # documentos | local_app_data | steam_userdata
+caminho = 'My Games\Rainbow Six - Siege\<conta>\GameSettings.ini'  # relativo; <conta>, <steamid3>, <appid>
+formato = "ini"                              # ini | vdf | lancamento
+processos_fechados = ["RainbowSix.exe", "RainbowSix_BE.exe"]
+# exige_steam_fechada = true                 # obrigatório em steam_userdata
+evidencia = "Fonte."
+
+[[arquivo.chave]]
+setting = "r6_fps_limit"
+secao = "DISPLAY"                            # INI
+chave = "FPSLimit"                           # INI; em VDF/lancamento, caminho com "/"
+tipo = "inteiro"                             # inteiro | decimal | booleano | texto | token_lancamento
+faixa = { min = 30, max = 360 }              # ou valores = [...]: só o que o menu oferece (F3-02)
+# token = "+fps_max"                         # em token_lancamento
+# a_confirmar = true                         # nunca gravada
+```
+
+Chaves e faixas hoje:
+
+| Setting | Arquivo | Faixa | Gravável |
+|---|---|---|---|
+| `r6_fps_limit` | R6 `GameSettings.ini`, `[DISPLAY] FPSLimit` | 30 a 360 | sim |
+| `cs2_fps_max` | `localconfig.vdf`, `apps/730/LaunchOptions`, token `+fps_max` | 60 a 360 (nunca 0) | sim |
+| `dota2_fps_max` | `localconfig.vdf`, `apps/570/LaunchOptions`, token `+fps_max` | 60 a 240 (menu) | sim |
+| `rl_one_frame_thread_lag` | `TASystemSettings.ini`, `[SystemSettings] OneFrameThreadLag` | booleano | sim |
+| `fortnite_frame_rate_limit` | `GameUserSettings.ini`, `FrameRateLimit` | falta a lista do menu | a confirmar |
+| `rl_max_fps` | `TASystemSettings.ini`, `MaxSmoothedFrameRate` | chave e valores não confirmados | a confirmar |
+| `deadlock_fps_max` | `localconfig.vdf`, `apps/1422450/LaunchOptions` | faixa não confirmada | a confirmar |
+| `r6_reflex`, `fortnite_reflex`, `cs2_reflex` | — | chave não confirmada | a confirmar |
+
+**Regras** (`escopo = "config_jogo"`, todas `status = "experimental"`, só
+com Aceitar; `impacto_visual = "nenhum"`):
+
+| Regra | Condição | Valor |
+|---|---|---|
+| `jogo-limite-no-jogo-r6` | `jogo = ["r6-siege"]`, `limite_fps_definido = true` | `r6_fps_limit = { preferencia = "limite_fps" }`, `limite_no_jogo = true` |
+| `jogo-limite-launch-source2` | `jogo = ["cs2", "dota2"]`, `limite_fps_definido = true` | `cs2_fps_max`/`dota2_fps_max = { preferencia = "limite_fps" }`, `limite_no_jogo = true` |
+| `jogo-dota2-fps-max-padrao` | `jogo = ["dota2"]`, `limite_fps_definido = false`, `refresh_conhecido = true` | `dota2_fps_max = "refresh_limitado_ao_menu"` (`min(refresh, 240)`; só sobe o padrão 120) |
+| `jogo-rl-one-frame-thread-lag-off` | `jogo = ["rocket-league"]` | `rl_one_frame_thread_lag = { booleano = false }` |
+
+**F3-13 (limite no jogo):** `limite_no_jogo = true` só com ações
+`{ preferencia = "limite_fps" }`. O limite do usuário vai para o jogo e o
+perfil DRS daquele jogo recebe `limite_fps = off`, só quando o limite no jogo
+está aplicado. Sem limite do usuário, nenhuma regra cria limite no jogo; a
+única exceção é `jogo-dota2-fps-max-padrao`, que só sobe o teto padrão.
+
+**Validação** (erros de carga, `ErroConfigJogo`):
+
+- `[[arquivo]]` ou regra em jogo `orientar` ou `proibido` → `JogoSemEdicao`;
+  jogo inexistente → `JogoDesconhecido`;
+- caminho vazio, absoluto, com `/`, componente vazio, `.` ou `..`, pasta de
+  instalação (`PASTAS_DE_INSTALACAO`) ou marcador desconhecido →
+  `CaminhoProibido`;
+- regra com setting fora do catálogo → `ChaveForaDoCatalogo`; com chave
+  `a_confirmar` → `ChaveAConfirmar`; valor fora da faixa ou da lista do menu
+  → `ValorForaDoMenu`;
+- `DefinicaoInvalida`: evidência vazia, arquivo sem chaves, `steam_userdata`
+  sem `exige_steam_fechada = true`, formato `lancamento` fora de
+  `steam_userdata`, jogo `opcoes_inicializacao` com formato que não seja
+  `lancamento`, `processos_fechados` sem os executáveis do jogo;
+- `RegraInvalida`: `preferencia = "limite_fps"` em chave não numérica ou sem
+  `limite_fps_definido = true`; `refresh_limitado_ao_menu` fora de
+  `dota2_fps_max` com `limite_fps_definido = false` e
+  `refresh_conhecido = true`; `limite_no_jogo` sem ações de preferência.
 
 ## Orientações e avisos do plano
 

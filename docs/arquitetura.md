@@ -9,21 +9,23 @@ mudanças relevantes devem ser registradas aqui.
 - Atua em **camadas de ajuste**: `driver` (perfis DRS, global e por
   aplicativo, via NVAPI com FFI própria em Rust, sem ferramentas externas nem
   .NET) e `windows` (registro do usuário, parâmetros do sistema e modo de
-  vídeo, só os quatro itens da lista permitida de `regras/windows.toml`). A
-  camada `jogo` (`docs/spec/competitivo.md`, fase 3) ainda não existe.
+  vídeo, só os quatro itens da lista permitida de `regras/windows.toml`) e
+  `jogo` (arquivos de configuração do usuário e opções de inicialização da
+  Steam, só jogos e chaves da lista permitida de `regras/jogos.toml`; nunca a
+  pasta de instalação).
 - Cada camada tem snapshot do original, releitura após gravar, histórico e
   restauração. A camada `windows` usa um modelo paralelo
   (`nvt_core::usuario`) e não altera o estado DRS v1 (decisão D5 de
   `docs/spec/competitivo.md` §12).
-- Regras experimentais (de qualquer camada; hoje todas as da camada
-  `windows`) só entram no plano com aceite explícito do usuário, por regra
+- Regras experimentais (de qualquer camada; hoje todas as das camadas
+  `windows` e `jogo`) só entram no plano com aceite explícito do usuário, por regra
   (D2).
 - Não injeta código, não abre handle para processos de jogos ou de
   anticheats (jogos abertos são vistos só pela lista de processos,
   `TH32CS_SNAPPROCESS`, por nome), não altera executáveis nem arquivos da
   pasta de instalação dos jogos (só os lê, com compartilhamento total) e não
   altera recursos de segurança do sistema.
-- Não grava no DRS nem no Windows enquanto detecta jogo ou anticheat vigiado
+- Não grava no DRS, no Windows nem em arquivo de jogo enquanto detecta jogo ou anticheat vigiado
   em execução: a gravação fica adiada e roda quando o jogo fecha (portão
   único de gravação, `crates/nvt-engine/src/portao.rs`, usado pelo serviço e
   pelo agente).
@@ -50,8 +52,11 @@ mudanças relevantes devem ser registradas aqui.
    (mutex `Local\nv-tuner-agente`), iniciado no logon pela entrada `Run` de
    HKLM. Executa as tarefas da camada `windows` que o serviço planeja,
    guarda snapshot e estado em `%LOCALAPPDATA%\nv-tuner\usuario` e lê os
-   diagnósticos de sessão (decisão D4).
-9. **`nvt-ui`** — interface sem privilégios de administrador.
+   diagnósticos de sessão (decisão D4). Também grava a camada `jogo`
+   (`src/config_jogo/`; ver "Camada de configuração de jogo").
+9. **`nvt-jogocfg`** — editores de arquivos de configuração de jogo, sem
+   lógica de decisão (ver "Camada de configuração de jogo").
+10. **`nvt-ui`** — interface sem privilégios de administrador.
 
 O serviço não grava no Windows: o HKCU e as APIs de modo de vídeo e de
 parâmetros do sistema são da sessão interativa, e o serviço roda na sessão
@@ -81,6 +86,46 @@ continua justificado por:
   grupo *Performance Log Users*;
 - **reaplicação sem a UI aberta** (após atualização de driver, novo jogo etc.);
 - **vigilância de deriva** contínua do DRS.
+
+### Camada de configuração de jogo (Fase 3)
+
+- **Quem decide:** o serviço avalia as regras `config_jogo` (todas
+  experimentais, só com Aceitar) com as preferências do usuário e coordena por
+  SID (`crates/nvt-service/src/usuario.rs`). **Quem grava:** o agente da
+  sessão (`crates/nvt-agente/src/config_jogo/`: `armazem.rs`, `execucao.rs`,
+  `janela.rs`), que resolve as pastas conhecidas da sessão (Documentos,
+  inclusive no OneDrive, `%LOCALAPPDATA%` e a Steam por
+  `HKCU\Software\Valve\Steam\SteamPath`).
+- **O que o agente grava hoje:** R6 `[DISPLAY] FPSLimit` (30 a 360); token
+  `+fps_max` em `LaunchOptions` do `localconfig.vdf` para CS2 (60 a 360, nunca
+  0) e Dota 2 (60 a 240); `OneFrameThreadLag` do Rocket League. Chaves
+  `a_confirmar` (Fortnite `FrameRateLimit`, Rocket League Max FPS, Deadlock
+  `+fps_max`, Reflex) nunca são gravadas.
+- **`nvt-jogocfg`:** editores INI e KeyValues/VDF que trocam só os bytes do
+  valor (UTF-8 com ou sem BOM, UTF-16LE, fim de linha, comentários e ordem
+  preservados); chave ausente ou formato não reconhecido por inteiro aborta
+  sem gravar. Gravação atômica (temporário na mesma pasta + `ReplaceFileW`),
+  sem seguir reparse point. Backup imutável antes da primeira gravação em
+  `%LOCALAPPDATA%\nv-tuner\backups\<jogo>\<arquivo>.orig`, com
+  `.orig.sha256`. Contas: Steam pela conta `MostRecent` de `loginusers.vdf`
+  (SteamID3); Ubisoft pela única pasta de conta ou pela do `GameSettings.ini`
+  modificado mais recentemente (empate: `ContaAmbigua`).
+- **Janela de edição (F3-03):** grava só com o jogo, os processos protegidos
+  e, nos arquivos da Steam, o `steam.exe` fechados; senão adia. Nunca fecha
+  processo.
+- **Recusas:** arquivo somente leitura (`ArquivoSomenteLeitura`; o app nunca
+  muda o atributo), par em `remote` da Steam Cloud (`ArquivoNaNuvem`), conta
+  ambígua e arquivo regravado pelo jogo (`ArquivoAlteradoPeloJogo`: vira
+  escolha do usuário e não é regravado em loop).
+- **Restauração (F3-07):** se o hash atual é o gravado pelo app, volta o
+  arquivo original inteiro; senão, reverte só as chaves que ainda têm o valor
+  do app; nas opções de inicialização, remove só o token do app.
+- **Limite no jogo (F3-13):** o `limite_fps` do usuário vai para o jogo, e o
+  perfil DRS daquele jogo recebe `limite_fps = off` só quando o limite no jogo
+  está aplicado (detalhes em `docs/servico.md`).
+- **Travas:** jogos `proibido` (VALORANT, LoL, Marvel Rivals, CoD) e
+  `orientar` (Apex, OW2, PUBG, THE FINALS) não podem ter `[[arquivo]]` nem
+  regra (erro de carga). Protocolo **v7**.
 
 ## Fluxo
 
