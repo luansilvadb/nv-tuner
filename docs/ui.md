@@ -140,11 +140,18 @@ processos e a ação pendente (`textos::adiamento`):
 | `tratar_deriva` | Jogo aberto (cs2.exe): a mudança detectada no driver será tratada quando você fechar o jogo. |
 | `restaurar_original` | Jogo aberto (cs2.exe): os valores originais serão restaurados quando você fechar o jogo. |
 
-As respostas adiadas de **Aplicar agora** (`Plano.adiada`) e **Restaurar
-original** (`Resposta::Restauracao { adiada }`) viram `Desfecho::Adiado` e
-mostram essa mesma mensagem (tipo `TipoMensagem::Adiada`, em azul), **não**
-erro nem “Plano aplicado”. Se a faixa do estado já diz o mesmo, a mensagem
-não é repetida.
+Com `lista_indisponivel = true` (o serviço não conseguiu ler a lista de
+processos), a faixa tem o título **Alterações pendentes** e o texto
+`textos::ADIAMENTO_SEM_LISTA`: “Não foi possível verificar se há jogo
+aberto; as alterações ficam pendentes.” — nunca “Jogo aberto (lista de
+processos indisponível)”.
+
+As respostas adiadas de **Aplicar agora** (`Plano.adiada`), **Restaurar
+original** (`Resposta::Restauracao { adiada }`) e de **Preferências** e
+**Destravar** (`Resposta::Adiada { adiamento }`) viram `Desfecho::Adiado` e
+mostram essa mesma mensagem (tipo `TipoMensagem::Adiada`, em azul, com o
+mesmo título da faixa), **não** erro nem “Preferências salvas.”/“Plano
+aplicado”. Se a faixa do estado já diz o mesmo, a mensagem não é repetida.
 
 ### Jogos (`jogos.png`)
 
@@ -309,8 +316,10 @@ corrompido com e sem cópia, versão não suportada, snapshot vazio, erro de
 leitura) sem escrever; reversões e jogos ignorados calculados localmente
 sem nenhuma gravação. Fase 1: todo código de orientação tem texto (e o
 desconhecido não quebra); jogo local da base curada com `competitivo`, fatos
-curados e orientações; respostas adiadas de Aplicar agora e Restaurar
-original viram mensagem de adiamento, não erro; faixa de adiamento vinda do
+curados e orientações; respostas adiadas de Aplicar agora, Restaurar
+original, Preferências e Destravar viram mensagem de adiamento, não erro nem
+“feito”; lista de processos indisponível com texto e título próprios; faixa
+de adiamento vinda do
 estado sem repetir a mensagem; aviso de sincronismo conforme rascunho e VRR;
 avisos do plano iguais aos do serviço; refresh em Hz e “desconhecido”;
 textos próprios de VRR inativo e jogo com Reflex.

@@ -160,6 +160,13 @@ pub enum Resposta {
         /// o jogo fechar (não é erro).
         adiada: Option<Adiamento>,
     },
+    /// Resposta de `DefinirPreferencias` e de `DestravarSetting` quando o
+    /// pedido foi aceito (gravado no estado), mas a aplicação no driver ficou
+    /// pendente pelo portão de gravação (v4). Não é erro; sem adiamento, a
+    /// resposta é [`Resposta::Ok`].
+    Adiada {
+        adiamento: Adiamento,
+    },
     Ok,
     Erro {
         codigo: CodigoErro,
@@ -223,16 +230,21 @@ pub struct Estado {
 
 /// Gravação adiada pelo portão do serviço: há processo vigiado (jogo
 /// detectado, processo da base curada ou anticheat que só roda durante o
-/// jogo) em execução. A ação roda uma vez quando todos fecharem.
+/// jogo) em execução, ou a lista de processos não pôde ser lida (falha
+/// fechada). A ação roda uma vez quando o portão liberar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Adiamento {
-    /// Nomes dos processos vigiados em execução (ex.: `"cs2.exe"`).
+    /// Nomes dos processos vigiados em execução (ex.: `"cs2.exe"`). Vazio
+    /// com `lista_indisponivel`.
     pub processos: Vec<String>,
-    /// Desde quando há processo vigiado em execução (segundos Unix, UTC).
+    /// Desde quando o portão adia sem interrupção (segundos Unix, UTC).
     pub desde_unix: u64,
     /// Ação pendente.
     pub acao: AcaoAdiada,
+    /// `true` = a lista de processos do sistema não pôde ser lida: não se
+    /// sabe se há jogo aberto, e a gravação fica pendente por segurança.
+    pub lista_indisponivel: bool,
 }
 
 /// Ação que ficou pendente. Só uma por vez: a mais recente substitui as
@@ -298,6 +310,9 @@ pub mod codigo_aviso {
     pub const GSYNC_SEM_VRR: &str = "gsync_sem_vrr";
     /// G-SYNC escolhido, VRR possível mas desligado no Painel NVIDIA (v4).
     pub const VRR_DESLIGADO_NO_PAINEL: &str = "vrr_desligado_no_painel";
+    /// Ação pendente (adiada pelo portão) que falhou em todas as tentativas
+    /// depois que o portão liberou e foi descartada (v4).
+    pub const ACAO_PENDENTE_DESCARTADA: &str = "acao_pendente_descartada";
 }
 
 /// Aviso estruturado para o usuário.
@@ -390,6 +405,40 @@ impl Aviso {
             "O monitor aceita VRR, mas ele está desligado: ative o G-SYNC em \
              Painel de Controle NVIDIA > Configurar G-SYNC.",
             None,
+            quando_unix,
+        )
+    }
+
+    /// Ação pendente que falhou em `tentativas` execuções seguidas e foi
+    /// descartada.
+    pub fn acao_pendente_descartada(
+        acao: AcaoAdiada,
+        tentativas: u32,
+        detalhe: impl Into<String>,
+        quando_unix: u64,
+    ) -> Self {
+        let (o_que, depois) = match acao {
+            AcaoAdiada::AplicarPlano => (
+                "A aplicação das alterações",
+                "O próximo ciclo tenta de novo; use “Aplicar agora” para forçar.",
+            ),
+            AcaoAdiada::TratarDeriva => (
+                "O tratamento da mudança detectada no driver",
+                "O próximo ciclo tenta de novo; use “Aplicar agora” para forçar.",
+            ),
+            AcaoAdiada::RestaurarOriginal => (
+                "A restauração dos valores originais",
+                "Use “Restaurar original” de novo.",
+            ),
+        };
+        Self::novo(
+            NivelAviso::Erro,
+            codigo_aviso::ACAO_PENDENTE_DESCARTADA,
+            format!(
+                "{o_que}, que esperava o jogo fechar, falhou {tentativas} vez(es) e foi \
+                 descartada. {depois}"
+            ),
+            Some(detalhe.into()),
             quando_unix,
         )
     }
@@ -1068,6 +1117,17 @@ mod testes {
                 }],
             },
             Resposta::Historico { entradas: vec![] },
+            Resposta::Adiada {
+                adiamento: adiamento(AcaoAdiada::AplicarPlano),
+            },
+            Resposta::Adiada {
+                adiamento: Adiamento {
+                    processos: vec![],
+                    desde_unix: 1_790_000_600,
+                    acao: AcaoAdiada::TratarDeriva,
+                    lista_indisponivel: true,
+                },
+            },
             Resposta::Ok,
             Resposta::erro(CodigoErro::SettingNaoPermitida, "setting fora da lista"),
         ];
@@ -1077,6 +1137,7 @@ mod testes {
                 | Resposta::Plano(_)
                 | Resposta::Historico { .. }
                 | Resposta::Restauracao { .. }
+                | Resposta::Adiada { .. }
                 | Resposta::Ok
                 | Resposta::Erro { .. } => {}
             }
@@ -1089,6 +1150,7 @@ mod testes {
             processos: vec!["cs2.exe".into(), "EasyAntiCheat_EOS.exe".into()],
             desde_unix: 1_790_000_500,
             acao,
+            lista_indisponivel: false,
         }
     }
 
@@ -1101,7 +1163,8 @@ mod testes {
             json!({
                 "processos": ["cs2.exe", "EasyAntiCheat_EOS.exe"],
                 "desde_unix": 1_790_000_500,
-                "acao": "restaurar_original"
+                "acao": "restaurar_original",
+                "lista_indisponivel": false
             })
         );
         for (acao, s) in [
@@ -1118,6 +1181,24 @@ mod testes {
         assert_eq!(
             to_value(Resposta::Restauracao { adiada: None }).unwrap(),
             json!({"tipo": "restauracao", "adiada": null})
+        );
+        let mut sem_lista = adiamento(AcaoAdiada::AplicarPlano);
+        sem_lista.processos.clear();
+        sem_lista.lista_indisponivel = true;
+        assert_eq!(
+            to_value(Resposta::Adiada {
+                adiamento: sem_lista
+            })
+            .unwrap(),
+            json!({
+                "tipo": "adiada",
+                "adiamento": {
+                    "processos": [],
+                    "desde_unix": 1_790_000_500,
+                    "acao": "aplicar_plano",
+                    "lista_indisponivel": true
+                }
+            })
         );
         assert_eq!(
             to_value(MotivoNaoAplicada::VrrInativo).unwrap(),

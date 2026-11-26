@@ -14,8 +14,8 @@ tratar deriva e atende a UI pelo named pipe do `nvt-ipc`.
 | `run [--sem-vigia]` | sim | mesma lógica no console (desenvolvimento). Ctrl+C ou uma linha `sair` no stdin encerra |
 | `dry-run` | não | plano e diff por perfil (muda / conforme / travada), perfis a criar, sugestões experimentais e descartes |
 | `status` | não | driver, GPU, capacidades, preferências, estado salvo, jogos detectados com perfil, conformidade e deriva |
-| `apply --yes` | sim | aplica o plano agora e **reativa a autonomia**; exige administrador |
-| `restore-original --yes` | sim | volta ao snapshot original e **pausa a autonomia**; exige administrador; código 0 também quando não há snapshot (idempotente) |
+| `apply --yes` | sim | aplica o plano agora e **reativa a autonomia**; exige administrador; código 3 se o serviço adiar (jogo aberto) |
+| `restore-original --yes` | sim | volta ao snapshot original e **pausa a autonomia**; exige administrador; código 0 também quando não há snapshot (idempotente); código 3 se o serviço adiar (jogo aberto: a restauração não foi feita) |
 | `prepare-state-dir` | só o diretório | cria ou corrige o diretório de estado (ver “Diretório de estado seguro”); usado pelo instalador como SYSTEM; exige administrador (código 2 sem) |
 
 Opções globais:
@@ -34,11 +34,19 @@ Opções globais:
 `--estado-dir`, eles primeiro tentam pedir a ação ao serviço em execução
 pelo pipe (`AplicarAgora`/`RestaurarOriginal`), para que o estado em memória
 do serviço não sobrescreva o resultado; se o serviço não estiver no ar,
-executam no próprio processo. Com jogo aberto (ver “Jogo aberto: gravações
-adiadas”): pelo serviço, a ação fica pendente e o comando sai com código 0
-dizendo isso; no próprio processo não há quem execute a pendência, então o
-comando recusa **antes** de mudar qualquer coisa (nem a autonomia) e sai com
-código 1.
+executam no próprio processo. Com jogo aberto ou lista de processos
+ilegível (ver “Jogo aberto: gravações adiadas”): pelo serviço, a ação fica
+pendente no serviço, nada é gravado agora e o comando sai com **código 3**
+(`SAIDA_ADIADA`), escrevendo o motivo no stderr. Para `restore-original`, a
+mensagem diz que a restauração **não** foi feita e, se for uma desinstalação
+(`msiexec /x … RESTAURAR_PERFIL=1`, que remove o serviço logo depois), que é
+preciso fechar os jogos e rodar a desinstalação de novo ou usar “Restaurar
+original” antes de desinstalar; o MSI ignora o código, mas o log `/l*v`
+registra a mensagem. No próprio processo não há quem execute a pendência,
+então o comando recusa **antes** de mudar qualquer coisa (nem a autonomia) e
+sai com código 1. Ainda no próprio processo, `apply --yes` com uma
+restauração pendente deixada pelo serviço em `servico.json` executa primeiro
+essa restauração (como o serviço faria ao reiniciar) e depois aplica.
 
 ## Laço
 
@@ -143,23 +151,37 @@ O teste `crates/nvt-core/tests/proibicoes.rs` barra `OpenProcess`,
 - enquanto houver pendência, o portão é consultado a cada 15 s (cada novo
   adiamento reinicia a contagem); **sem pendência não há varredura periódica
   de processos** — a lista só é lida quando há algo a gravar;
-- quando nenhum processo vigiado está mais em execução, a ação roda **uma
-  vez** (`RestaurarOriginal` restaura; as outras rodam um ciclo completo:
-  deriva → plano → aplicação) e a pendência some; se o jogo reabriu no
-  meio-tempo, volta a ficar pendente;
+- quando nenhum processo vigiado está mais em execução, a ação roda
+  (`RestaurarOriginal` restaura; as outras rodam um ciclo completo:
+  deriva → plano → aplicação) e a pendência só sai **depois** que ela der
+  certo; se o jogo reabriu no meio-tempo, volta a ficar pendente;
+- erro que não é adiamento (driver indisponível, falha de leitura etc.): a
+  pendência continua e é tentada de novo no mesmo intervalo de 15 s, até
+  `TENTATIVAS_PENDENTE` (3) falhas seguidas; esgotadas, é descartada, o log
+  registra o erro e `estado.avisos` passa a ter `acao_pendente_descartada`
+  (nível erro, `detalhe` = último erro), que some na próxima aplicação ou
+  restauração bem-sucedida;
+- lista de processos ilegível (falha fechada do portão): adia como jogo
+  aberto; no IPC vai `lista_indisponivel = true` com `processos` vazio, nunca
+  o marcador como nome de processo;
 - a leitura da deriva continua normal (alertas atualizados); só o
   tratamento que grava espera;
 - `restaurar_original` pausa a autonomia já no pedido (nada é aplicado por
   cima da restauração pendente); `aplicar_agora` reativa já no pedido;
-- a pendência é só da memória do serviço: um reinício a perde, e o próximo
-  ciclo (com o jogo fechado) refaz a aplicação automática; uma restauração
-  pendente perdida deixa a autonomia pausada (o usuário repete o pedido).
+- `AplicarPlano`/`TratarDeriva` pendentes ficam só na memória: um reinício
+  as perde, e o próximo ciclo (com o jogo fechado) refaz a aplicação
+  automática. **`RestaurarOriginal` pendente é persistida** em `servico.json`
+  (`restauracao_pendente_desde_unix`) e sobrevive a reinícios: ao iniciar
+  (`Nucleo::iniciar`), o serviço a retoma antes do primeiro ciclo — restaura
+  se o portão liberar, senão segue pendente. Feita ou descartada, sai do
+  arquivo. Em `--somente-leitura` ela não é retomada.
 
-Pedidos da UI adiados respondem normalmente com `adiada` (não erro):
+Pedidos da UI adiados respondem normalmente com o adiamento (não erro):
 `aplicar_agora` → `plano` com `adiada`; `restaurar_original` →
 `restauracao` com `adiada`; `definir_preferencias`/`destravar_setting` →
-`ok` (as preferências ficam gravadas no estado). O estado traz o
-`adiamento` atual (`docs/ipc.md`).
+`adiada` com o `adiamento` (as preferências e a liberação da trava ficam
+gravadas no estado; sem adiamento, `ok`). O estado traz o `adiamento` atual
+(`docs/ipc.md`).
 
 ### Gravações próprias
 
@@ -192,10 +214,10 @@ Tratador de todas as `Requisicao` do `nvt-ipc` (`docs/ipc.md`):
 | `obter_plano` | diff atual; status `pendente`, `ja_no_valor` ou `travada`; reversões pendentes, jogos ignorados e jogos com fatos curados, `em_execucao` e orientações |
 | `aplicar_agora` | reativa a autonomia, trata a deriva, aplica; devolve o plano com `aplicada`/`falhou` (também nas reversões). Jogo aberto: plano com `adiada` |
 | `restaurar_original` | pausa a autonomia e restaura o snapshot original; `restauracao` (com `adiada = null`) também sem snapshot. Jogo aberto: `restauracao` com `adiada` |
-| `definir_preferencias` | com autonomia, trata antes a deriva pendente; grava e, com autonomia, aplica o novo plano (jogo aberto: aplicação pendente, resposta `ok`); sem autonomia, recalcula o plano só para os avisos |
+| `definir_preferencias` | com autonomia, trata antes a deriva pendente; grava e, com autonomia, aplica o novo plano (jogo aberto: aplicação pendente, resposta `adiada`); sem autonomia, recalcula o plano só para os avisos e responde `ok` |
 | `listar_historico` | mais recentes primeiro; ação: plano/criação de perfil → `aplicacao`, reaplicação → `deriva_detectada`, mudança manual/trava → `travamento`, restauração → `restauracao` |
 | `travar_setting` | vira escolha do usuário (sai do estado esperado, sem gravar no driver); `"global"` = perfil base; o nome do perfil é normalizado para o canônico do DRS (sem diferenciar maiúsculas: todas as grafias viram a mesma trava); setting fora do catálogo → `setting_nao_permitida`; perfil inexistente ou não gerenciável (não é de um jogo detectado, não foi criado pelo app nem tem setting gerida ou trava) → `perfil_nao_encontrado`; acima de `MAX_TRAVADAS` (500) → `interno` com “limite de 500 escolhas travadas atingido” |
-| `destravar_setting` | perfil sem diferenciar maiúsculas; com autonomia, trata antes a deriva pendente, devolve ao automático e aplica |
+| `destravar_setting` | perfil sem diferenciar maiúsculas; com autonomia, trata antes a deriva pendente, devolve ao automático e aplica (jogo aberto: aplicação pendente, resposta `adiada`) |
 
 **Deriva pendente antes do plano:** `aplicar_agora`, `definir_preferencias`
 e `destravar_setting` chamam `verificar_deriva`/`tratar_deriva` antes de
@@ -286,7 +308,7 @@ Em `<estado-dir>`:
 |---|---|
 | `snapshot-original.json`, `estado.json`, `estado.anterior.json`, `perfis-criados.json` | `nvt-engine` (`docs/engine.md`) |
 | `snapshot-perdido.json` | gravado por `preparar` logo depois de uma quarentena; lido pelo `nvt-engine` |
-| `servico.json` | serviço: `autonomia_pausada`, `pausada_em_unix`, `ultima_aplicacao` |
+| `servico.json` | serviço: `autonomia_pausada`, `pausada_em_unix`, `ultima_aplicacao`, `restauracao_pendente_desde_unix` (restauração adiada a retomar; ausente nos arquivos antigos) |
 | `logs\nvt-service.AAAA-MM-DD.log` | `tracing-appender`, rotação diária, últimos 14 arquivos |
 
 Os logs registram ações (perfil, setting, contagens, erros) e o diretório de
@@ -381,7 +403,15 @@ relógio controlado, sem SCM):
   ao fechar, a ação roda uma vez (um único salvamento) e não se repete;
   `RestaurarOriginal` com anticheat aberto vence `AplicarAgora` e
   preferências posteriores; deriva com jogo aberto é lida (alertas) e o
-  tratamento fica pendente, substituído pelo pedido mais recente;
+  tratamento fica pendente, substituído pelo pedido mais recente; pendência
+  com erro de driver é tentada de novo e, na 3.ª falha, descartada com o
+  aviso `acao_pendente_descartada`; restauração pendente sobrevive ao
+  reinício (jogo ainda aberto: segue pendente; jogo fechado: roda no
+  início) e sai de `servico.json` depois de feita; preferências e destravar
+  com jogo aberto respondem `adiada`; lista de processos ilegível vai como
+  `lista_indisponivel`;
+- CLI: restauração ou aplicação adiada pelo serviço sai com código 3 e a
+  mensagem de desinstalação; no próprio processo, com 1;
 - estado com refresh e VRR reais e o aviso `vrr_desligado_no_painel`;
   plano com fatos curados (`competitivo`, Reflex/anticheat da base,
   orientações);

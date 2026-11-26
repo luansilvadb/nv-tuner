@@ -152,13 +152,14 @@ impl Janela {
             v = v.child(Alert::error("erro-local", e.clone()));
         }
         if let Some(faixa) = self.ui.faixa_adiamento() {
-            v = v.child(Alert::info("faixa-adiamento", faixa).title(t::ADIAMENTO_TITULO));
+            let titulo = t::titulo_adiamento(&faixa);
+            v = v.child(Alert::info("faixa-adiamento", faixa).title(titulo));
         }
         if let Some((tipo, texto)) = self.ui.mensagem_visivel() {
             let a = match tipo {
                 TipoMensagem::Sucesso => Alert::success("mensagem", texto.clone()),
                 TipoMensagem::Adiada => {
-                    Alert::info("mensagem", texto.clone()).title(t::ADIAMENTO_TITULO)
+                    Alert::info("mensagem", texto.clone()).title(t::titulo_adiamento(texto))
                 }
                 TipoMensagem::Erro => Alert::error("mensagem", texto.clone()),
             };

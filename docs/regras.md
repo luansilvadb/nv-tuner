@@ -133,11 +133,14 @@ contraditórias detectáveis (`jogo_dlss = false` com `jogo_dlss_min`) são erro
 - **Nome** do catálogo: `vsync = "force_off"`.
 - **Número**: `limite_fps = 141` (dentro da `faixa` ou igual a um valor
   nomeado).
-- **Derivado do refresh**: `limite_fps = { refresh_menos = 3 }` (refresh −
-  3). Exige `quando.refresh_conhecido = true` e uma setting com `faixa`; se o
+- **Derivado do refresh**: `limite_fps = { refresh_menos = 3 }` (piso do refresh −
+  3: 59,94 Hz conta como 59, não 60, para nunca ficar a menos de 3 FPS do
+  refresh real; o arredondamento fica só na exibição). Exige
+  `quando.refresh_conhecido = true` e uma setting com `faixa`; se o
   resultado sair da faixa, a mudança é descartada com motivo.
 - **Limite para VRR**: `limite_fps = { limite_vrr = true }` =
-  `min(Hz − 3, ⌊Hz − Hz²/3600⌋)` (`nvt_core::limite_vrr`, em inteiros:
+  `min(Hz − 3, ⌊Hz − Hz²/3600⌋)` sobre o piso do refresh (59,94 Hz → 59;
+  `nvt_core::limite_vrr`, em inteiros:
   `Hz − ⌈Hz²/3600⌉`). Coincide com o limite automático do driver no modo
   G-SYNC (≈224 a 240 Hz) e nunca fica a menos de 3 FPS do refresh. Exige
   `quando.refresh_conhecido = true` **e** `quando.vrr_ativo = true` e uma

@@ -378,13 +378,22 @@ fn resolver(
                     continue;
                 }
             },
+            // Mesmo critério do limite para VRR: a conta usa o piso do refresh
+            // (59,94 Hz → 59), senão `Hz − N` ficaria a menos de N FPS do
+            // refresh real; o arredondamento fica só na exibição.
             ValorAcao::RefreshMenos(margem) => {
                 let calculado = caps
-                    .refresh_hz()
+                    .refresh_hz_piso()
                     .and_then(|hz| hz.checked_sub(*margem).map(|v| (hz, v)));
                 match calculado {
                     Some((hz, v)) if def.aceita(v) => {
-                        (v, format!(" Valor: {hz} Hz − {margem} = {v}."))
+                        let texto = match caps.refresh_hz() {
+                            Some(exib) if exib != hz => format!(
+                                " Valor: refresh de ≈{exib} Hz, contado como {hz} Hz (para baixo); {hz} Hz − {margem} = {v}."
+                            ),
+                            _ => format!(" Valor: {hz} Hz − {margem} = {v}."),
+                        };
+                        (v, texto)
                     }
                     _ => {
                         descartes.push(Descarte {

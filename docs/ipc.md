@@ -99,7 +99,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | 1 | protocolo inicial |
 | 2 | `estado.avisos`; `plano.reversoes` e `plano.ignorados` |
 | 3 | `plano.jogos` (fatos por jogo e explicação: regras aplicadas e não aplicadas com motivo, herança do global) |
-| 4 | Fase 1 competitiva (`docs/spec/competitivo.md` §7.6, só o que a fase 1 usa): `capacidades.refresh_mhz` e `capacidades.vrr` (objeto, antes `bool`); `jogo.competitivo`, `jogo.em_execucao`, `jogo.orientacoes`; `estado.adiamento`; `plano.adiada`; resposta `restauracao` (antes `ok`) para `restaurar_original`; avisos `gsync_sem_vrr` e `vrr_desligado_no_painel`; motivos `vrr_inativo` e `jogo_com_reflex`. As variantes de camada (Windows/jogo) ficam para a v5 |
+| 4 | Fase 1 competitiva (`docs/spec/competitivo.md` §7.6, só o que a fase 1 usa): `capacidades.refresh_mhz` e `capacidades.vrr` (objeto, antes `bool`); `jogo.competitivo`, `jogo.em_execucao`, `jogo.orientacoes`; `estado.adiamento` (com `lista_indisponivel`); `plano.adiada`; resposta `restauracao` (antes `ok`) para `restaurar_original`; resposta `adiada` para `definir_preferencias`/`destravar_setting` adiados; avisos `gsync_sem_vrr`, `vrr_desligado_no_painel` e `acao_pendente_descartada`; motivos `vrr_inativo` e `jogo_com_reflex`. As variantes de camada (Windows/jogo) ficam para a v5 |
 
 ## Requisições (`corpo.tipo`)
 
@@ -140,11 +140,14 @@ Exemplo:
 | `plano`     | `gerado_unix`, `perfis[]` → `perfil`, `nome_legivel`, `mudancas[]`; `reversoes[]`; `ignorados[]`; `jogos[]`; `adiada` |
 | `historico` | `entradas[]`                                                    |
 | `restauracao` | `adiada` (resposta de `restaurar_original`)                   |
+| `adiada`    | `adiamento` (resposta de `definir_preferencias`/`destravar_setting` aceitos com a aplicação pendente) |
 | `ok`        | —                                                               |
 | `erro`      | `codigo`, `mensagem`                                            |
 
 `aplicar_agora` responde `plano` (com o resultado da aplicação) e
-`restaurar_original` responde `restauracao`.
+`restaurar_original` responde `restauracao`. `definir_preferencias` e
+`destravar_setting` respondem `ok` ou, se a aplicação ficou pendente,
+`adiada`.
 
 ### Capacidades (`estado.gpu.capacidades`)
 
@@ -154,29 +157,36 @@ Exemplo:
 (`null` = desconhecido). Lidos pelo serviço via NVAPI
 (`NvAPI_DISP_GetDisplayConfig` + `NvAPI_Disp_GetVRRInfo`).
 
-### Adiamento (`estado.adiamento`, `plano.adiada`, `restauracao.adiada`)
+### Adiamento (`estado.adiamento`, `plano.adiada`, `restauracao.adiada`, `adiada.adiamento`)
 
 Toda gravação no driver passa pelo portão do serviço (`docs/servico.md`,
 “Jogo aberto: gravações adiadas”). Com jogo ou anticheat vigiado em execução,
-a gravação fica pendente e o objeto aparece:
+ou com a lista de processos ilegível, a gravação fica pendente e o objeto
+aparece:
 
 ```json
-{"processos":["cs2.exe"],"desde_unix":1790000500,"acao":"aplicar_plano"}
+{"processos":["cs2.exe"],"desde_unix":1790000500,"acao":"aplicar_plano","lista_indisponivel":false}
 ```
 
-- `processos`: processos vigiados em execução (nome do exe);
-- `desde_unix`: desde quando há processo vigiado em execução;
+- `processos`: processos vigiados em execução (nome do exe); vazio com
+  `lista_indisponivel`;
+- `desde_unix`: desde quando o portão adia sem interrupção;
 - `acao`: `aplicar_plano` \| `tratar_deriva` \| `restaurar_original` — só uma
   pendência por vez; a mais recente substitui as anteriores, exceto
-  `restaurar_original`, que vence qualquer outra.
+  `restaurar_original`, que vence qualquer outra;
+- `lista_indisponivel`: `true` = a lista de processos do sistema não pôde
+  ser lida, então não se sabe se há jogo aberto (falha fechada). O motivo vem
+  só neste campo, nunca como nome em `processos`.
 
 Um pedido adiado **não é erro**: `aplicar_agora` responde `plano` com
-`adiada` preenchido (as mudanças seguem `pendente`) e `restaurar_original`
-responde `restauracao` com `adiada`. Se `acao` vier diferente do pedido, foi
-a regra acima (ex.: `aplicar_agora` com restauração pendente devolve
-`acao = restaurar_original`). Sem pendência, os três campos são `null`.
-`definir_preferencias` e `destravar_setting` gravam o estado e respondem `ok`;
-a aplicação, se adiada, aparece em `estado.adiamento`.
+`adiada` preenchido (as mudanças seguem `pendente`), `restaurar_original`
+responde `restauracao` com `adiada`, e `definir_preferencias` e
+`destravar_setting` (que gravam o estado mesmo assim) respondem `adiada`
+com o `adiamento`. Se `acao` vier diferente do pedido, foi a regra acima
+(ex.: `aplicar_agora` com restauração pendente devolve
+`acao = restaurar_original`). Sem pendência, `estado.adiamento`,
+`plano.adiada` e `restauracao.adiada` são `null`, e preferências/destravar
+respondem `ok`.
 
 Cada mudança do plano traz `setting`, `nome_legivel`, `antes`, `depois`,
 `motivo`, `regra`, `impacto_visual` (`nenhum` \| `baixo` \| `medio` \|
@@ -204,6 +214,7 @@ opcional, ex.: a frase original do motor) e `quando_unix`.
 | `snapshot_indisponivel` | erro | `snapshot-original.json` ilegível: **restauração desabilitada** (a UI desabilita o botão e mostra a mensagem) |
 | `erro_perfil_aplicacao` | erro | erro isolado num perfil de jogo na última aplicação (`detalhe` = erro) |
 | `erro_perfil_deriva` | erro | erro isolado num perfil de jogo no último tratamento de deriva |
+| `acao_pendente_descartada` | erro | ação adiada pelo portão que falhou 3 vezes seguidas depois de liberada e foi descartada (`detalhe` = último erro); some na próxima aplicação ou restauração bem-sucedida |
 | `estado_corrompido` | atencao | `estado.json` inválido, guardado à parte como `.corrompido-<data>` |
 | `estado_reiniciado` | atencao | sem cópia válida: o estado recomeçou limpo |
 | `jogos_ignorados` | atencao | jogos fora do último plano (`detalhe` = “nome: motivo; …”) |
@@ -364,7 +375,8 @@ estão em `AU` e ficam sem acesso. O cliente abre o pipe pedindo exatamente
 - Unitários: ida e volta de todas as requisições e respostas, formato JSON
   estável (inclusive de avisos, reversões, jogos ignorados, jogos e todos os
   motivos de regra não aplicada; plano da versão 2 recusado; formato v4 de
-  `adiamento`, `restauracao`, `vrr` e campos novos do jogo, com capacidades e
+  `adiamento` (com `lista_indisponivel`), `restauracao`, `adiada`, `vrr` e
+  campos novos do jogo, com capacidades e
   jogo no formato da v3 recusados; mensagem da v3 recusada com
   `versao_incompativel`), ordenação dos
   avisos e `restauracao_bloqueada`, validação de forma, enquadramento

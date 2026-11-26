@@ -186,12 +186,14 @@ pub enum Desfecho {
 }
 
 impl Desfecho {
-    /// Desfecho de uma resposta do serviço: `Plano.adiada` (Aplicar agora) e
-    /// `Restauracao.adiada` (Restaurar original) viram [`Desfecho::Adiado`].
+    /// Desfecho de uma resposta do serviço: `Plano.adiada` (Aplicar agora),
+    /// `Restauracao.adiada` (Restaurar original) e `Adiada` (Preferências e
+    /// Destravar) viram [`Desfecho::Adiado`].
     pub fn da_resposta(r: &Resposta) -> Self {
         let adiada = match r {
             Resposta::Plano(p) => p.adiada.clone(),
             Resposta::Restauracao { adiada } => adiada.clone(),
+            Resposta::Adiada { adiamento } => Some(adiamento.clone()),
             _ => None,
         };
         adiada.map_or(Desfecho::Feito, Desfecho::Adiado)
@@ -1061,6 +1063,7 @@ mod testes {
             processos: vec!["cs2.exe".into()],
             desde_unix: 1,
             acao,
+            lista_indisponivel: false,
         }
     }
 
@@ -1137,6 +1140,73 @@ mod testes {
         assert_eq!(ui.mensagem_visivel(), None, "a faixa já diz o mesmo");
         ui.mensagem = Some((TipoMensagem::Sucesso, textos::OK_PREFS.into()));
         assert!(ui.mensagem_visivel().is_some());
+    }
+
+    /// Preferências e Destravar adiados respondem `Resposta::Adiada`: a UI
+    /// mostra o adiamento, não “feito”.
+    #[test]
+    fn preferencias_e_destravar_adiados_mostram_o_adiamento() {
+        use nvt_ipc::AcaoAdiada;
+        let r = Resposta::Adiada {
+            adiamento: adiamento(AcaoAdiada::AplicarPlano),
+        };
+        assert_eq!(
+            Desfecho::da_resposta(&r),
+            Desfecho::Adiado(adiamento(AcaoAdiada::AplicarPlano))
+        );
+        assert_eq!(Desfecho::da_resposta(&Resposta::Ok), Desfecho::Feito);
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        ui.aplicar(Evento::Servico(Dados::default()));
+        for comando in [
+            Comando::DefinirPreferencias(preferencias_padrao()),
+            Comando::Destravar {
+                perfil: "global".into(),
+                setting: "vsync".into(),
+            },
+        ] {
+            ui.aplicar(Evento::Concluido {
+                comando,
+                resultado: Ok(Desfecho::da_resposta(&r)),
+            });
+            let (tipo, texto) = ui.mensagem.clone().unwrap();
+            assert_eq!(tipo, TipoMensagem::Adiada);
+            assert!(texto.starts_with("Jogo aberto (cs2.exe):"), "{texto}");
+            assert_ne!(texto, textos::OK_PREFS);
+            assert_ne!(texto, textos::OK_DESTRAVADO);
+        }
+    }
+
+    /// Lista de processos indisponível: sinal próprio do protocolo, texto
+    /// próprio na UI (nunca “Jogo aberto (lista de processos indisponível)”).
+    #[test]
+    fn lista_de_processos_indisponivel_tem_texto_proprio() {
+        use nvt_ipc::AcaoAdiada;
+        let a = Adiamento {
+            processos: vec![],
+            desde_unix: 1,
+            acao: AcaoAdiada::AplicarPlano,
+            lista_indisponivel: true,
+        };
+        let texto = textos::adiamento(&a);
+        assert_eq!(
+            texto,
+            "Não foi possível verificar se há jogo aberto; as alterações ficam pendentes."
+        );
+        assert_eq!(textos::titulo_adiamento(&texto), "Alterações pendentes");
+        assert_eq!(
+            textos::titulo_adiamento(&textos::adiamento(&adiamento(AcaoAdiada::AplicarPlano))),
+            textos::ADIAMENTO_TITULO
+        );
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        let mut e = estado(preferencias_padrao());
+        e.adiamento = Some(a);
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(e),
+            ..Default::default()
+        }));
+        let faixa = ui.faixa_adiamento().unwrap();
+        assert_eq!(faixa, textos::ADIAMENTO_SEM_LISTA);
+        assert!(!faixa.contains("Jogo aberto"));
     }
 
     fn com_vrr(possivel: Option<bool>, ativo: Option<bool>) -> Estado {

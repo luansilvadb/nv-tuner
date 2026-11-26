@@ -360,9 +360,9 @@ esses pontos em vez de “único lugar com `unsafe`”.
 
 | # | Requisito | Verificação |
 |---|---|---|
-| F1-01 | **Refresh do monitor.** A detecção do **serviço** preenche `Capabilities::refresh_hz` (hoje `None` fixo, `crates/nvt-engine/src/deteccao.rs:44,64`) com o refresh **atual** do monitor principal da GPU NVIDIA, por `NvAPI_DISP_GetDisplayConfig` (`refreshRate1K` do alvo cuja origem tem `bGDIPrimary`), guardado em milésimos de Hz e arredondado para inteiro só no avaliador. As APIs Win32 de modo de vídeo não servem aqui: o serviço roda na sessão 0 (ver `nvt-detect::tela`, 6.4). Falha ou monitor principal fora da GPU NVIDIA = `None`. `refresh_max_hz` fica para a fase 2 (lido pelo agente) | teste com NVAPI falsa; laboratório L1-1 (240, lido pelo serviço) |
+| F1-01 | **Refresh do monitor.** A detecção do **serviço** preenche `Capabilities::refresh_mhz` (hoje `None` fixo, `crates/nvt-engine/src/deteccao.rs:44,64`) com o refresh **atual** do monitor principal da GPU NVIDIA, por `NvAPI_DISP_GetDisplayConfig` (`refreshRate1K` do alvo cuja origem tem `bGDIPrimary`), guardado em milésimos de Hz; o avaliador conta os limites de FPS sobre o piso em Hz inteiros (`refresh_hz_piso`, 59,94 → 59) e arredonda só na exibição. As APIs Win32 de modo de vídeo não servem aqui: o serviço roda na sessão 0 (ver `nvt-detect::tela`, 6.4). Falha ou monitor principal fora da GPU NVIDIA = `None`. `refresh_max_hz` fica para a fase 2 (lido pelo agente) | teste com NVAPI falsa; laboratório L1-1 (240, lido pelo serviço) |
 | F1-02 | **VRR.** Novo `Capabilities::vrr: EstadoVrr { possivel: Option<bool>, ativo: Option<bool> }` a partir de `NvAPI_Disp_GetVRRInfo` (`bIsVRRPossible`, `bIsVRREnabled`) no `displayId` obtido em F1-01. Falha de NVAPI = `None` (desconhecido, nunca casa). A UI deixa de mostrar `vrr: false` fixo (`crates/nvt-ui/src/local.rs:612-613`) | teste com NVAPI falsa; laboratório |
-| F1-03 | **Base curada de jogos competitivos** em `regras/jogos.toml` (7.3), embutida e validada como as regras (`carrega_regras_reais`). Casa um jogo detectado por nome de exe **e**, quando houver, AppID da Steam/ID do launcher, para não confundir exes genéricos (`estado-atual` §6.13) | teste de carga + teste de casamento |
+| F1-03 | **Base curada de jogos competitivos** em `regras/jogos.toml` (7.3), embutida e validada como as regras (`carrega_regras_reais`). Casa um jogo detectado por nome de exe **e**, quando houver, AppID da Steam, para não confundir exes genéricos; ID de outros launchers fica para quando a base trouxer esses IDs (§12) (`estado-atual` §6.13) | teste de carga + teste de casamento |
 | F1-04 | **Fatos curados.** Para jogo casado na base: `jogo_competitivo = true`, `jogo_reflex` e `jogo_limitador_nativo` vêm da base (a base vence a detecção em disco, que não acha Reflex via NVAPI — `deteccao.rs:91`); `jogo_anticheat_kernel` passa a aceitar `false` quando a base declara o anticheat (ex.: VAC). Jogo fora da base: comportamento atual | teste do motor |
 | F1-05 | **Novas condições** em `quando`: `vrr_possivel`, `vrr_ativo` (bool; não casam se desconhecidos), `jogo_competitivo`, `jogo_limitador_nativo` (bool, só `por_jogo`). Novo valor derivado `limite_fps = { limite_vrr = true }` = `min(Hz − 3, floor(Hz − Hz²/3600))`; exige `refresh_conhecido = true` e `vrr_ativo = true` em `quando` | testes do avaliador (tabela de 7.4) |
 | F1-06 | **Detecção de jogo em execução** por `nvt-detect::processos` (N2). Conjunto vigiado = exes de todos os jogos detectados + `processos_protegidos` da base + lista fixa de processos de anticheat que só existem durante o jogo (`EasyAntiCheat.exe`, `EasyAntiCheat_EOS.exe`, `start_protected_game.exe`, `BEService.exe`, `BEService_x64.exe`; nomes a confirmar, §11). Comparação sem diferenciar maiúsculas. `vgc.exe` (Vanguard) **não** entra: roda desde o boot | teste unitário com lista falsa; laboratório |
@@ -380,7 +380,7 @@ esses pontos em vez de “único lugar com `unsafe`”.
 
 | Fato | Tipo | Fonte | Desconhecido quando |
 |---|---|---|---|
-| `refresh_hz` | milésimos de Hz → inteiro | `NvAPI_DISP_GetDisplayConfig` (serviço) | sem origem primária na GPU NVIDIA / falha |
+| `refresh_mhz` | inteiro, milésimos de Hz (o avaliador usa o piso em Hz) | `NvAPI_DISP_GetDisplayConfig` (serviço) | sem origem primária na GPU NVIDIA / falha |
 | `refresh_max_hz` (fase 2) | inteiro | `EnumDisplaySettingsExW(i)` na resolução atual, no agente | sem agente / falha |
 | `vrr.possivel`, `vrr.ativo` | bool | `NvAPI_Disp_GetVRRInfo` | NVAPI sem a função ou erro |
 | `jogo_competitivo` | bool | base curada | nunca (fora da base = `false`) |
@@ -496,7 +496,7 @@ Observações:
 - `Engine::pode_gravar()` e estado `pendente: Option<AcaoPendente>` no núcleo do serviço
   (`crates/nvt-service/src/nucleo.rs`): `AplicarPlano`, `TratarDeriva`,
   `RestaurarOriginal`; a mais recente substitui as anteriores, exceto
-  `RestaurarOriginal`, que vence qualquer outra.
+  `RestaurarOriginal`, que vence qualquer outra e é persistida (§12).
 - `JogoEntrada` (`crates/nvt-engine/src/deteccao.rs:12-24`) passa a carregar a pasta de
   instalação, o AppID e o `IdJogo` da base (necessários para F1-03 e para a fase 3).
 
@@ -504,7 +504,7 @@ Observações:
 
 `PROTOCOL_VERSION = 4` (`crates/nvt-ipc/src/lib.rs:25`). Sem negociação, como hoje: o MSI
 instala UI, serviço e agente juntos. **Decisão do líder (§12):** a v4 leva só os campos
-que a fase 1 precisa (`Capacidades.refresh_hz`/`vrr`, `Jogo.competitivo`/`em_execucao`/
+que a fase 1 precisa (`Capacidades.refresh_mhz`/`vrr`, `Jogo.competitivo`/`em_execucao`/
 `orientacoes`, `adiamento`/`adiada`, os avisos `GsyncSemVrr`/`VrrDesligadoNoPainel` e os
 motivos da fase 1). As variantes de camada (`camada`, `AlvoIpc::Sistema`/`Usuario`/
 `ConfigJogo`, `ValorIpc` além de DWORD, mensagens do agente, `ConfirmarAcao`/`RecusarAcao`
@@ -517,13 +517,17 @@ Windows/Jogo é v5.
 | `Mudanca` | ganha `camada`, `alvo: AlvoIpc` e `valor: ValorIpc` (`Dword`, `Inteiro`, `Decimal`, `Texto`, `Ausente`), mantendo `valor_nome` e a explicação |
 | `PlanoPerfil` → `PlanoAlvo` | `{ alvo: AlvoIpc, mudancas }`; `AlvoIpc = PerfilGlobal \| PerfilJogo { perfil } \| Sistema \| Usuario \| ConfigJogo { jogo, arquivo }` |
 | `TravarSetting` / `DestravarSetting` | `{ alvo: AlvoIpc, setting }` (hoje `{ perfil, setting }`, `protocolo.rs:47`) |
-| `Capacidades` | `refresh_hz`, `vrr: { possivel, ativo }`; (F2) `refresh_max_hz` |
+| `Capacidades` | `refresh_mhz`, `vrr: { possivel, ativo }`; (F2) `refresh_max_hz` |
 | `Jogo` | `competitivo: Option<String>` (id da base), `em_execucao`, `orientacoes: Vec<String>` (códigos) |
 | `Estado` | `adiamento: Option<Adiamento { processos, desde, acao }>`; `avisos` ganha `GsyncSemVrr`, `VrrDesligadoNoPainel`; (F2) `reinicio_pendente`, `diagnosticos`, `agente: Option<EstadoAgente>` |
 | `Aplicacao` (resposta de `AplicarAgora`/`RestaurarOriginal`) | `adiada: Option<Adiamento>` |
-| `MotivoNaoAplicada` | novos: `JogoEmExecucao`, `VrrInativo`, `JogoComReflex`; (v5) `CamadaIndisponivel`; (F2) `RequerConfirmacao`, `RequerReinicio`, `AgenteAusente`, `BitLockerAtivo`; (F3) `ConfigPolitica { politica }`, `JanelaFechadaExigida { processos }`, `ArquivoNaNuvem`, `ArquivoSomenteLeitura`, `FormatoInesperado`, `ArquivoAlteradoPeloJogo`, `ContaAmbigua` |
+| `MotivoNaoAplicada` | novos: `VrrInativo`, `JogoComReflex`; (v5) `CamadaIndisponivel`; (F2) `RequerConfirmacao`, `RequerReinicio`, `AgenteAusente`, `BitLockerAtivo`; (F3) `ConfigPolitica { politica }`, `JanelaFechadaExigida { processos }`, `ArquivoNaNuvem`, `ArquivoSomenteLeitura`, `FormatoInesperado`, `ArquivoAlteradoPeloJogo`, `ContaAmbigua` |
 | Agente (F2) | `RegistrarAgente { versao }`, `RelatarFatosUsuario { fatos }`, `ObterTarefasUsuario`, `RelatarExecucaoUsuario { resultados, geracao_restauracao }`; resposta `Encerrar` (desinstalação, F2-11) |
 | Ações pendentes (F2) | `ConfirmarAcao { regra }`, `RecusarAcao { regra }` |
+
+Jogo aberto não é motivo de não aplicação: o motor nunca deixa de aplicar uma regra
+por jogo aberto, ele adia a gravação inteira (`Estado.adiamento`, respostas `adiada`);
+por isso não há `MotivoNaoAplicada::JogoEmExecucao` (§12).
 
 `docs/ipc.md` deve ser atualizado na implementação (fora desta especificação).
 
@@ -542,8 +546,11 @@ Windows/Jogo é v5.
 
 ### 7.8 Critérios de aceite da fase 1
 
-1. Com monitor de 240 Hz e VRR ativo no modo `gsync`, o plano global contém
-   `limite_fps = 224`; sem VRR ativo, não contém e há aviso.
+1. Com monitor de 240 Hz e VRR ativo no modo `gsync`, o plano traz
+   `limite_fps = 224` como sugestão experimental de `sincronismo-gsync-limite`
+   (valor da tabela de 7.4), fora do plano global; sem VRR ativo, não há sugestão e
+   há aviso. O limite entra no plano global só após a promoção da regra com L1-2 e
+   L1-3 (§12).
 2. Com um processo vigiado aberto, nenhuma chamada de gravação ao DRS ocorre (log e
    contador do `DriverFalso`); ao fechar, a ação pendente roda uma vez.
 3. Nenhuma ocorrência das APIs de N1/N2 no código (T-01).
@@ -563,7 +570,7 @@ Windows/Jogo é v5.
 
 | # | O que | Jogo / condição | Medir | Sentir | Aprova se |
 |---|---|---|---|---|---|
-| L1-1 | Detecção de refresh e VRR **pelo serviço (sessão 0)** | desktop | `refresh_hz`, `vrr` na UI vs. Painel NVIDIA | — | iguais; trocar para 144 Hz no Windows reflete na próxima detecção. Se a NVAPI de exibição não responder na sessão 0, F1-01/F1-02 voltam para decisão (§11, item 18) |
+| L1-1 | Detecção de refresh e VRR **pelo serviço (sessão 0)** | desktop | `refresh_mhz`, `vrr` na UI vs. Painel NVIDIA | — | iguais; trocar para 144 Hz no Windows reflete na próxima detecção. Se a NVAPI de exibição não responder na sessão 0, F1-01/F1-02 voltam para decisão (§11, item 18) |
 | L1-2 | `sincronismo-gsync-limite` em DX11 | LoL, modo `gsync` | FPS (deve ficar ≤ 224), frametime p99, entrada→fóton (PresentMon `MsPCLatency`/`MsClickToPhotonLatency` se disponível) | tearing ausente, sensação igual ou melhor que antes | FPS ≤ 224 e sem piora de p99 frente ao `gsync` atual |
 | L1-3 | Limite manual onde o automático falta | Dota 2 com `-vulkan` (sem Reflex) e um DX12 sem Reflex (ex.: Fortnite DX12 com Reflex off), modo `gsync` | FPS máximo antes e depois; presença de tearing/encostar no teto | engasgo perto do teto | sem a regra, FPS encosta em 240; com a regra, fica ≤ 224 |
 | L1-4 | Ultra × On com limite ativo | Rocket League (DX11, sem Reflex) com Max FPS no jogo abaixo do que a GPU sustenta | entrada→fóton média e p99, frametime p99 | resposta do carro | registrar; só muda a regra global se On vencer com margem maior que a variação entre sessões **e** se a mudança não quebrar o limite automático do modo `gsync` |
@@ -869,7 +876,7 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
 
 | Tema | Relatório | Revisão | Decisão |
 |---|---|---|---|
-| Impacto de `refresh_hz = None` | “G-SYNC sem limite” | Ultra global já limita | revisão; corrigir a regra só para os casos residuais (7.4) |
+| Impacto de `refresh_mhz = None` | “G-SYNC sem limite” | Ultra global já limita | revisão; corrigir a regra só para os casos residuais (7.4) |
 | Fórmula do limite | `Hz·3600/(Hz+3600)` | `Hz − Hz²/3600`, piso `Hz − 3` | revisão (224 @240 bate com o observado) |
 | Ultra × CPU-bound | “Ultra piora em CPU-bound” | “com FPS limitado”; laboratório contradiz | revisão; Ultra mantido, medição L1-4 |
 | Energia | recomendado por jogo | regra global incoerente | revisão; regra por jogo (F1-11) |
@@ -890,3 +897,10 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
 | Modelo generalizado e IPC de camadas na fase 1 | — | — (decisão do líder) | F1-13 (modelo generalizado de camadas, estado v2) e as variantes de IPC para as camadas Windows/Jogo ficam para o **início da fase 2**: não entregam valor perceptível na fase 1 e tocam quase todo o código. A fase 1 usa IPC v4 só com os campos que ela precisa; a fase 2 sobe para v5 (custo baixo: sem negociação, o MSI instala tudo junto) |
 | Fonte do refresh na fase 1 | `QueryDisplayConfig` | — (revisão da especificação) | NVAPI no serviço: as APIs Win32 de modo de vídeo não atendem a sessão 0; Win32 só no agente (fase 2) |
 | Reversão de `useplatformclock` | “só remover” | — (revisão da especificação) | “Tudo reversível” exige regravar o original; mesma trava de BitLocker e confirmação (N7, F2-08) |
+| `MotivoNaoAplicada::JogoEmExecucao` (7.6) | — | — (decisão do líder) | Não criado: o adiamento (`Estado.adiamento` e respostas `adiada`) o substitui, pois o motor nunca deixa de aplicar uma regra por jogo aberto — ele adia a gravação inteira |
+| Critério de aceite 7.8, item 1 | — | — (decisão do líder) | Reescrito: como `sincronismo-gsync-limite` sai experimental (7.4), na fase 1 o limite aparece como sugestão experimental com o valor da tabela (224 a 240 Hz); entra no plano global só após a promoção com L1-2 e L1-3 |
+| Casamento da base (F1-03) | — | — (decisão do líder) | Na fase 1, nome do exe + AppID da Steam; ID de outros launchers fica para quando a base trouxer esses IDs |
+| Nome do campo de refresh | — | — (decisão do líder) | O código e o IPC usam `refresh_mhz` (milésimos de Hz); a especificação foi alinhada. Os limites de FPS (`limite_vrr`, `refresh_menos`) contam sobre o piso em Hz inteiros (`refresh_hz_piso`); o arredondamento fica só na exibição |
+| Falha ao ler a lista de processos | — | — (decisão do líder, commit `ddccbdb`) | Falha fechada: se a lista de processos não puder ser lida, o portão (T-02) adia e a detecção não lê pastas de jogos |
+| Jogo fora da base com exe desconhecido | — | — (decisão do líder) | Risco residual aceito: jogo **fora** da base, de exe desconhecido, aberto sem nenhum processo vigiado (exes da base, `processos_protegidos`, `ANTICHEAT_SO_DURANTE_JOGO`), pode ter a pasta lida a partir da segunda varredura. Aceito porque a leitura usa compartilhamento total, sem mapear e sem tocar o processo (F1-08), e jogos com anticheat de kernel ou estão na base ou têm processo EAC/BattlEye vigiado; a alternativa (nunca analisar jogos fora da base) remove valor para muitos jogos |
+| Pendência de `RestaurarOriginal` | — | — (correção de revisão) | A pendência `RestaurarOriginal` passa a ser persistida, e a CLI de restauração sai com código ≠ 0 quando adiada |

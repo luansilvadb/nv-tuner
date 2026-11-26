@@ -62,7 +62,10 @@ Para voltar aos valores originais:
 
   Se a restauração falhar, a desinstalação continua mesmo assim, e o motivo
   fica registrado no log. Feche os jogos antes: com um jogo aberto, nada é
-  restaurado. Os dados do app (snapshot e histórico) ficam em
+  restaurado — o comando de restauração sai com código 3 e o log diz que a
+  restauração **não** foi feita; nesse caso, feche os jogos e rode a
+  desinstalação de novo (ou use **Restaurar original** antes de desinstalar).
+  Os dados do app (snapshot e histórico) ficam em
   `%ProgramData%\nv-tuner`: reinstalando o nv-tuner, **Restaurar original**
   volta a funcionar.
 
@@ -101,9 +104,12 @@ caminhos da sua máquina, números de série). Vulnerabilidades de segurança
   Como a detecção é por nome, ela pode falhar; por isso a promessa é “adia
   enquanto detecta”. Enquanto isso, a faixa **Jogo aberto** da interface
   mostra o que ficou pendente; o serviço confere a cada 15 s e executa a ação
-  quando o jogo fecha. A pendência fica só na memória do serviço: se ele
-  reiniciar, ela se perde (uma restauração perdida precisa ser pedida de
-  novo).
+  quando o jogo fecha; se a ação falhar, ela é tentada de novo (até 3 vezes)
+  antes de virar aviso. Se o serviço não conseguir ler a lista de processos,
+  também adia, e a interface diz que não foi possível verificar se há jogo
+  aberto. Uma aplicação pendente fica só na memória do serviço (se ele
+  reiniciar, o próximo ciclo refaz a aplicação); uma **restauração pendente
+  é gravada** e sobrevive ao reinício do serviço.
 
 ## Foco competitivo
 

@@ -43,13 +43,53 @@ fn nucleo<'a>(
     )?)
 }
 
-fn sair(r: Result<(), Erro>) -> ExitCode {
+/// Código de saída de `apply`/`restore-original` quando o serviço aceitou o
+/// pedido, mas deixou a gravação pendente (jogo aberto ou lista de processos
+/// indisponível): nada foi gravado agora.
+pub const SAIDA_ADIADA: u8 = 3;
+
+/// O serviço deixou o pedido pendente (ver [`SAIDA_ADIADA`]).
+#[derive(Debug)]
+struct PedidoAdiado(String);
+
+impl std::fmt::Display for PedidoAdiado {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PedidoAdiado {}
+
+/// Código de saída de um resultado: 0, [`SAIDA_ADIADA`] ou 1.
+fn codigo_saida(r: &Result<(), Erro>) -> u8 {
     match r {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
+        Ok(()) => 0,
+        Err(e) if e.is::<PedidoAdiado>() => SAIDA_ADIADA,
+        Err(_) => 1,
+    }
+}
+
+fn sair(r: Result<(), Erro>) -> ExitCode {
+    let codigo = codigo_saida(&r);
+    if let Err(e) = &r {
+        // stderr: o log do MSI (WixQuietExec64, msiexec /l*v) registra o motivo.
+        if codigo == SAIDA_ADIADA {
+            eprintln!("Pendente (código de saída {SAIDA_ADIADA}): {e}");
+        } else {
             eprintln!("Erro: {e}");
-            ExitCode::FAILURE
         }
+    }
+    ExitCode::from(codigo)
+}
+
+/// Por que o portão adiou: os processos vigiados ou a lista indisponível.
+fn motivo_adiamento(processos: &[String], lista_indisponivel: bool) -> String {
+    if lista_indisponivel {
+        "não foi possível verificar se há jogo aberto (a lista de processos do sistema não pôde \
+         ser lida)"
+            .to_owned()
+    } else {
+        format!("jogo aberto ({})", processos.join(", "))
     }
 }
 
@@ -299,22 +339,34 @@ fn eh_admin() -> bool {
     unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
 }
 
-/// Pedido adiado por jogo aberto. Pelo serviço, a ação fica pendente e roda
-/// quando o jogo fechar; no próprio processo, nada é gravado e o comando falha.
+/// Pedido adiado pelo portão. Nos dois casos nada foi gravado agora e o
+/// comando falha: pelo serviço, com [`SAIDA_ADIADA`] (a ação fica pendente no
+/// serviço e roda quando o jogo fechar); no próprio processo, com 1.
+///
+/// A restauração adiada precisa ser explícita: na desinstalação
+/// (`msiexec /x … RESTAURAR_PERFIL=1`) o serviço é removido logo depois e a
+/// restauração pendente não roda.
 fn mostrar_adiada(a: &nvt_ipc::Adiamento, pelo_servico: bool) -> Result<(), Erro> {
-    let processos = a.processos.join(", ");
-    if pelo_servico {
-        println!(
-            "Jogo aberto ({processos}): o serviço deixou a ação pendente ({:?}) e a executa quando o jogo fechar.",
-            a.acao
+    let motivo = motivo_adiamento(&a.processos, a.lista_indisponivel);
+    if !pelo_servico {
+        return Err(
+            format!("{motivo}: nada foi gravado; feche os jogos e repita o comando").into(),
         );
-        Ok(())
-    } else {
-        Err(
-            format!("jogo aberto ({processos}): nada foi gravado; feche o jogo e repita o comando")
-                .into(),
-        )
     }
+    let texto = match a.acao {
+        nvt_ipc::AcaoAdiada::RestaurarOriginal => format!(
+            "{motivo}: a restauração NÃO foi feita agora. O serviço a deixou pendente e a \
+             executa quando o jogo fechar. Se estiver desinstalando o nv-tuner, a restauração \
+             não vai acontecer: feche os jogos e rode a desinstalação de novo, ou use \
+             “Restaurar original” antes de desinstalar."
+        ),
+        nvt_ipc::AcaoAdiada::AplicarPlano | nvt_ipc::AcaoAdiada::TratarDeriva => format!(
+            "{motivo}: nada foi gravado agora. O serviço deixou a ação pendente ({:?}) e a \
+             executa quando o jogo fechar.",
+            a.acao
+        ),
+    };
+    Err(Box::new(PedidoAdiado(texto)))
 }
 
 fn mostrar(r: &Resposta, restaurar: bool, pelo_servico: bool) -> Result<(), Erro> {
@@ -325,6 +377,7 @@ fn mostrar(r: &Resposta, restaurar: bool, pelo_servico: bool) -> Result<(), Erro
             mostrar_adiada(p.adiada.as_ref().expect("conferido acima"), pelo_servico)
         }
         Resposta::Restauracao { adiada: Some(a) } => mostrar_adiada(a, pelo_servico),
+        Resposta::Adiada { adiamento } => mostrar_adiada(adiamento, pelo_servico),
         Resposta::Plano(p) => {
             imprimir_plano(p);
             let (mut ok, mut falhas) = (0, 0);
@@ -395,12 +448,82 @@ pub fn gravar(dir: &Path, pipe: &str, tentar_ipc: bool, restaurar: bool) -> Exit
         // recusa antes de mudar qualquer coisa (inclusive a autonomia).
         if let Err(a) = n.engine().pode_gravar() {
             return Err(format!(
-                "jogo aberto ({}): nada foi gravado; feche o jogo e repita o comando",
-                a.processos.join(", ")
+                "{}: nada foi gravado; feche os jogos e repita o comando",
+                motivo_adiamento(&a.processos, a.lista_indisponivel)
             )
             .into());
+        }
+        // Restauração deixada pendente pelo serviço antes de parar: roda
+        // primeiro (como o serviço faria ao reiniciar). No próprio
+        // `restore-original` ela é a própria requisição.
+        if !restaurar {
+            n.retomar_pendente(Instant::now());
         }
         let r = n.tratar(req, Instant::now());
         mostrar(&r, restaurar, false)
     })())
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+    use nvt_ipc::{AcaoAdiada, Adiamento};
+
+    fn adiamento(acao: AcaoAdiada, lista_indisponivel: bool) -> Adiamento {
+        Adiamento {
+            processos: if lista_indisponivel {
+                vec![]
+            } else {
+                vec!["cs2.exe".into()]
+            },
+            desde_unix: 1,
+            acao,
+            lista_indisponivel,
+        }
+    }
+
+    /// Desinstalação com `RESTAURAR_PERFIL=1` e jogo aberto: o comando não
+    /// pode sair com 0 (a restauração não foi feita) e o motivo vai para o
+    /// stderr, que o log do MSI registra.
+    #[test]
+    fn restauracao_adiada_pelo_servico_sai_com_codigo_proprio() {
+        let r = Resposta::Restauracao {
+            adiada: Some(adiamento(AcaoAdiada::RestaurarOriginal, false)),
+        };
+        let res = mostrar(&r, true, true);
+        assert_eq!(codigo_saida(&res), SAIDA_ADIADA);
+        let texto = res.unwrap_err().to_string();
+        assert!(texto.starts_with("jogo aberto (cs2.exe)"), "{texto}");
+        assert!(texto.contains("NÃO foi feita"), "{texto}");
+        assert!(texto.contains("feche os jogos e rode a desinstalação de novo"));
+        assert!(texto.contains("“Restaurar original” antes de desinstalar"));
+
+        let feita = mostrar(&Resposta::Restauracao { adiada: None }, true, true);
+        assert_eq!(codigo_saida(&feita), 0);
+    }
+
+    #[test]
+    fn aplicacao_adiada_e_lista_indisponivel_tambem_nao_saem_com_zero() {
+        let mut p = Plano {
+            gerado_unix: 1,
+            perfis: vec![],
+            reversoes: vec![],
+            ignorados: vec![],
+            jogos: vec![],
+            adiada: Some(adiamento(AcaoAdiada::AplicarPlano, true)),
+        };
+        let res = mostrar(&Resposta::Plano(p.clone()), false, true);
+        assert_eq!(codigo_saida(&res), SAIDA_ADIADA);
+        let texto = res.unwrap_err().to_string();
+        assert!(texto.contains("não foi possível verificar se há jogo aberto"));
+        assert!(
+            !texto.contains("lista de processos indisponível)"),
+            "{texto}"
+        );
+        // No próprio processo (sem serviço) também falha, com 1.
+        let res = mostrar(&Resposta::Plano(p.clone()), false, false);
+        assert_eq!(codigo_saida(&res), 1);
+        p.adiada = None;
+        assert_eq!(codigo_saida(&mostrar(&Resposta::Plano(p), false, true)), 0);
+    }
 }

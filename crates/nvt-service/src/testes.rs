@@ -1267,3 +1267,243 @@ fn estado_leva_refresh_vrr_real_e_aviso_do_plano() {
     );
     assert_eq!(e.adiamento, None);
 }
+
+// ── Pendência: falha que não é adiamento, persistência e respostas ────────
+
+/// A ação pendente só sai depois de dar certo: erro que não é adiamento é
+/// tentado de novo a cada 15 s e, na 3.ª falha, vira aviso e é descartado.
+#[test]
+fn pendencia_com_erro_e_tentada_de_novo_e_descartada_apos_tres_falhas() {
+    use crate::nucleo::{AcaoPendente, TENTATIVAS_PENDENTE};
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let seg = Duration::from_secs;
+    let falhar = Rc::new(std::cell::Cell::new(false));
+    let p = Processos::default();
+    p.abrir(EXE_LOL);
+    let (d2, f2, s2) = (d.clone(), falhar.clone(), s.clone());
+    let mut n = Nucleo::novo_com_portao(
+        Box::new(move || {
+            if f2.get() {
+                Err(nvt_engine::ErroEngine::SemGpu)
+            } else {
+                Ok(d2.clone())
+            }
+        }),
+        Box::new(jogos),
+        Box::new(move || Some(s2.borrow().clone())),
+        Some(dir.0.clone()),
+        cfg(false),
+        t0,
+        nvt_engine::Portao::new(p.clone()),
+    )
+    .expect("núcleo");
+    n.iniciar(t0);
+    assert_eq!(
+        n.pendente().map(|x| x.acao),
+        Some(AcaoPendente::AplicarPlano)
+    );
+
+    // Jogo fechado, mas o driver falha: a pendência continua, com nova
+    // tentativa no mesmo intervalo.
+    p.fechar_todos();
+    falhar.set(true);
+    n.tick(t0 + seg(15));
+    assert_eq!(n.pendente().map(|x| x.tentativas), Some(1));
+    assert_eq!(n.proxima_reavaliacao(), Some(t0 + seg(30)));
+
+    // O driver volta: a próxima tentativa aplica e a pendência sai.
+    falhar.set(false);
+    n.tick(t0 + seg(30));
+    assert!(n.pendente().is_none());
+    assert_eq!(n.proxima_reavaliacao(), None);
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_OFF));
+
+    // Agora falhando sempre: descartada na 3.ª falha, com aviso.
+    p.abrir(EXE_LOL);
+    assert!(matches!(
+        n.tratar(prefs_limite(Some(141)), t0 + seg(40)),
+        Resposta::Adiada { .. }
+    ));
+    p.fechar_todos();
+    falhar.set(true);
+    let mut t = t0 + seg(40);
+    for k in 1..=TENTATIVAS_PENDENTE {
+        t += seg(15);
+        n.tick(t);
+        if k < TENTATIVAS_PENDENTE {
+            assert_eq!(n.pendente().map(|x| x.tentativas), Some(k));
+        }
+    }
+    assert!(
+        n.pendente().is_none(),
+        "descartada após {TENTATIVAS_PENDENTE} falhas"
+    );
+    assert_eq!(n.proxima_reavaliacao(), None);
+    let aviso = n
+        .avisos()
+        .into_iter()
+        .find(|a| a.codigo == codigo_aviso::ACAO_PENDENTE_DESCARTADA)
+        .expect("aviso da pendência descartada");
+    assert_eq!(aviso.nivel, NivelAviso::Erro);
+    assert!(aviso.mensagem.contains("3 vez(es)"), "{}", aviso.mensagem);
+
+    // Um "Aplicar agora" bem-sucedido limpa o aviso.
+    falhar.set(false);
+    let _ = plano_de(&mut n, Requisicao::AplicarAgora, t + seg(1));
+    assert!(
+        !n.avisos()
+            .iter()
+            .any(|a| a.codigo == codigo_aviso::ACAO_PENDENTE_DESCARTADA)
+    );
+}
+
+/// A restauração pendente fica em `servico.json`, sobrevive ao reinício do
+/// serviço e é retomada ao iniciar; depois de feita, sai do arquivo.
+#[test]
+fn restauracao_pendente_sobrevive_ao_reinicio_do_servico() {
+    use crate::nucleo::{AcaoPendente, EstadoServico};
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let seg = Duration::from_secs;
+    let p = Processos::default();
+    {
+        let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+        n.iniciar(t0);
+        assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_OFF));
+        p.abrir(EXE_WARDOGS);
+        let r = n.tratar(Requisicao::RestaurarOriginal, t0 + seg(1));
+        assert!(matches!(r, Resposta::Restauracao { adiada: Some(_) }));
+    }
+    let salvo = EstadoServico::carregar(Some(&dir.0));
+    assert!(salvo.restauracao_pendente_desde_unix.is_some());
+    assert!(salvo.autonomia_pausada);
+
+    // Reinício com o jogo ainda aberto: a restauração volta a ser a pendência
+    // e nada é gravado.
+    let antes = escritas(&d);
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0 + seg(60));
+    n.iniciar(t0 + seg(60));
+    assert_eq!(
+        n.pendente().map(|x| x.acao),
+        Some(AcaoPendente::RestaurarOriginal)
+    );
+    let a = adiamento_do_estado(&mut n, t0 + seg(60)).expect("adiamento");
+    assert_eq!(a.acao, nvt_ipc::AcaoAdiada::RestaurarOriginal);
+    assert_eq!(a.processos, [EXE_WARDOGS]);
+    assert_eq!(escritas(&d), antes);
+
+    // O jogo fecha: restaura uma vez e tira a pendência do arquivo.
+    p.fechar_todos();
+    n.tick(t0 + seg(75));
+    assert!(n.pendente().is_none());
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_APP));
+    assert_eq!(escritas(&d).1, antes.1 + 1);
+    let salvo = EstadoServico::carregar(Some(&dir.0));
+    assert_eq!(salvo.restauracao_pendente_desde_unix, None);
+    assert!(salvo.autonomia_pausada);
+    drop(n);
+
+    // Novo reinício: nada pendente.
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0 + seg(90));
+    n.iniciar(t0 + seg(90));
+    assert!(n.pendente().is_none());
+}
+
+/// Restauração persistida e serviço reiniciado com o jogo já fechado: roda
+/// no início, antes do primeiro ciclo.
+#[test]
+fn restauracao_persistida_roda_no_inicio_com_o_jogo_fechado() {
+    use crate::nucleo::EstadoServico;
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let p = Processos::default();
+    {
+        let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+        n.iniciar(t0);
+        p.abrir("EasyAntiCheat_EOS.exe");
+        let _ = n.tratar(Requisicao::RestaurarOriginal, t0);
+    }
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_OFF));
+    p.fechar_todos();
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+    n.iniciar(t0);
+    assert!(n.pendente().is_none());
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_APP));
+    assert_eq!(
+        EstadoServico::carregar(Some(&dir.0)).restauracao_pendente_desde_unix,
+        None
+    );
+}
+
+/// Preferências e Destravar com jogo aberto: a resposta carrega o
+/// adiamento (não `Ok`).
+#[test]
+fn preferencias_e_destravar_com_jogo_aberto_respondem_adiada() {
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let p = Processos::default();
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+    n.iniciar(t0);
+    let travar = Requisicao::TravarSetting {
+        perfil: "Wardogs".into(),
+        setting: "dlss_preset".into(),
+    };
+    assert_eq!(n.tratar(travar, t0), Resposta::Ok);
+    d.mudar_pelo_usuario(&wardogs(), ID_PRESET, 3);
+
+    p.abrir(EXE_WARDOGS);
+    let antes = escritas(&d);
+    let r = n.tratar(prefs_limite(Some(141)), t0);
+    let Resposta::Adiada { adiamento } = r else {
+        panic!("esperava adiada, veio {r:?}");
+    };
+    assert_eq!(adiamento.acao, nvt_ipc::AcaoAdiada::AplicarPlano);
+    assert_eq!(adiamento.processos, [EXE_WARDOGS]);
+    assert!(!adiamento.lista_indisponivel);
+    assert_eq!(n.engine().estado().preferencias.limite_fps, Some(141));
+
+    let destravar = Requisicao::DestravarSetting {
+        perfil: "Wardogs".into(),
+        setting: "dlss_preset".into(),
+    };
+    let r = n.tratar(destravar, t0);
+    assert!(
+        matches!(
+            &r,
+            Resposta::Adiada { adiamento } if adiamento.acao == nvt_ipc::AcaoAdiada::AplicarPlano
+        ),
+        "{r:?}"
+    );
+    assert!(n.engine().estado().travadas.is_empty());
+    assert_eq!(escritas(&d), antes, "nada gravado com o jogo aberto");
+
+    // Jogo fechado: a pendência roda e o mesmo pedido volta a responder Ok.
+    p.fechar_todos();
+    n.tick(t0 + Duration::from_secs(15));
+    assert_eq!(d.valor(&wardogs(), ID_PRESET), Some(5));
+    assert_eq!(n.tratar(prefs_limite(Some(141)), t0), Resposta::Ok);
+}
+
+/// Lista de processos ilegível: o adiamento vai com o sinal próprio, sem o
+/// marcador como nome de processo.
+#[test]
+fn lista_de_processos_indisponivel_vai_como_sinal_proprio() {
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let d2 = d.clone();
+    let s2 = s.clone();
+    let mut n = Nucleo::novo_com_portao(
+        Box::new(move || Ok(d2.clone())),
+        Box::new(jogos),
+        Box::new(move || Some(s2.borrow().clone())),
+        Some(dir.0.clone()),
+        cfg(false),
+        t0,
+        nvt_engine::Portao::new(nvt_engine::ProcessosFalsos::falhando()),
+    )
+    .expect("núcleo");
+    n.iniciar(t0);
+    assert_eq!(escritas(&d), (0, 0));
+    let a = adiamento_do_estado(&mut n, t0).expect("adiamento");
+    assert!(a.lista_indisponivel);
+    assert!(a.processos.is_empty(), "{:?}", a.processos);
+    let plano = plano_de(&mut n, Requisicao::AplicarAgora, t0);
+    let a = plano.adiada.expect("adiada");
+    assert!(a.lista_indisponivel && a.processos.is_empty());
+}

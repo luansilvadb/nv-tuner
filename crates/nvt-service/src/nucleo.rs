@@ -14,6 +14,11 @@
 //! ([`Engine::pode_gravar`], T-02). Com jogo ou anticheat vigiado em
 //! execução, a ação fica pendente ([`AcaoPendente`]) e é reavaliada a cada
 //! [`Config::intervalo_adiamento`]; ao fechar o jogo, roda uma vez (F1-07).
+//! A pendência só sai depois que a ação dá certo: um erro que não é
+//! adiamento é tentado de novo no mesmo intervalo, até
+//! [`TENTATIVAS_PENDENTE`] vezes, e então vira aviso e é descartada. A
+//! restauração pendente fica também em `servico.json` e é retomada quando o
+//! serviço reinicia.
 //!
 //! O tempo é sempre passado por quem chama (`agora`), para os testes
 //! controlarem o relógio.
@@ -53,6 +58,9 @@ pub type Assinador<'a> = Box<dyn FnMut() -> Option<Assinatura> + 'a>;
 pub const PERFIL_GLOBAL: &str = "global";
 const ARQ_SERVICO: &str = "servico.json";
 const ALERTAS_MAX: usize = 100;
+/// Execuções seguidas com erro (que não é adiamento) antes de a ação
+/// pendente ser descartada.
+pub const TENTATIVAS_PENDENTE: u32 = 3;
 
 /// Intervalos do laço.
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +120,8 @@ impl AcaoPendente {
 pub struct Pendente {
     pub acao: AcaoPendente,
     pub adiamento: Adiamento,
+    /// Execuções que já falharam (erro que não é adiamento).
+    pub tentativas: u32,
 }
 
 /// Última aplicação de plano (persistida em `servico.json`).
@@ -129,6 +139,10 @@ pub struct EstadoServico {
     pub autonomia_pausada: bool,
     pub pausada_em_unix: Option<u64>,
     pub ultima_aplicacao: Option<UltimaAplicacao>,
+    /// `RestaurarOriginal` adiada pelo portão (desde quando, Unix): retomada
+    /// quando o serviço reinicia. Ausente nos arquivos antigos.
+    #[serde(default)]
+    pub restauracao_pendente_desde_unix: Option<u64>,
 }
 
 impl EstadoServico {
@@ -221,6 +235,8 @@ pub struct Nucleo<'a, S: DriverStore> {
     erros_aplicacao: Vec<Aviso>,
     /// Erros isolados por perfil do último tratamento de deriva.
     erros_deriva: Vec<Aviso>,
+    /// Ação pendente descartada após [`TENTATIVAS_PENDENTE`] falhas.
+    erros_pendente: Vec<Aviso>,
     /// Jogos ignorados no último plano calculado e quando.
     ignorados: Vec<nvt_ipc::JogoIgnorado>,
     ignorados_unix: u64,
@@ -278,19 +294,36 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             None => Armazem::em_memoria(),
         };
         let engine = Engine::new(fabrica()?, armazem)?.com_portao(portao.clone());
+        let servico = EstadoServico::carregar(dir.as_deref());
+        // Restauração adiada antes de o serviço parar: volta a ser a ação
+        // pendente, reavaliada já (nunca em somente leitura).
+        let pendente = servico
+            .restauracao_pendente_desde_unix
+            .filter(|_| !cfg.somente_leitura)
+            .map(|desde_unix| Pendente {
+                acao: AcaoPendente::RestaurarOriginal,
+                adiamento: Adiamento {
+                    processos: Vec::new(),
+                    desde_unix,
+                    lista_indisponivel: false,
+                },
+                tentativas: 0,
+            });
+        let proxima_reavaliacao = pendente.as_ref().map(|_| agora);
         Ok(Self {
             engine,
             fabrica,
             varredor,
             assinador,
             cfg,
-            servico: EstadoServico::carregar(dir.as_deref()),
+            servico,
             dir,
             jogos: Vec::new(),
             alertas: Vec::new(),
             avisos_estado,
             erros_aplicacao: Vec::new(),
             erros_deriva: Vec::new(),
+            erros_pendente: Vec::new(),
             ignorados: Vec::new(),
             ignorados_unix: 0,
             avisos_plano: Vec::new(),
@@ -301,8 +334,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             proxima_verificacao: agora + cfg.intervalo_verificacao,
             proxima_varredura: agora + cfg.intervalo_varredura,
             portao,
-            pendente: None,
-            proxima_reavaliacao: None,
+            pendente,
+            proxima_reavaliacao,
         })
     }
 
@@ -328,12 +361,27 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         };
         if self.pendente.as_ref().map(|p| p.acao) != Some(acao) {
             info!(
-                "gravação adiada ({acao:?}): jogo em execução ({}); reavaliação a cada {} s",
-                adiamento.processos.join(", "),
+                "gravação adiada ({acao:?}): {adiamento}; reavaliação a cada {} s",
                 self.cfg.intervalo_adiamento.as_secs()
             );
         }
-        self.pendente = Some(Pendente { acao, adiamento });
+        // Mesma ação: as falhas anteriores continuam contando.
+        let tentativas = self
+            .pendente
+            .as_ref()
+            .filter(|p| p.acao == acao)
+            .map_or(0, |p| p.tentativas);
+        if acao == AcaoPendente::RestaurarOriginal
+            && self.servico.restauracao_pendente_desde_unix.is_none()
+        {
+            self.servico.restauracao_pendente_desde_unix = Some(adiamento.desde_unix);
+            self.salvar_servico();
+        }
+        self.pendente = Some(Pendente {
+            acao,
+            adiamento,
+            tentativas,
+        });
         self.proxima_reavaliacao = Some(agora + self.cfg.intervalo_adiamento);
     }
 
@@ -350,48 +398,121 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             self.pendente = None;
             self.proxima_reavaliacao = None;
         }
+        if acao == AcaoPendente::RestaurarOriginal {
+            self.esquecer_restauracao_persistida();
+        }
     }
 
-    /// Adiamento atual no formato do protocolo.
+    /// Tira de `servico.json` a restauração pendente (feita ou descartada).
+    fn esquecer_restauracao_persistida(&mut self) {
+        if self
+            .servico
+            .restauracao_pendente_desde_unix
+            .take()
+            .is_some()
+        {
+            self.salvar_servico();
+        }
+    }
+
+    /// Adiamento atual no formato do protocolo. Com a lista de processos
+    /// indisponível, vai o sinal próprio, nunca um nome de processo.
     fn adiamento_ipc(&self) -> Option<nvt_ipc::Adiamento> {
         self.pendente.as_ref().map(|p| nvt_ipc::Adiamento {
-            processos: p.adiamento.processos.clone(),
+            processos: if p.adiamento.lista_indisponivel {
+                Vec::new()
+            } else {
+                p.adiamento.processos.clone()
+            },
             desde_unix: p.adiamento.desde_unix,
             acao: p.acao.ipc(),
+            lista_indisponivel: p.adiamento.lista_indisponivel,
         })
     }
 
-    /// Com ação pendente, consulta o portão; livre, executa a ação uma vez.
+    /// Resposta de um pedido aceito: [`Resposta::Adiada`] se a gravação
+    /// ficou pendente, senão [`Resposta::Ok`].
+    fn ok_ou_adiada(&self, adiada: bool) -> Resposta {
+        match self.adiamento_ipc().filter(|_| adiada) {
+            Some(adiamento) => Resposta::Adiada { adiamento },
+            None => Resposta::Ok,
+        }
+    }
+
+    /// Retoma a ação pendente carregada do estado (restauração adiada antes
+    /// de o serviço parar), se o portão liberar.
+    pub fn retomar_pendente(&mut self, agora: Instant) {
+        if self.pendente.is_some() {
+            self.reavaliar_pendente(agora);
+        }
+    }
+
+    /// Com ação pendente, consulta o portão; livre, executa a ação. A
+    /// pendência só sai depois que a ação der certo (ou de
+    /// [`TENTATIVAS_PENDENTE`] falhas seguidas).
     fn reavaliar_pendente(&mut self, agora: Instant) {
-        if self.pendente.is_none() {
+        let Some(acao) = self.pendente.as_ref().map(|p| p.acao) else {
             self.proxima_reavaliacao = None;
             return;
-        }
-        match self.engine.pode_gravar() {
-            Err(a) => {
-                if let Some(p) = &mut self.pendente {
-                    p.adiamento = a;
-                }
-                self.proxima_reavaliacao = Some(agora + self.cfg.intervalo_adiamento);
+        };
+        if let Err(a) = self.engine.pode_gravar() {
+            if let Some(p) = &mut self.pendente {
+                p.adiamento = a;
             }
+            self.proxima_reavaliacao = Some(agora + self.cfg.intervalo_adiamento);
+            return;
+        }
+        // Sem reavaliação marcada: se a ação for adiada de novo, `adiar`
+        // marca outra; se não, ela terminou.
+        self.proxima_reavaliacao = None;
+        info!("portão livre: executando a ação pendente ({acao:?})");
+        let r = match acao {
+            AcaoPendente::RestaurarOriginal => self.restaurar_original(agora).map(|_| ()),
+            AcaoPendente::AplicarPlano | AcaoPendente::TratarDeriva => {
+                self.proxima_verificacao = agora + self.cfg.intervalo_verificacao;
+                self.ciclo_interno(agora, "jogo fechado (ação pendente)")
+            }
+        };
+        match r {
             Ok(()) => {
-                let Some(p) = self.pendente.take() else {
-                    return;
-                };
-                self.proxima_reavaliacao = None;
-                info!("jogo fechado: executando a ação pendente ({:?})", p.acao);
-                match p.acao {
-                    AcaoPendente::RestaurarOriginal => {
-                        if let Err(e) = self.restaurar_original(agora) {
-                            error!("restauração pendente falhou: {e}");
-                        }
-                    }
-                    AcaoPendente::AplicarPlano | AcaoPendente::TratarDeriva => {
-                        self.ciclo(agora, "jogo fechado (ação pendente)");
-                    }
+                if self.proxima_reavaliacao.is_none() {
+                    self.pendente = None;
+                    self.erros_pendente.clear();
                 }
             }
+            Err(ErroEngine::Adiada(a)) => self.adiar(acao, a, agora),
+            Err(e) => self.falha_pendente(acao, &e, agora),
         }
+    }
+
+    /// A ação pendente falhou por erro que não é adiamento: tenta de novo no
+    /// mesmo intervalo; esgotadas as tentativas, avisa e descarta.
+    fn falha_pendente(&mut self, acao: AcaoPendente, e: &ErroEngine, agora: Instant) {
+        let Some(p) = &mut self.pendente else {
+            return;
+        };
+        p.tentativas += 1;
+        let n = p.tentativas;
+        if n < TENTATIVAS_PENDENTE {
+            warn!(
+                "ação pendente ({acao:?}) falhou ({n} de {TENTATIVAS_PENDENTE}): {e}; nova tentativa em {} s",
+                self.cfg.intervalo_adiamento.as_secs()
+            );
+            self.proxima_reavaliacao = Some(agora + self.cfg.intervalo_adiamento);
+            return;
+        }
+        error!("ação pendente ({acao:?}) descartada após {n} falha(s): {e}");
+        self.pendente = None;
+        self.proxima_reavaliacao = None;
+        if acao == AcaoPendente::RestaurarOriginal {
+            self.esquecer_restauracao_persistida();
+        }
+        self.erros_pendente = vec![Aviso::acao_pendente_descartada(
+            acao.ipc(),
+            n,
+            e.to_string(),
+            agora_unix(),
+        )];
     }
 
     pub fn engine(&self) -> &Engine<S> {
@@ -470,6 +591,10 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
     /// Início do serviço: varredura e primeiro ciclo.
     pub fn iniciar(&mut self, agora: Instant) {
         self.varrer(agora);
+        if self.restauracao_pendente() {
+            info!("restauração pendente de antes do reinício: retomando");
+            self.retomar_pendente(agora);
+        }
         if self.servico.autonomia_pausada {
             info!("autonomia pausada (restauração anterior): só verificação");
         }
@@ -712,6 +837,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         {
             v.push(Aviso::snapshot_indisponivel(motivo, agora_unix()));
         }
+        v.extend(self.erros_pendente.iter().cloned());
         v.extend(self.erros_deriva.iter().cloned());
         v.extend(self.erros_aplicacao.iter().cloned());
         if !self.ignorados.is_empty() {
@@ -923,6 +1049,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         match self.tratar_e_aplicar(agora, "aplicar agora")? {
             Some((diff, ap)) => {
                 self.alertas.clear();
+                self.erros_pendente.clear();
                 Ok(Resposta::Plano(self.plano_ipc(&diff, Some(&ap))))
             }
             None => self.plano_adiado(),
@@ -947,6 +1074,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             r => r?,
         };
         self.concluir_pendente(AcaoPendente::RestaurarOriginal);
+        self.erros_pendente.clear();
         match restaurado {
             None => info!("restauração: não há snapshot original (nada a restaurar)"),
             Some(r) => {
@@ -1003,25 +1131,26 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         self.engine.definir_preferencias(prefs)?;
         info!("preferências atualizadas");
         if autonomia && !adiada {
-            self.aplicar_ou_adiar(agora)?;
+            adiada = self.aplicar_ou_adiar(agora)?;
         } else if let Err(e) = self.planejar() {
             // Só para atualizar os avisos do plano (G-SYNC sem VRR).
             warn!("plano após as preferências: {e}");
         }
-        Ok(Resposta::Ok)
+        Ok(self.ok_ou_adiada(adiada))
     }
 
-    /// Aplica o plano; com jogo aberto, deixa `AplicarPlano` pendente.
-    fn aplicar_ou_adiar(&mut self, agora: Instant) -> Resultado<()> {
+    /// Aplica o plano; com jogo aberto, deixa `AplicarPlano` pendente e
+    /// devolve `true`.
+    fn aplicar_ou_adiar(&mut self, agora: Instant) -> Resultado<bool> {
         match self.aplicar_plano(agora) {
             Err(ErroEngine::Adiada(a)) => {
                 self.adiar(AcaoPendente::AplicarPlano, a, agora);
-                Ok(())
+                Ok(true)
             }
             Err(e) => Err(e),
             Ok(_) => {
                 self.concluir_pendente(AcaoPendente::AplicarPlano);
-                Ok(())
+                Ok(false)
             }
         }
     }
@@ -1149,10 +1278,10 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             self.alertas
                 .retain(|a| !(mesmo_nome_perfil(&a.perfil, perfil) && a.setting == setting));
             if autonomia && !adiada {
-                self.aplicar_ou_adiar(agora)?;
+                adiada = self.aplicar_ou_adiar(agora)?;
             }
         }
-        Ok(Resposta::Ok)
+        Ok(self.ok_ou_adiada(adiada))
     }
 
     fn listar_historico(&self, limite: u32) -> Resposta {

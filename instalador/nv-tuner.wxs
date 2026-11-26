@@ -79,6 +79,16 @@
       %ProgramData%\nv-tuner (a pasta não é apagada na desinstalação), então
       a restauração pode ser refeita reinstalando o nv-tuner e usando
       "Restaurar original" na interface.
+
+      Jogo aberto (ou lista de processos ilegível) durante a desinstalação:
+      o serviço em execução não restaura na hora, deixa a restauração
+      pendente, e o comando sai com código 3 e escreve no stderr (portanto
+      no log /l*v) que a restauração NÃO foi feita: feche os jogos e rode a
+      desinstalação de novo, ou use "Restaurar original" antes de
+      desinstalar. A desinstalação segue (Return="ignore") e o serviço é
+      removido sem restaurar. A pendência fica em
+      %ProgramData%\nv-tuner\servico.json: se o nv-tuner for reinstalado, o
+      serviço a retoma ao iniciar.
     -->
     <Property Id="RESTAURAR_PERFIL" Value="0" Secure="yes" />
     <SetProperty Id="RestaurarPerfilOriginal"

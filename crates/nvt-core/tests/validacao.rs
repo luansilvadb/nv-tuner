@@ -345,3 +345,42 @@ fn regra_por_jogo_casa_por_fatos() {
     assert!(!plan.por_jogo.contains_key("desconhecido"));
     assert!(plan.global.is_empty());
 }
+
+/// `refresh_menos` usa o piso do refresh: 59,94 Hz conta como 59 (− 3 = 56),
+/// nunca como 60 (− 3 = 57, a menos de 3 FPS do refresh real).
+#[test]
+fn refresh_menos_usa_piso_do_refresh() {
+    let regras = carregar(&arquivo(&[regra(
+        "x",
+        "global",
+        "[regra.quando]\nsincronismo = [\"gsync\"]\nrefresh_conhecido = true\n[regra.aplicar]\nlimite_fps = { refresh_menos = 3 }\n",
+    )]))
+    .expect("regra válida");
+    for (mhz, esperado, exibido) in [
+        (59_940, 56, Some("≈60 Hz, contado como 59 Hz")),
+        (143_980, 140, Some("≈144 Hz, contado como 143 Hz")),
+        (144_000, 141, None),
+    ] {
+        let caps = Capabilities {
+            refresh_mhz: Some(mhz),
+            ..Capabilities::tipicas(Arquitetura::Ada)
+        };
+        let plan = avaliar(
+            &caps,
+            &[],
+            &Preferences {
+                sincronismo: nvt_core::Sincronismo::GSync,
+                ..Preferences::default()
+            },
+            &regras,
+        );
+        let m = plan
+            .mudanca(&Alvo::Global, "limite_fps")
+            .unwrap_or_else(|| panic!("{mhz} mHz: sem limite"));
+        assert_eq!(m.valor, esperado, "{mhz} mHz");
+        match exibido {
+            Some(t) => assert!(m.explicacao.contains(t), "{mhz} mHz: {}", m.explicacao),
+            None => assert!(!m.explicacao.contains("contado como"), "{}", m.explicacao),
+        }
+    }
+}

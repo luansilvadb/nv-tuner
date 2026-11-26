@@ -798,9 +798,29 @@ pub fn efeito_adiado(a: AcaoAdiada) -> &'static str {
     }
 }
 
+/// Faixa e mensagem quando o serviço não conseguiu ler a lista de processos
+/// (`Adiamento::lista_indisponivel`).
+pub const ADIAMENTO_SEM_LISTA: &str =
+    "Não foi possível verificar se há jogo aberto; as alterações ficam pendentes.";
+/// Título da faixa/mensagem de [`ADIAMENTO_SEM_LISTA`].
+pub const ADIAMENTO_SEM_LISTA_TITULO: &str = "Alterações pendentes";
+
+/// Título da faixa ou da mensagem de adiamento com o texto `texto`.
+pub fn titulo_adiamento(texto: &str) -> &'static str {
+    if texto == ADIAMENTO_SEM_LISTA {
+        ADIAMENTO_SEM_LISTA_TITULO
+    } else {
+        ADIAMENTO_TITULO
+    }
+}
+
 /// Faixa de estado com jogo aberto (ex.: “Jogo aberto (cs2.exe): as
-/// alterações serão aplicadas quando você fechar o jogo.”).
+/// alterações serão aplicadas quando você fechar o jogo.”). Com a lista de
+/// processos indisponível, [`ADIAMENTO_SEM_LISTA`].
 pub fn adiamento(a: &Adiamento) -> String {
+    if a.lista_indisponivel {
+        return ADIAMENTO_SEM_LISTA.to_owned();
+    }
     let efeito = efeito_adiado(a.acao);
     if a.processos.is_empty() {
         format!("Jogo aberto: {efeito}.")
