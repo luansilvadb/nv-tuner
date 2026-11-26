@@ -16,6 +16,7 @@ use crate::estado::{
     Armazem, Esperado, Estado, OrigemRegistro, PerfilCriado, RegistroHistorico, Travada,
     ValorAntes, agora_iso, mesmo_alvo,
 };
+use crate::portao::{Adiamento, Guardado, Licenca, Portao};
 use crate::store::DriverStore;
 
 /// Nome com que o histórico e os relatórios mostram o perfil global.
@@ -327,11 +328,14 @@ pub fn classificar_deriva(
 
 /// Motor do nv-tuner sobre um [`DriverStore`].
 pub struct Engine<S: DriverStore> {
-    store: S,
+    /// Só aceita gravação com a [`Licenca`] do [`Portao`] (T-02).
+    store: Guardado<S>,
     regras: ConjuntoRegras,
     /// Base curada de jogos competitivos (fatos curados, F1-03/F1-04).
     base: BaseJogos,
     armazem: Armazem,
+    /// Portão único de gravação (jogo ou anticheat em execução adia).
+    portao: Portao,
 }
 
 impl<S: DriverStore> Engine<S> {
@@ -350,11 +354,40 @@ impl<S: DriverStore> Engine<S> {
     /// embutida for inválida, o que o teste de carga impede).
     pub fn com_regras(store: S, armazem: Armazem, regras: ConjuntoRegras) -> Self {
         Self {
-            store,
+            store: Guardado::new(store),
             regras,
             base: BaseJogos::embutida().unwrap_or_else(|_| BaseJogos::vazia()),
             armazem,
+            portao: Portao::do_sistema(),
         }
+    }
+
+    /// Troca o portão de gravação (fonte de processos injetável; o serviço
+    /// passa o mesmo portão a cada motor recriado).
+    pub fn com_portao(mut self, portao: Portao) -> Self {
+        self.portao = portao;
+        self
+    }
+
+    /// Portão de gravação.
+    pub fn portao(&self) -> &Portao {
+        &self.portao
+    }
+
+    /// Portão único de gravação (T-02): consulta a lista de processos agora
+    /// e diz se o DRS pode ser gravado. Toda gravação do motor passa por
+    /// ele (ver [`crate::portao`]).
+    pub fn pode_gravar(&self) -> Result<(), Adiamento> {
+        self.portao.verificar(&self.base, &[]).map(|_| ())
+    }
+
+    /// Licença para uma operação de gravação: estado gravável e portão livre
+    /// (com os exes `extras` também vigiados).
+    fn licenca(&self, extras: &[&str]) -> Resultado<Licenca> {
+        self.exigir_gravacao()?;
+        self.portao
+            .verificar(&self.base, extras)
+            .map_err(ErroEngine::Adiada)
     }
 
     /// Troca a base curada de jogos.
@@ -424,7 +457,7 @@ impl<S: DriverStore> Engine<S> {
 
     /// Capacidades da GPU principal.
     pub fn capacidades(&self) -> Resultado<Capabilities> {
-        capacidades(&self.store)
+        capacidades(&*self.store)
     }
 
     // ── Lista permitida ────────────────────────────────────────────────────
@@ -450,28 +483,52 @@ impl<S: DriverStore> Engine<S> {
 
     /// Única porta de gravação de valores do motor: valida contra a lista permitida.
     /// Não persiste (quem chama decide quando `salvar`).
+    /// Passa pelo portão ([`Engine::pode_gravar`]).
     pub fn gravar_permitido(&mut self, perfil: &ProfileRef, id: u32, valor: u32) -> Resultado<()> {
+        let licenca = self.licenca(&[])?;
+        self.gravar_com(&licenca, perfil, id, valor)
+    }
+
+    fn gravar_com(
+        &mut self,
+        licenca: &Licenca,
+        perfil: &ProfileRef,
+        id: u32,
+        valor: u32,
+    ) -> Resultado<()> {
         self.exigir_gravacao()?;
         self.validar(id, Some(valor))?;
         self.store
+            .escrita(licenca)
             .gravar_setting(perfil, id, &SettingValue::Dword(valor))?;
         Ok(())
     }
 
     fn gravar_valor_original(
         &mut self,
+        licenca: &Licenca,
         perfil: &ProfileRef,
         id: u32,
         valor: &SettingValue,
     ) -> Resultado<()> {
         self.validar(id, None)?;
-        self.store.gravar_setting(perfil, id, valor)?;
+        self.store
+            .escrita(licenca)
+            .gravar_setting(perfil, id, valor)?;
         Ok(())
     }
 
-    fn remover_permitido(&mut self, perfil: &ProfileRef, id: u32, predef: bool) -> Resultado<()> {
+    fn remover_permitido(
+        &mut self,
+        licenca: &Licenca,
+        perfil: &ProfileRef,
+        id: u32,
+        predef: bool,
+    ) -> Resultado<()> {
         self.validar(id, None)?;
-        self.store.remover_setting(perfil, id, predef)?;
+        self.store
+            .escrita(licenca)
+            .remover_setting(perfil, id, predef)?;
         Ok(())
     }
 
@@ -805,6 +862,9 @@ impl<S: DriverStore> Engine<S> {
         for m in &diff.mudancas {
             self.validar(m.mudanca.id, Some(m.mudanca.valor))?;
         }
+        // Portão (T-02): antes de qualquer efeito (snapshot, perfis, settings).
+        let exes: Vec<&str> = diff.jogos.iter().map(|j| j.entrada.exe.as_str()).collect();
+        let licenca = self.licenca(&exes)?;
 
         rel.snapshot_capturado = self.garantir_snapshot(diff)?;
 
@@ -816,7 +876,7 @@ impl<S: DriverStore> Engine<S> {
             ProfileRef::Named(n) => f.contains(&n.to_lowercase()),
         };
         for c in &diff.criar {
-            if let Err(e) = self.criar_perfil_e_app(c) {
+            if let Err(e) = self.criar_perfil_e_app(&licenca, c) {
                 rel.erros
                     .push(format!("criação do perfil “{}” falhou: {e}", c.nome));
                 falhos.insert(c.nome.to_lowercase());
@@ -852,7 +912,7 @@ impl<S: DriverStore> Engine<S> {
             if falho(&falhos, &m.perfil) {
                 continue;
             }
-            match self.gravar_permitido(&m.perfil, m.mudanca.id, m.mudanca.valor) {
+            match self.gravar_com(&licenca, &m.perfil, m.mudanca.id, m.mudanca.valor) {
                 Ok(()) => {}
                 Err(e) if matches!(m.perfil, ProfileRef::Named(_)) => {
                     let n = nome_perfil(&m.perfil);
@@ -872,9 +932,9 @@ impl<S: DriverStore> Engine<S> {
                 continue;
             }
             let feito = match &r.acao {
-                AcaoReversao::Gravar(v) => self.gravar_valor_original(&e.perfil, e.id, v),
+                AcaoReversao::Gravar(v) => self.gravar_valor_original(&licenca, &e.perfil, e.id, v),
                 AcaoReversao::Remover { predefinido_valido } => {
-                    self.remover_permitido(&e.perfil, e.id, *predefinido_valido)
+                    self.remover_permitido(&licenca, &e.perfil, e.id, *predefinido_valido)
                 }
                 AcaoReversao::SoDeixarDeVigiar => Ok(()),
             };
@@ -888,7 +948,7 @@ impl<S: DriverStore> Engine<S> {
                 Err(err) => return Err(err),
             }
         }
-        self.store.salvar()?;
+        self.store.escrita(&licenca).salvar()?;
         rel.aplicada = true;
 
         for r in revertidas {
@@ -1014,16 +1074,18 @@ impl<S: DriverStore> Engine<S> {
     }
 
     /// Cria o perfil (se não existir) e associa o executável (se ainda não estiver nele).
-    fn criar_perfil_e_app(&mut self, c: &PerfilCriado) -> Resultado<()> {
+    fn criar_perfil_e_app(&mut self, licenca: &Licenca, c: &PerfilCriado) -> Resultado<()> {
         if !self.store.perfil_existe(&c.nome)? {
-            self.store.criar_perfil(&c.nome)?;
+            self.store.escrita(licenca).criar_perfil(&c.nome)?;
         }
         let ja_no_perfil = self
             .store
             .perfil_do_exe(&c.exe)?
             .is_some_and(|p| p.nome.eq_ignore_ascii_case(&c.nome));
         if !ja_no_perfil {
-            self.store.criar_aplicacao(&c.nome, &c.exe)?;
+            self.store
+                .escrita(licenca)
+                .criar_aplicacao(&c.nome, &c.exe)?;
         }
         Ok(())
     }
@@ -1147,10 +1209,18 @@ impl<S: DriverStore> Engine<S> {
             .iter()
             .partition(|d| massa && d.voltou_ao_padrao);
 
+        // Portão (T-02) só se houver o que regravar: travar uma mudança
+        // manual mexe apenas no estado do app, não no driver.
+        let licenca = if reaplicar.is_empty() {
+            None
+        } else {
+            Some(self.licenca(&[])?)
+        };
         let mut gravadas: Vec<&Divergencia> = Vec::new();
         for d in reaplicar {
+            let Some(licenca) = &licenca else { break };
             let e = &d.esperado;
-            match self.gravar_permitido(&e.perfil, e.id, e.valor) {
+            match self.gravar_com(licenca, &e.perfil, e.id, e.valor) {
                 Ok(()) => gravadas.push(d),
                 Err(err) if matches!(e.perfil, ProfileRef::Named(_)) => {
                     if perfil_ausente(&err) {
@@ -1168,8 +1238,10 @@ impl<S: DriverStore> Engine<S> {
             }
         }
         let reaplicar = gravadas;
-        if !reaplicar.is_empty() {
-            self.store.salvar()?;
+        if let Some(licenca) = &licenca
+            && !reaplicar.is_empty()
+        {
+            self.store.escrita(licenca).salvar()?;
         }
         let motivo_massa = match &deriva.classe {
             ClasseDeriva::ResetEmMassa(MotivoReset::VersaoDriver { antes, agora }) => {
@@ -1333,20 +1405,22 @@ impl<S: DriverStore> Engine<S> {
         if !confirmar || r.ops.is_empty() {
             return Ok(Some(r));
         }
-        self.exigir_gravacao()?;
+        let licenca = self.licenca(&[])?;
         let agora = agora_iso();
         let mut registros = Vec::new();
         for op in &r.ops {
             match op {
                 RestoreOp::CreateProfile { name } => {
-                    self.store.criar_perfil(name)?;
+                    self.store.escrita(&licenca).criar_perfil(name)?;
                 }
                 RestoreOp::CreateApplication { profile, exe } => {
-                    self.store.criar_aplicacao(&nome_perfil(profile), exe)?;
+                    self.store
+                        .escrita(&licenca)
+                        .criar_aplicacao(&nome_perfil(profile), exe)?;
                 }
                 RestoreOp::Set { profile, id, value } => {
                     let antes = self.ler_u32(profile, *id)?;
-                    self.gravar_valor_original(profile, *id, value)?;
+                    self.gravar_valor_original(&licenca, profile, *id, value)?;
                     registros.push((profile.clone(), *id, antes, value.as_u32()));
                 }
                 RestoreOp::Reset {
@@ -1355,13 +1429,13 @@ impl<S: DriverStore> Engine<S> {
                     predefined_valid,
                 } => {
                     let antes = self.ler_u32(profile, *id)?;
-                    self.remover_permitido(profile, *id, *predefined_valid)?;
+                    self.remover_permitido(&licenca, profile, *id, *predefined_valid)?;
                     let depois = self.ler_u32(profile, *id)?;
                     registros.push((profile.clone(), *id, antes, depois));
                 }
             }
         }
-        self.store.salvar()?;
+        self.store.escrita(&licenca).salvar()?;
         for (perfil, id, antes, depois) in registros {
             let setting = self.nome_setting(id);
             self.registrar(RegistroHistorico {

@@ -149,9 +149,16 @@ pub struct Preferencias {
 #[serde(tag = "tipo", rename_all = "snake_case")]
 pub enum Resposta {
     Estado(Estado),
+    /// Resposta de `ObterPlano` e de `AplicarAgora`.
     Plano(Plano),
     Historico {
         entradas: Vec<EntradaHistorico>,
+    },
+    /// Resposta de `RestaurarOriginal` (v4).
+    Restauracao {
+        /// `Some` = jogo aberto: a restauração ficou pendente e roda quando
+        /// o jogo fechar (não é erro).
+        adiada: Option<Adiamento>,
     },
     Ok,
     Erro {
@@ -208,8 +215,37 @@ pub struct Estado {
     pub alertas_deriva: Vec<AlertaDeriva>,
     /// Problemas que o usuário precisa ver (estado recuperado, snapshot
     /// indisponível, erros isolados por perfil no último ciclo, jogos
-    /// ignorados). Mais graves primeiro.
+    /// ignorados, G-SYNC sem VRR). Mais graves primeiro.
     pub avisos: Vec<Aviso>,
+    /// Gravação pendente porque há jogo ou anticheat em execução (v4).
+    pub adiamento: Option<Adiamento>,
+}
+
+/// Gravação adiada pelo portão do serviço: há processo vigiado (jogo
+/// detectado, processo da base curada ou anticheat que só roda durante o
+/// jogo) em execução. A ação roda uma vez quando todos fecharem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Adiamento {
+    /// Nomes dos processos vigiados em execução (ex.: `"cs2.exe"`).
+    pub processos: Vec<String>,
+    /// Desde quando há processo vigiado em execução (segundos Unix, UTC).
+    pub desde_unix: u64,
+    /// Ação pendente.
+    pub acao: AcaoAdiada,
+}
+
+/// Ação que ficou pendente. Só uma por vez: a mais recente substitui as
+/// anteriores, exceto `RestaurarOriginal`, que vence qualquer outra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcaoAdiada {
+    /// Aplicação do plano (automática ou “Aplicar agora”).
+    AplicarPlano,
+    /// Tratamento de deriva (reaplicação após reset do driver).
+    TratarDeriva,
+    /// “Restaurar original”.
+    RestaurarOriginal,
 }
 
 impl Estado {
@@ -258,6 +294,10 @@ pub mod codigo_aviso {
     pub const ERRO_PERFIL_DERIVA: &str = "erro_perfil_deriva";
     /// Jogos deixados de fora do plano (nome/executável inválido, erro no perfil).
     pub const JOGOS_IGNORADOS: &str = "jogos_ignorados";
+    /// Sincronismo G-SYNC num monitor sem VRR: vira V-Sync comum (v4).
+    pub const GSYNC_SEM_VRR: &str = "gsync_sem_vrr";
+    /// G-SYNC escolhido, VRR possível mas desligado no Painel NVIDIA (v4).
+    pub const VRR_DESLIGADO_NO_PAINEL: &str = "vrr_desligado_no_painel";
 }
 
 /// Aviso estruturado para o usuário.
@@ -329,6 +369,31 @@ impl Aviso {
         )
     }
 
+    /// G-SYNC escolhido num monitor sem VRR (aviso do plano `GsyncSemVrr`).
+    pub fn gsync_sem_vrr(quando_unix: u64) -> Self {
+        Self::novo(
+            NivelAviso::Atencao,
+            codigo_aviso::GSYNC_SEM_VRR,
+            "O monitor não tem VRR: com G-SYNC escolhido, o resultado é V-Sync comum, \
+             com fila de quadros. Prefira “sem sincronismo”.",
+            None,
+            quando_unix,
+        )
+    }
+
+    /// VRR possível mas desligado no painel (aviso do plano
+    /// `VrrDesligadoNoPainel`). O app não liga o VRR do monitor.
+    pub fn vrr_desligado_no_painel(quando_unix: u64) -> Self {
+        Self::novo(
+            NivelAviso::Atencao,
+            codigo_aviso::VRR_DESLIGADO_NO_PAINEL,
+            "O monitor aceita VRR, mas ele está desligado: ative o G-SYNC em \
+             Painel de Controle NVIDIA > Configurar G-SYNC.",
+            None,
+            quando_unix,
+        )
+    }
+
     /// Erro isolado num perfil de jogo (`deriva` = no tratamento da deriva).
     pub fn erro_perfil(detalhe: impl Into<String>, deriva: bool, quando_unix: u64) -> Self {
         let (codigo, mensagem) = if deriva {
@@ -393,7 +458,21 @@ pub struct Capacidades {
     pub geracao_quadros: bool,
     pub reflex: bool,
     pub rebar: bool,
-    pub vrr: bool,
+    /// Refresh atual do monitor principal em milésimos de Hz (ex.: `239_757`);
+    /// `None` = desconhecido (v4).
+    pub refresh_mhz: Option<u32>,
+    /// VRR do monitor principal (v4; antes um `bool` fixo).
+    pub vrr: Vrr,
+}
+
+/// Estado do VRR do monitor principal. `None` = desconhecido.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Vrr {
+    /// O monitor e a ligação aceitam VRR.
+    pub possivel: Option<bool>,
+    /// VRR ligado (G-SYNC ativado no painel).
+    pub ativo: Option<bool>,
 }
 
 /// Última aplicação de plano.
@@ -430,6 +509,9 @@ pub struct Plano {
     pub ignorados: Vec<JogoIgnorado>,
     /// Jogos do plano com os fatos detectados e o que o app faz em cada um.
     pub jogos: Vec<Jogo>,
+    /// Só na resposta de `AplicarAgora` (v4): `Some` = jogo aberto, a
+    /// aplicação ficou pendente (não é erro) e as mudanças seguem `pendente`.
+    pub adiada: Option<Adiamento>,
 }
 
 /// Jogo do plano: fatos detectados, perfil do driver e explicação.
@@ -447,10 +529,18 @@ pub struct Jogo {
     pub api: String,
     /// Versão do DLSS; `None` = sem DLSS; `Some("")` = DLSS sem versão legível.
     pub dlss: Option<String>,
-    /// `None` = não determinado.
+    /// `None` = não determinado. Jogo da base curada: o valor da base.
     pub reflex: Option<bool>,
-    /// `None` = não determinado.
+    /// `None` = não determinado. Jogo da base curada: o valor da base.
     pub anticheat_kernel: Option<bool>,
+    /// Id do jogo na base curada de competitivos (`regras/jogos.toml`);
+    /// `None` = fora da base (v4).
+    pub competitivo: Option<String>,
+    /// Algum exe do jogo estava em execução na última varredura (v4).
+    pub em_execucao: bool,
+    /// Códigos de orientação “faça no jogo”, já filtrados pelas preferências
+    /// (ex.: `"reflex_on_boost"`); a UI traduz (v4).
+    pub orientacoes: Vec<String>,
     pub resumo: ResumoJogo,
 }
 
@@ -527,6 +617,10 @@ pub enum MotivoNaoAplicada {
         esperado: String,
         encontrado: String,
     },
+    /// A regra exige VRR ativo e ele está desligado (`vrr_ativo`; v4).
+    VrrInativo,
+    /// A regra é para jogo sem Reflex e o jogo tem Reflex (`jogo_reflex`; v4).
+    JogoComReflex,
 }
 
 /// Setting gerida pelo app que o plano atual não quer mais (preferência
@@ -740,6 +834,8 @@ mod testes {
                 esperado: "ampere".into(),
                 encontrado: "turing".into(),
             },
+            MotivoNaoAplicada::VrrInativo,
+            MotivoNaoAplicada::JogoComReflex,
         ];
         for m in &v {
             match m {
@@ -751,7 +847,9 @@ mod testes {
                 | MotivoNaoAplicada::EscolhaDoUsuario { .. }
                 | MotivoNaoAplicada::ConflitoComRegraMaisEspecifica { .. }
                 | MotivoNaoAplicada::FatoDesconhecido { .. }
-                | MotivoNaoAplicada::CondicaoNaoAtendida { .. } => {}
+                | MotivoNaoAplicada::CondicaoNaoAtendida { .. }
+                | MotivoNaoAplicada::VrrInativo
+                | MotivoNaoAplicada::JogoComReflex => {}
             }
         }
         v
@@ -767,6 +865,9 @@ mod testes {
             dlss: Some("310.6.0.0".into()),
             reflex: Some(true),
             anticheat_kernel: None,
+            competitivo: Some("cs2".into()),
+            em_execucao: true,
+            orientacoes: vec!["reflex_on_boost".into(), "vsync_jogo_off".into()],
             resumo: ResumoJogo {
                 aplicadas: vec![RegraAplicada {
                     regra: "dlss-preset-e-turing".into(),
@@ -833,7 +934,7 @@ mod testes {
         let mut extra = j;
         extra["extra"] = json!(1);
         assert!(from_value::<Jogo>(extra).is_err());
-        // Plano da versão 2 (sem `jogos`) não é aceito pela versão 3.
+        // Plano da versão 2 (sem `jogos`) não é aceito.
         assert!(
             from_value::<Plano>(json!({
                 "gerado_unix":0,"perfis":[],"reversoes":[],"ignorados":[]
@@ -859,7 +960,11 @@ mod testes {
                         geracao_quadros: true,
                         reflex: true,
                         rebar: false,
-                        vrr: true,
+                        refresh_mhz: Some(239_757),
+                        vrr: Vrr {
+                            possivel: Some(true),
+                            ativo: Some(false),
+                        },
                     },
                 }),
                 preferencias: prefs(),
@@ -887,7 +992,10 @@ mod testes {
                         None,
                         1_790_000_002,
                     ),
+                    Aviso::gsync_sem_vrr(1_790_000_003),
+                    Aviso::vrr_desligado_no_painel(1_790_000_004),
                 ],
+                adiamento: Some(adiamento(AcaoAdiada::TratarDeriva)),
             }),
             Resposta::Estado(Estado {
                 versao_servico: "0.0.1".into(),
@@ -898,6 +1006,7 @@ mod testes {
                 ultima_aplicacao: None,
                 alertas_deriva: vec![],
                 avisos: vec![],
+                adiamento: None,
             }),
             Resposta::Plano(Plano {
                 gerado_unix: 1,
@@ -905,6 +1014,7 @@ mod testes {
                 reversoes: vec![],
                 ignorados: vec![],
                 jogos: vec![],
+                adiada: Some(adiamento(AcaoAdiada::AplicarPlano)),
             }),
             Resposta::Plano(Plano {
                 gerado_unix: 1_790_000_000,
@@ -939,7 +1049,12 @@ mod testes {
                     motivo: "executável vazio".into(),
                 }],
                 jogos: vec![jogo_exemplo()],
+                adiada: None,
             }),
+            Resposta::Restauracao { adiada: None },
+            Resposta::Restauracao {
+                adiada: Some(adiamento(AcaoAdiada::RestaurarOriginal)),
+            },
             Resposta::Historico {
                 entradas: vec![EntradaHistorico {
                     id: 1,
@@ -961,11 +1076,107 @@ mod testes {
                 Resposta::Estado(_)
                 | Resposta::Plano(_)
                 | Resposta::Historico { .. }
+                | Resposta::Restauracao { .. }
                 | Resposta::Ok
                 | Resposta::Erro { .. } => {}
             }
         }
         v
+    }
+
+    fn adiamento(acao: AcaoAdiada) -> Adiamento {
+        Adiamento {
+            processos: vec!["cs2.exe".into(), "EasyAntiCheat_EOS.exe".into()],
+            desde_unix: 1_790_000_500,
+            acao,
+        }
+    }
+
+    #[test]
+    fn formato_json_v4() {
+        use serde_json::{from_value, json, to_value};
+        let a = to_value(adiamento(AcaoAdiada::RestaurarOriginal)).unwrap();
+        assert_eq!(
+            a,
+            json!({
+                "processos": ["cs2.exe", "EasyAntiCheat_EOS.exe"],
+                "desde_unix": 1_790_000_500,
+                "acao": "restaurar_original"
+            })
+        );
+        for (acao, s) in [
+            (AcaoAdiada::AplicarPlano, "aplicar_plano"),
+            (AcaoAdiada::TratarDeriva, "tratar_deriva"),
+            (AcaoAdiada::RestaurarOriginal, "restaurar_original"),
+        ] {
+            assert_eq!(to_value(acao).unwrap(), json!(s));
+            assert_eq!(from_value::<AcaoAdiada>(json!(s)).unwrap(), acao);
+        }
+        let mut extra = a;
+        extra["extra"] = json!(1);
+        assert!(from_value::<Adiamento>(extra).is_err());
+        assert_eq!(
+            to_value(Resposta::Restauracao { adiada: None }).unwrap(),
+            json!({"tipo": "restauracao", "adiada": null})
+        );
+        assert_eq!(
+            to_value(MotivoNaoAplicada::VrrInativo).unwrap(),
+            json!({"tipo": "vrr_inativo"})
+        );
+        assert_eq!(
+            to_value(MotivoNaoAplicada::JogoComReflex).unwrap(),
+            json!({"tipo": "jogo_com_reflex"})
+        );
+        assert_eq!(
+            to_value(Vrr {
+                possivel: Some(true),
+                ativo: None
+            })
+            .unwrap(),
+            json!({"possivel": true, "ativo": null})
+        );
+        // Capacidades da v3 (`vrr` booleano) não são aceitas pela v4.
+        assert!(
+            from_value::<Capacidades>(json!({
+                "dlss": true, "geracao_quadros": false, "reflex": true,
+                "rebar": false, "vrr": false
+            }))
+            .is_err()
+        );
+        let j = to_value(jogo_exemplo()).unwrap();
+        assert_eq!(j["competitivo"], json!("cs2"));
+        assert_eq!(j["em_execucao"], json!(true));
+        assert_eq!(
+            j["orientacoes"],
+            json!(["reflex_on_boost", "vsync_jogo_off"])
+        );
+        // Jogo da v3 (sem `em_execucao`/`orientacoes`) não é aceito pela v4.
+        let mut v3 = j;
+        let o = v3.as_object_mut().unwrap();
+        o.remove("competitivo");
+        o.remove("em_execucao");
+        o.remove("orientacoes");
+        assert!(from_value::<Jogo>(v3).is_err());
+    }
+
+    #[test]
+    fn mensagem_da_v3_e_recusada() {
+        for payload in [
+            &br#"{"versao":3,"corpo":{"tipo":"obter_estado"}}"#[..],
+            br#"{"versao":3,"corpo":{"tipo":"ok"}}"#,
+        ] {
+            assert!(matches!(
+                decodificar::<Requisicao>(payload),
+                Err(crate::ErroIpc::VersaoIncompativel {
+                    recebida: 3,
+                    esperada: 4
+                })
+            ));
+            assert!(matches!(
+                decodificar::<Resposta>(payload),
+                Err(crate::ErroIpc::VersaoIncompativel { recebida: 3, .. })
+            ));
+        }
     }
 
     #[test]
@@ -1052,10 +1263,10 @@ mod testes {
         .unwrap();
         assert_eq!(
             json,
-            r#"{"versao":3,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
+            r#"{"versao":4,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}"#
         );
         let json = String::from_utf8(codificar(&Resposta::Ok).unwrap()).unwrap();
-        assert_eq!(json, r#"{"versao":3,"corpo":{"tipo":"ok"}}"#);
+        assert_eq!(json, r#"{"versao":4,"corpo":{"tipo":"ok"}}"#);
     }
 
     #[test]

@@ -609,8 +609,11 @@ fn montar_dados<S: DriverStore>(
                 // Reflex vale para toda GeForce suportada pelo driver atual.
                 reflex: c.arquitetura.nome_regra() != "desconhecida",
                 rebar: c.rebar_suportado,
-                // VRR do monitor ainda não é detectado (refresh desconhecido).
-                vrr: false,
+                refresh_mhz: c.refresh_mhz,
+                vrr: nvt_ipc::Vrr {
+                    possivel: c.vrr.possivel,
+                    ativo: c.vrr.ativo,
+                },
             },
         }),
         preferencias: preferencias_ipc(&est.preferencias),
@@ -618,6 +621,7 @@ fn montar_dados<S: DriverStore>(
         ultima_aplicacao,
         alertas_deriva,
         avisos: Vec::new(),
+        adiamento: None,
     };
 
     Dados {
@@ -752,6 +756,10 @@ pub fn jogos_ipc<S: DriverStore>(e: &Engine<S>, diff: &Diff) -> Vec<Jogo> {
                 }),
                 reflex: j.entrada.reflex,
                 anticheat_kernel: j.entrada.anticheat_kernel,
+                // IPC v4: campos ainda não usados pela UI (preenchidos na UI da Fase 1).
+                competitivo: None,
+                em_execucao: false,
+                orientacoes: Vec::new(),
                 resumo: ResumoJogo {
                     aplicadas: r
                         .aplicadas

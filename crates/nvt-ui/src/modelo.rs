@@ -567,6 +567,7 @@ mod testes {
             reversoes: vec![],
             ignorados: vec![],
             jogos: vec![],
+            adiada: None,
         }
     }
 
@@ -580,6 +581,7 @@ mod testes {
             ultima_aplicacao: None,
             alertas_deriva: vec![],
             avisos: vec![],
+            adiamento: None,
         }
     }
 
@@ -735,6 +737,9 @@ mod testes {
             dlss: Some("310.6".into()),
             reflex: Some(true),
             anticheat_kernel: None,
+            competitivo: None,
+            em_execucao: false,
+            orientacoes: vec![],
             resumo,
         }
     }

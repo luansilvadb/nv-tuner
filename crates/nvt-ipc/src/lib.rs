@@ -22,7 +22,7 @@ pub use protocolo::*;
 pub use quadro::{TAMANHO_MAXIMO, codificar, decodificar, enviar, ler_quadro, receber};
 
 /// Versão do protocolo; incrementada a cada mudança incompatível.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Nome do named pipe usado pelo serviço.
 pub const NOME_PIPE: &str = r"\\.\pipe\nv-tuner";

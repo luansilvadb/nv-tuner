@@ -10,6 +10,11 @@
 //!   ignorando as mudanças que o próprio serviço gravou;
 //! - [`Nucleo::tratar`]: tratador das requisições do IPC.
 //!
+//! Toda gravação no DRS passa pelo portão do motor
+//! ([`Engine::pode_gravar`], T-02). Com jogo ou anticheat vigiado em
+//! execução, a ação fica pendente ([`AcaoPendente`]) e é reavaliada a cada
+//! [`Config::intervalo_adiamento`]; ao fechar o jogo, roda uma vez (F1-07).
+//!
 //! O tempo é sempre passado por quem chama (`agora`), para os testes
 //! controlarem o relógio.
 
@@ -17,12 +22,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use nvt_core::{Alvo, DefSetting, ImpactoVisual as ImpactoRegra, Origem, Preferences};
+use nvt_core::{
+    Alvo, AvisoPlano, BaseJogos, DefSetting, ImpactoVisual as ImpactoRegra, Origem, Preferences,
+};
 use nvt_drs::ProfileRef;
 use nvt_engine::{
-    AcaoReversao, Aplicacao, Armazem, ClasseDeriva, CodigoAviso, Deriva, Diff, Divergencia,
-    DriverStore, Engine, ErroEngine, Esperado, JogoEntrada, MAX_TRAVADAS, OrigemRegistro,
-    Resultado, mesmo_alvo, mesmo_nome_perfil,
+    AcaoReversao, Adiamento, Aplicacao, Armazem, ClasseDeriva, CodigoAviso, Deriva, Diff,
+    Divergencia, DriverStore, Engine, ErroEngine, Esperado, JogoEntrada, MAX_TRAVADAS,
+    OrigemRegistro, Portao, Resultado, casar_na_base, mesmo_alvo, mesmo_nome_perfil,
 };
 use nvt_ipc::{
     AcaoHistorico, Aviso, Capacidades, CodigoErro, EntradaHistorico, Mudanca, NivelAviso, Plano,
@@ -60,6 +67,8 @@ pub struct Config {
     pub debounce: Duration,
     /// Notificações até este tempo depois de uma gravação própria são ignoradas.
     pub janela_propria: Duration,
+    /// Reavaliação do portão enquanto houver ação pendente (jogo aberto).
+    pub intervalo_adiamento: Duration,
 }
 
 impl Default for Config {
@@ -70,8 +79,39 @@ impl Default for Config {
             intervalo_varredura: Duration::from_secs(6 * 60 * 60),
             debounce: Duration::from_secs(3),
             janela_propria: Duration::from_secs(15),
+            intervalo_adiamento: Duration::from_secs(15),
         }
     }
+}
+
+/// Gravação que ficou para quando o jogo fechar (F1-07). Só uma por vez: a
+/// mais recente substitui as anteriores, exceto [`AcaoPendente::RestaurarOriginal`],
+/// que vence qualquer outra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcaoPendente {
+    /// Aplicação do plano (automática, preferências, destravar, “Aplicar agora”).
+    AplicarPlano,
+    /// Tratamento de deriva com reaplicação no driver.
+    TratarDeriva,
+    /// “Restaurar original”.
+    RestaurarOriginal,
+}
+
+impl AcaoPendente {
+    fn ipc(self) -> nvt_ipc::AcaoAdiada {
+        match self {
+            Self::AplicarPlano => nvt_ipc::AcaoAdiada::AplicarPlano,
+            Self::TratarDeriva => nvt_ipc::AcaoAdiada::TratarDeriva,
+            Self::RestaurarOriginal => nvt_ipc::AcaoAdiada::RestaurarOriginal,
+        }
+    }
+}
+
+/// Ação pendente e o último adiamento visto pelo portão.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pendente {
+    pub acao: AcaoPendente,
+    pub adiamento: Adiamento,
 }
 
 /// Última aplicação de plano (persistida em `servico.json`).
@@ -184,29 +224,60 @@ pub struct Nucleo<'a, S: DriverStore> {
     /// Jogos ignorados no último plano calculado e quando.
     ignorados: Vec<nvt_ipc::JogoIgnorado>,
     ignorados_unix: u64,
+    /// Avisos do último plano calculado (G-SYNC sem VRR etc.) e quando mudaram.
+    avisos_plano: Vec<AvisoPlano>,
+    avisos_plano_unix: u64,
     ultima_gravacao: Option<Instant>,
     assinatura_propria: Option<Assinatura>,
     mudanca_pendente: Option<Instant>,
     proxima_verificacao: Instant,
     proxima_varredura: Instant,
+    /// Portão de gravação, o mesmo em cada motor recriado por `renovar`.
+    portao: Portao,
+    /// Gravação adiada por jogo aberto (F1-07).
+    pendente: Option<Pendente>,
+    /// Próxima consulta ao portão (só com `pendente`).
+    proxima_reavaliacao: Option<Instant>,
 }
 
 impl<'a, S: DriverStore> Nucleo<'a, S> {
-    /// Abre o estado de `dir` (`None` = só em memória) e a primeira sessão do DRS.
+    /// Abre o estado de `dir` (`None` = só em memória) e a primeira sessão do
+    /// DRS, com o portão sobre os processos do sistema.
     pub fn novo(
-        mut fabrica: Fabrica<'a, S>,
+        fabrica: Fabrica<'a, S>,
         varredor: Varredor<'a>,
         assinador: Assinador<'a>,
         dir: Option<PathBuf>,
         cfg: Config,
         agora: Instant,
     ) -> Resultado<Self> {
+        Self::novo_com_portao(
+            fabrica,
+            varredor,
+            assinador,
+            dir,
+            cfg,
+            agora,
+            Portao::do_sistema(),
+        )
+    }
+
+    /// Como [`Nucleo::novo`], com o portão dado (fonte de processos injetável).
+    pub fn novo_com_portao(
+        mut fabrica: Fabrica<'a, S>,
+        varredor: Varredor<'a>,
+        assinador: Assinador<'a>,
+        dir: Option<PathBuf>,
+        cfg: Config,
+        agora: Instant,
+        portao: Portao,
+    ) -> Resultado<Self> {
         let mut avisos_estado = Vec::new();
         let armazem = match &dir {
             Some(d) => abrir_armazem(d, &cfg, &mut avisos_estado)?,
             None => Armazem::em_memoria(),
         };
-        let engine = Engine::new(fabrica()?, armazem)?;
+        let engine = Engine::new(fabrica()?, armazem)?.com_portao(portao.clone());
         Ok(Self {
             engine,
             fabrica,
@@ -222,12 +293,105 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             erros_deriva: Vec::new(),
             ignorados: Vec::new(),
             ignorados_unix: 0,
+            avisos_plano: Vec::new(),
+            avisos_plano_unix: 0,
             ultima_gravacao: None,
             assinatura_propria: None,
             mudanca_pendente: None,
             proxima_verificacao: agora + cfg.intervalo_verificacao,
             proxima_varredura: agora + cfg.intervalo_varredura,
+            portao,
+            pendente: None,
+            proxima_reavaliacao: None,
         })
+    }
+
+    /// Gravação adiada por jogo aberto, se houver.
+    #[cfg(test)]
+    pub fn pendente(&self) -> Option<&Pendente> {
+        self.pendente.as_ref()
+    }
+
+    fn restauracao_pendente(&self) -> bool {
+        self.pendente
+            .as_ref()
+            .is_some_and(|p| p.acao == AcaoPendente::RestaurarOriginal)
+    }
+
+    /// Registra a ação adiada pelo portão. A mais recente substitui as
+    /// anteriores, exceto `RestaurarOriginal`, que vence qualquer outra.
+    fn adiar(&mut self, acao: AcaoPendente, adiamento: Adiamento, agora: Instant) {
+        let acao = if self.restauracao_pendente() {
+            AcaoPendente::RestaurarOriginal
+        } else {
+            acao
+        };
+        if self.pendente.as_ref().map(|p| p.acao) != Some(acao) {
+            info!(
+                "gravação adiada ({acao:?}): jogo em execução ({}); reavaliação a cada {} s",
+                adiamento.processos.join(", "),
+                self.cfg.intervalo_adiamento.as_secs()
+            );
+        }
+        self.pendente = Some(Pendente { acao, adiamento });
+        self.proxima_reavaliacao = Some(agora + self.cfg.intervalo_adiamento);
+    }
+
+    /// A gravação de `acao` foi feita (ou não havia o que gravar): a pendência
+    /// equivalente deixa de valer. `RestaurarOriginal` pendente só sai quando
+    /// a própria restauração roda.
+    fn concluir_pendente(&mut self, acao: AcaoPendente) {
+        let sai = match self.pendente.as_ref().map(|p| p.acao) {
+            None => false,
+            Some(AcaoPendente::RestaurarOriginal) => acao == AcaoPendente::RestaurarOriginal,
+            Some(_) => true,
+        };
+        if sai {
+            self.pendente = None;
+            self.proxima_reavaliacao = None;
+        }
+    }
+
+    /// Adiamento atual no formato do protocolo.
+    fn adiamento_ipc(&self) -> Option<nvt_ipc::Adiamento> {
+        self.pendente.as_ref().map(|p| nvt_ipc::Adiamento {
+            processos: p.adiamento.processos.clone(),
+            desde_unix: p.adiamento.desde_unix,
+            acao: p.acao.ipc(),
+        })
+    }
+
+    /// Com ação pendente, consulta o portão; livre, executa a ação uma vez.
+    fn reavaliar_pendente(&mut self, agora: Instant) {
+        if self.pendente.is_none() {
+            self.proxima_reavaliacao = None;
+            return;
+        }
+        match self.engine.pode_gravar() {
+            Err(a) => {
+                if let Some(p) = &mut self.pendente {
+                    p.adiamento = a;
+                }
+                self.proxima_reavaliacao = Some(agora + self.cfg.intervalo_adiamento);
+            }
+            Ok(()) => {
+                let Some(p) = self.pendente.take() else {
+                    return;
+                };
+                self.proxima_reavaliacao = None;
+                info!("jogo fechado: executando a ação pendente ({:?})", p.acao);
+                match p.acao {
+                    AcaoPendente::RestaurarOriginal => {
+                        if let Err(e) = self.restaurar_original(agora) {
+                            error!("restauração pendente falhou: {e}");
+                        }
+                    }
+                    AcaoPendente::AplicarPlano | AcaoPendente::TratarDeriva => {
+                        self.ciclo(agora, "jogo fechado (ação pendente)");
+                    }
+                }
+            }
+        }
     }
 
     pub fn engine(&self) -> &Engine<S> {
@@ -266,7 +430,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             None => self.engine.armazem().clone(),
         };
         let regras = self.engine.regras().clone();
-        self.engine = Engine::com_regras(store, armazem, regras);
+        self.engine = Engine::com_regras(store, armazem, regras).com_portao(self.portao.clone());
         if self.dir.is_some() {
             self.servico = EstadoServico::carregar(self.dir.as_deref());
         }
@@ -290,12 +454,16 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
     }
 
     /// Varre os jogos instalados.
+    /// Os exes encontrados passam a ser vigiados pelo portão de gravação.
     pub fn varrer(&mut self, agora: Instant) {
         self.jogos = (self.varredor)();
+        self.portao
+            .vigiar_jogos(self.jogos.iter().map(|j| j.exe.as_str()));
         self.proxima_varredura = agora + self.cfg.intervalo_varredura;
         info!(
-            "varredura: {} jogo(s) com executável principal",
-            self.jogos.len()
+            "varredura: {} jogo(s) com executável principal, {} em execução",
+            self.jogos.len(),
+            self.jogos.iter().filter(|j| j.em_execucao).count()
         );
     }
 
@@ -319,12 +487,44 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
     fn ciclo_interno(&mut self, agora: Instant, motivo: &str) -> Resultado<()> {
         debug!("ciclo: {motivo}");
         self.renovar()?;
-        let tratar = self.autonomia_ativa();
-        self.tratar_deriva_pendente(agora, motivo, tratar)?;
         if self.autonomia_ativa() {
-            self.aplicar_plano(agora)?;
+            self.tratar_e_aplicar(agora, motivo)?;
+        } else {
+            self.tratar_deriva_pendente(agora, motivo, false)?;
         }
         Ok(())
+    }
+
+    /// Trata a deriva e aplica o plano. Com jogo aberto (portão do motor),
+    /// nada é gravado: a ação fica pendente e o retorno é `None`. Com
+    /// restauração pendente, só lê a deriva (a restauração vence).
+    fn tratar_e_aplicar(
+        &mut self,
+        agora: Instant,
+        motivo: &str,
+    ) -> Resultado<Option<(Diff, Aplicacao)>> {
+        if self.restauracao_pendente() {
+            self.tratar_deriva_pendente(agora, motivo, false)?;
+            return Ok(None);
+        }
+        match self.tratar_deriva_pendente(agora, motivo, true) {
+            Err(ErroEngine::Adiada(a)) => {
+                self.adiar(AcaoPendente::TratarDeriva, a, agora);
+                return Ok(None);
+            }
+            r => r?,
+        }
+        match self.aplicar_plano(agora) {
+            Err(ErroEngine::Adiada(a)) => {
+                self.adiar(AcaoPendente::AplicarPlano, a, agora);
+                Ok(None)
+            }
+            Err(e) => Err(e),
+            Ok(r) => {
+                self.concluir_pendente(AcaoPendente::AplicarPlano);
+                Ok(Some(r))
+            }
+        }
     }
 
     /// Verifica a deriva e, com `tratar`, trata-a (mudança manual vira escolha
@@ -480,6 +680,13 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             self.ignorados_unix = agora_unix();
             self.ignorados = ignorados;
         }
+        if diff.plano.avisos != self.avisos_plano {
+            for a in &diff.plano.avisos {
+                warn!("aviso do plano: {a:?}");
+            }
+            self.avisos_plano_unix = agora_unix();
+            self.avisos_plano = diff.plano.avisos.clone();
+        }
         Ok(diff)
     }
 
@@ -510,6 +717,11 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         if !self.ignorados.is_empty() {
             v.push(Aviso::jogos_ignorados(&self.ignorados, self.ignorados_unix));
         }
+        v.extend(
+            self.avisos_plano
+                .iter()
+                .map(|a| aviso_do_plano(*a, self.avisos_plano_unix)),
+        );
         nvt_ipc::ordenar_avisos(&mut v);
         v
     }
@@ -553,8 +765,19 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         self.mudanca_pendente.is_some()
     }
 
-    /// Temporizadores: debounce do DRS, verificação e varredura periódicas.
+    /// Próxima consulta ao portão com ação pendente (`None` = sem pendência).
+    #[cfg(test)]
+    pub fn proxima_reavaliacao(&self) -> Option<Instant> {
+        self.proxima_reavaliacao
+    }
+
+    /// Temporizadores: ação pendente (jogo aberto), debounce do DRS,
+    /// verificação e varredura periódicas. Sem pendência, os processos só
+    /// são consultados quando há o que gravar.
     pub fn tick(&mut self, agora: Instant) {
+        if self.proxima_reavaliacao.is_some_and(|t| agora >= t) {
+            self.reavaliar_pendente(agora);
+        }
         if let Some(t) = self.mudanca_pendente
             && agora.saturating_duration_since(t) >= self.cfg.debounce
         {
@@ -638,7 +861,11 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                         geracao_quadros: caps.frame_gen,
                         reflex: !matches!(caps.arquitetura, nvt_core::Arquitetura::Unknown(_)),
                         rebar: caps.rebar_ativo.unwrap_or(caps.rebar_suportado),
-                        vrr: false,
+                        refresh_mhz: caps.refresh_mhz,
+                        vrr: nvt_ipc::Vrr {
+                            possivel: caps.vrr.possivel,
+                            ativo: caps.vrr.ativo,
+                        },
                     },
                 }),
             ),
@@ -660,6 +887,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             }),
             alertas_deriva: self.alertas.clone(),
             avisos: self.avisos(),
+            adiamento: self.adiamento_ipc(),
         }))
     }
 
@@ -669,7 +897,21 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         Ok(Resposta::Plano(self.plano_ipc(&diff, None)))
     }
 
+    /// Plano sem aplicar, com a ação pendente (resposta de um pedido adiado).
+    fn plano_adiado(&mut self) -> Resultado<Resposta> {
+        let diff = self.planejar()?;
+        let mut p = self.plano_ipc(&diff, None);
+        p.adiada = self.adiamento_ipc();
+        Ok(Resposta::Plano(p))
+    }
+
     fn aplicar_agora(&mut self, agora: Instant) -> Resultado<Resposta> {
+        if self.restauracao_pendente() {
+            // A restauração pendente vence qualquer outra ação (F1-07).
+            info!("aplicar agora ignorado: restauração pendente até o jogo fechar");
+            self.renovar()?;
+            return self.plano_adiado();
+        }
         if self.servico.autonomia_pausada {
             info!("autonomia reativada por pedido do usuário (aplicar agora)");
             self.servico.autonomia_pausada = false;
@@ -678,20 +920,34 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         }
         self.renovar()?;
         self.servico.autonomia_pausada = false;
-        self.tratar_deriva_pendente(agora, "aplicar agora", true)?;
-        let (diff, ap) = self.aplicar_plano(agora)?;
-        self.alertas.clear();
-        Ok(Resposta::Plano(self.plano_ipc(&diff, Some(&ap))))
+        match self.tratar_e_aplicar(agora, "aplicar agora")? {
+            Some((diff, ap)) => {
+                self.alertas.clear();
+                Ok(Resposta::Plano(self.plano_ipc(&diff, Some(&ap))))
+            }
+            None => self.plano_adiado(),
+        }
     }
 
     fn restaurar_original(&mut self, agora: Instant) -> Resultado<Resposta> {
         self.renovar()?;
         // Pausa antes de restaurar: se algo falhar no meio, o próximo ciclo
-        // não reaplica por cima.
+        // não reaplica por cima. Com jogo aberto, a pausa vale já (nada é
+        // aplicado por cima da restauração pendente).
         self.servico.autonomia_pausada = true;
         self.servico.pausada_em_unix = Some(agora_unix());
         self.salvar_servico();
-        match self.engine.restaurar(true)? {
+        let restaurado = match self.engine.restaurar(true) {
+            Err(ErroEngine::Adiada(a)) => {
+                self.adiar(AcaoPendente::RestaurarOriginal, a, agora);
+                return Ok(Resposta::Restauracao {
+                    adiada: self.adiamento_ipc(),
+                });
+            }
+            r => r?,
+        };
+        self.concluir_pendente(AcaoPendente::RestaurarOriginal);
+        match restaurado {
             None => info!("restauração: não há snapshot original (nada a restaurar)"),
             Some(r) => {
                 if r.aplicada {
@@ -705,7 +961,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             }
         }
         self.alertas.clear();
-        Ok(Resposta::Ok)
+        Ok(Resposta::Restauracao { adiada: None })
     }
 
     fn definir_preferencias(
@@ -731,16 +987,43 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             escolhas_usuario: Vec::new(),
         };
         // Mudança manual pendente vira escolha travada antes do plano novo.
-        let autonomia = self.autonomia_ativa();
+        // Com jogo aberto, as preferências são gravadas no estado e a
+        // aplicação fica pendente.
+        let autonomia = self.autonomia_ativa() && !self.restauracao_pendente();
+        let mut adiada = false;
         if autonomia {
-            self.tratar_deriva_pendente(agora, "preferências", true)?;
+            match self.tratar_deriva_pendente(agora, "preferências", true) {
+                Err(ErroEngine::Adiada(a)) => {
+                    self.adiar(AcaoPendente::TratarDeriva, a, agora);
+                    adiada = true;
+                }
+                r => r?,
+            }
         }
         self.engine.definir_preferencias(prefs)?;
         info!("preferências atualizadas");
-        if autonomia {
-            self.aplicar_plano(agora)?;
+        if autonomia && !adiada {
+            self.aplicar_ou_adiar(agora)?;
+        } else if let Err(e) = self.planejar() {
+            // Só para atualizar os avisos do plano (G-SYNC sem VRR).
+            warn!("plano após as preferências: {e}");
         }
         Ok(Resposta::Ok)
+    }
+
+    /// Aplica o plano; com jogo aberto, deixa `AplicarPlano` pendente.
+    fn aplicar_ou_adiar(&mut self, agora: Instant) -> Resultado<()> {
+        match self.aplicar_plano(agora) {
+            Err(ErroEngine::Adiada(a)) => {
+                self.adiar(AcaoPendente::AplicarPlano, a, agora);
+                Ok(())
+            }
+            Err(e) => Err(e),
+            Ok(_) => {
+                self.concluir_pendente(AcaoPendente::AplicarPlano);
+                Ok(())
+            }
+        }
     }
 
     /// Alvo e perfil de um nome vindo do IPC, com o nome **canônico** do DRS
@@ -848,18 +1131,25 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         } else {
             Alvo::Jogo(perfil.to_owned())
         };
-        let autonomia = self.autonomia_ativa();
+        let autonomia = self.autonomia_ativa() && !self.restauracao_pendente();
+        let mut adiada = false;
         if autonomia && self.engine.estado().travada(&alvo, setting) {
             // Mudança manual pendente vira escolha travada antes do plano novo.
-            self.tratar_deriva_pendente(agora, "destravar", true)?;
+            match self.tratar_deriva_pendente(agora, "destravar", true) {
+                Err(ErroEngine::Adiada(a)) => {
+                    self.adiar(AcaoPendente::TratarDeriva, a, agora);
+                    adiada = true;
+                }
+                r => r?,
+            }
         }
         // `liberar_travada` compara o perfil sem diferenciar maiúsculas.
         if self.engine.liberar_travada(&alvo, setting)? {
             info!("setting {setting} destravada em {perfil}");
             self.alertas
                 .retain(|a| !(mesmo_nome_perfil(&a.perfil, perfil) && a.setting == setting));
-            if autonomia {
-                self.aplicar_plano(agora)?;
+            if autonomia && !adiada {
+                self.aplicar_ou_adiar(agora)?;
             }
         }
         Ok(Resposta::Ok)
@@ -1029,7 +1319,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                     motivo: j.motivo.clone(),
                 })
                 .collect(),
-            jogos: jogos_ipc(diff, regras),
+            jogos: jogos_ipc(diff, regras, self.engine.base_jogos()),
+            adiada: None,
         }
     }
 }
@@ -1182,10 +1473,23 @@ pub fn prefs_ipc(p: &Preferences) -> nvt_ipc::Preferencias {
     }
 }
 
+/// Aviso do plano (F1-15) como aviso do protocolo.
+pub fn aviso_do_plano(a: AvisoPlano, quando: u64) -> Aviso {
+    match a {
+        AvisoPlano::GsyncSemVrr => Aviso::gsync_sem_vrr(quando),
+        AvisoPlano::VrrDesligadoNoPainel => Aviso::vrr_desligado_no_painel(quando),
+    }
+}
+
 /// Jogos do diff (fatos, perfil e explicação) no formato do protocolo.
-/// O modo de visualização da UI faz a mesma conversão (`nvt-ui`,
-/// `local::jogos_ipc`).
-pub fn jogos_ipc(diff: &Diff, regras: &nvt_core::ConjuntoRegras) -> Vec<nvt_ipc::Jogo> {
+/// Jogo casado na base curada: Reflex e anticheat vêm da base (como no
+/// avaliador, `nvt_engine::fatos_do_jogo`). O modo de visualização da UI faz
+/// a mesma conversão (`nvt-ui`, `local::jogos_ipc`).
+pub fn jogos_ipc(
+    diff: &Diff,
+    regras: &nvt_core::ConjuntoRegras,
+    base: &BaseJogos,
+) -> Vec<nvt_ipc::Jogo> {
     use nvt_core::MotivoNaoAplicada as M;
     use nvt_ipc::MotivoNaoAplicada as I;
     let descricao = |id: &str| {
@@ -1223,6 +1527,20 @@ pub fn jogos_ipc(diff: &Diff, regras: &nvt_core::ConjuntoRegras) -> Vec<nvt_ipc:
             condicao,
             esperado,
             encontrado,
+        } if condicao == "vrr_ativo" && esperado == "true" && encontrado == "false" => {
+            I::VrrInativo
+        }
+        M::CondicaoNaoAtendida {
+            condicao,
+            esperado,
+            encontrado,
+        } if condicao == "jogo_reflex" && esperado == "false" && encontrado == "true" => {
+            I::JogoComReflex
+        }
+        M::CondicaoNaoAtendida {
+            condicao,
+            esperado,
+            encontrado,
         } => I::CondicaoNaoAtendida {
             condicao: condicao.clone(),
             esperado: esperado.clone(),
@@ -1238,6 +1556,7 @@ pub fn jogos_ipc(diff: &Diff, regras: &nvt_core::ConjuntoRegras) -> Vec<nvt_ipc:
                 .get(&j.perfil)
                 .cloned()
                 .unwrap_or_default();
+            let curado = casar_na_base(base, &j.entrada);
             nvt_ipc::Jogo {
                 nome: j.entrada.nome.clone(),
                 perfil: j.perfil.clone(),
@@ -1256,8 +1575,16 @@ pub fn jogos_ipc(diff: &Diff, regras: &nvt_core::ConjuntoRegras) -> Vec<nvt_ipc:
                         v.to_string()
                     }
                 }),
-                reflex: j.entrada.reflex,
-                anticheat_kernel: j.entrada.anticheat_kernel,
+                reflex: curado.map_or(j.entrada.reflex, |c| Some(c.reflex)),
+                anticheat_kernel: curado
+                    .map_or(j.entrada.anticheat_kernel, |c| Some(c.anticheat_kernel)),
+                competitivo: curado.map(|c| c.id.as_str().to_owned()),
+                em_execucao: j.entrada.em_execucao,
+                orientacoes: r
+                    .orientacoes
+                    .iter()
+                    .map(|o| o.codigo().to_owned())
+                    .collect(),
                 resumo: nvt_ipc::ResumoJogo {
                     aplicadas: r
                         .aplicadas
@@ -1313,6 +1640,9 @@ pub fn resposta_de_erro(e: &ErroEngine) -> Resposta {
         | ErroEngine::Io(_)
         | ErroEngine::Json(_)
         | ErroEngine::SomenteLeitura => CodigoErro::Interno,
+        // O núcleo converte o adiamento em ação pendente antes de chegar
+        // aqui; se escapar, a UI vê "ocupado" (tente depois), não falha.
+        ErroEngine::Adiada(_) => CodigoErro::Ocupado,
     };
     Resposta::erro(codigo, e.to_string())
 }

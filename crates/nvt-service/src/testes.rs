@@ -164,7 +164,10 @@ fn restaurar_original_pausa_autonomia_ate_aplicar_agora() {
     let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
-    assert_eq!(n.tratar(Requisicao::RestaurarOriginal, t0), Resposta::Ok);
+    assert_eq!(
+        n.tratar(Requisicao::RestaurarOriginal, t0),
+        Resposta::Restauracao { adiada: None }
+    );
     assert!(n.servico().autonomia_pausada);
     assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_APP));
     assert_eq!(d.valor(&wardogs(), ID_PRESET), None);
@@ -957,6 +960,13 @@ fn plano_envia_jogos_com_fatos_e_explicacao() {
         .unwrap();
     assert_eq!(l.launcher, "Riot");
     assert_eq!(l.dlss, None);
+    // Fatos curados (v4): a base vence a detecção em disco.
+    assert_eq!(w.competitivo, None);
+    assert!(w.orientacoes.is_empty());
+    assert_eq!(l.competitivo.as_deref(), Some("lol"));
+    assert_eq!((l.reflex, l.anticheat_kernel), (Some(false), Some(true)));
+    assert!(!l.em_execucao);
+    assert!(l.orientacoes.iter().any(|o| o == "limitador_do_jogo"));
     // LoL é competitivo (base curada): recebe a energia por jogo.
     assert_eq!(l.resumo.aplicadas.len(), 1);
     assert_eq!(l.resumo.aplicadas[0].regra, ENERGIA);
@@ -977,4 +987,262 @@ fn plano_envia_jogos_com_fatos_e_explicacao() {
         nvt_ipc::decodificar::<Resposta>(&bytes).unwrap(),
         Resposta::Plano(p)
     );
+}
+
+// ── Adiamento com jogo aberto (F1-07, T-02) ────────────────────────────────
+
+/// Processos falsos que o teste abre e fecha.
+#[derive(Clone, Default)]
+struct Processos(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Processos {
+    fn abrir(&self, nome: &str) {
+        self.0.lock().unwrap().push(nome.to_owned());
+    }
+    fn fechar_todos(&self) {
+        self.0.lock().unwrap().clear();
+    }
+}
+
+impl nvt_engine::FonteProcessos for Processos {
+    fn processos(&self) -> Vec<nvt_engine::Processo> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(i, n)| nvt_engine::Processo::new(n.clone(), i as u32 + 10, 0))
+            .collect()
+    }
+}
+
+fn nucleo_com_processos<'a>(
+    d: &DriverFalso,
+    dir: &DirTemp,
+    sinal: &Sinal,
+    p: &Processos,
+    t: Instant,
+) -> Nucleo<'a, DriverFalso> {
+    let d = d.clone();
+    let s = sinal.clone();
+    Nucleo::novo_com_portao(
+        Box::new(move || Ok(d.clone())),
+        Box::new(jogos),
+        Box::new(move || Some(s.borrow().clone())),
+        Some(dir.0.clone()),
+        cfg(false),
+        t,
+        nvt_engine::Portao::new(p.clone()),
+    )
+    .expect("núcleo")
+}
+
+fn adiamento_do_estado(n: &mut Nucleo<'_, DriverFalso>, t: Instant) -> Option<nvt_ipc::Adiamento> {
+    match n.tratar(Requisicao::ObterEstado, t) {
+        Resposta::Estado(e) => e.adiamento,
+        outro => panic!("esperava estado, veio {outro:?}"),
+    }
+}
+
+/// Gravações e salvamentos no driver falso (todo `salvar` é uma gravação).
+fn escritas(d: &DriverFalso) -> (usize, usize) {
+    (d.gravacoes(), d.salvamentos())
+}
+
+#[test]
+fn jogo_aberto_adia_tudo_e_a_acao_roda_uma_vez_ao_fechar() {
+    use crate::nucleo::AcaoPendente;
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let p = Processos::default();
+    p.abrir(&EXE_WARDOGS.to_uppercase());
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+    let seg = Duration::from_secs;
+
+    // Aplicação automática do início: nenhuma chamada de gravação.
+    n.iniciar(t0);
+    assert_eq!(escritas(&d), (0, 0));
+    assert!(!dir.0.join("snapshot-original.json").exists());
+    assert_eq!(
+        n.pendente().map(|x| x.acao),
+        Some(AcaoPendente::AplicarPlano)
+    );
+    assert_eq!(n.proxima_reavaliacao(), Some(t0 + seg(15)));
+    let a = adiamento_do_estado(&mut n, t0).expect("adiamento no estado");
+    assert_eq!(a.processos, [EXE_WARDOGS]);
+    assert_eq!(a.acao, nvt_ipc::AcaoAdiada::AplicarPlano);
+    assert!(a.desde_unix > 0);
+
+    // "Aplicar agora" responde adiada (não erro), sem gravar.
+    let plano = plano_de(&mut n, Requisicao::AplicarAgora, t0 + seg(1));
+    assert_eq!(
+        plano.adiada.as_ref().map(|a| a.acao),
+        Some(nvt_ipc::AcaoAdiada::AplicarPlano)
+    );
+    assert!(
+        plano
+            .perfis
+            .iter()
+            .flat_map(|p| &p.mudancas)
+            .all(|m| m.status != StatusMudanca::Aplicada)
+    );
+    // Reavaliações a cada 15 s, verificação periódica e mudança no DRS com o
+    // jogo aberto: nada gravado.
+    // O pedido reiniciou a contagem dos 15 s (t0 + 1 s).
+    n.tick(t0 + seg(15));
+    assert_eq!(n.proxima_reavaliacao(), Some(t0 + seg(16)));
+    n.tick(t0 + seg(16));
+    assert_eq!(n.proxima_reavaliacao(), Some(t0 + seg(31)));
+    n.tick(t0 + seg(10 * 60));
+    *s.borrow_mut() = vec![("nvdrsdb0.bin".into(), 1, 7)];
+    assert!(n.notificar_mudanca_drs(t0 + seg(10 * 60 + 1)));
+    n.tick(t0 + seg(10 * 60 + 5));
+    assert_eq!(escritas(&d), (0, 0));
+    assert!(n.pendente().is_some());
+
+    // O jogo fecha: na próxima reavaliação a ação roda uma vez.
+    p.fechar_todos();
+    // Cada adiamento novo (o da mudança no DRS foi em t0 + 605 s) reinicia
+    // a contagem.
+    let t1 = t0 + seg(10 * 60 + 20);
+    n.tick(t1);
+    assert!(n.pendente().is_none());
+    assert_eq!(n.proxima_reavaliacao(), None);
+    assert_eq!(d.valor(&wardogs(), ID_PRESET), Some(5));
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_OFF));
+    let depois = escritas(&d);
+    assert!(depois.0 > 0);
+    assert_eq!(depois.1, 1, "um único salvamento: a ação rodou uma vez");
+    for k in 1..=4 {
+        n.tick(t1 + seg(15 * k));
+    }
+    assert_eq!(escritas(&d), depois);
+    assert_eq!(adiamento_do_estado(&mut n, t1), None);
+}
+
+#[test]
+fn restaurar_original_vence_aplicar_com_jogo_aberto() {
+    use crate::nucleo::AcaoPendente;
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let p = Processos::default();
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+    let seg = Duration::from_secs;
+    n.iniciar(t0);
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_OFF));
+    let antes = escritas(&d);
+
+    // Anticheat que só roda durante o jogo, sem jogo detectado.
+    p.abrir("EasyAntiCheat_EOS.exe");
+    let r = n.tratar(Requisicao::RestaurarOriginal, t0 + seg(1));
+    let Resposta::Restauracao { adiada: Some(a) } = r else {
+        panic!("esperava restauração adiada, veio {r:?}");
+    };
+    assert_eq!(a.acao, nvt_ipc::AcaoAdiada::RestaurarOriginal);
+    assert_eq!(a.processos, ["EasyAntiCheat_EOS.exe"]);
+    assert!(n.servico().autonomia_pausada);
+
+    // Pedidos posteriores não substituem a restauração.
+    let plano = plano_de(&mut n, Requisicao::AplicarAgora, t0 + seg(2));
+    assert_eq!(
+        plano.adiada.map(|a| a.acao),
+        Some(nvt_ipc::AcaoAdiada::RestaurarOriginal)
+    );
+    assert_eq!(n.tratar(prefs_limite(Some(141)), t0 + seg(3)), Resposta::Ok);
+    n.tick(t0 + seg(10 * 60));
+    assert_eq!(
+        n.pendente().map(|x| x.acao),
+        Some(AcaoPendente::RestaurarOriginal)
+    );
+    assert_eq!(escritas(&d), antes);
+
+    p.fechar_todos();
+    n.tick(t0 + seg(10 * 60 + 15));
+    assert!(n.pendente().is_none());
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_APP));
+    assert_eq!(d.valor(&wardogs(), ID_PRESET), None);
+    assert!(n.servico().autonomia_pausada);
+    assert_eq!(escritas(&d).1, antes.1 + 1, "restauração rodou uma vez");
+    let depois = escritas(&d);
+    n.tick(t0 + seg(20 * 60 + 30));
+    assert_eq!(escritas(&d), depois, "autonomia pausada: nada reaplicado");
+}
+
+#[test]
+fn deriva_com_jogo_aberto_e_lida_e_o_tratamento_fica_pendente() {
+    use crate::nucleo::AcaoPendente;
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let p = Processos::default();
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
+    let seg = Duration::from_secs;
+    n.iniciar(t0);
+    let antes = escritas(&d);
+
+    p.abrir(EXE_LOL);
+    d.resetar_settings();
+    *s.borrow_mut() = vec![("nvdrsdb0.bin".into(), 90, 2)];
+    let t1 = t0 + seg(60);
+    assert!(n.notificar_mudanca_drs(t1));
+    n.tick(t1 + seg(3));
+    assert!(!n.alertas().is_empty(), "a leitura da deriva continua");
+    assert_eq!(
+        n.pendente().map(|x| x.acao),
+        Some(AcaoPendente::TratarDeriva)
+    );
+    assert_eq!(escritas(&d), antes);
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_APP));
+
+    // A mais recente substitui: "Aplicar agora" vira a pendência.
+    let plano = plano_de(&mut n, Requisicao::AplicarAgora, t1 + seg(5));
+    assert_eq!(
+        plano.adiada.map(|a| a.acao),
+        Some(nvt_ipc::AcaoAdiada::TratarDeriva)
+    );
+    assert_eq!(escritas(&d), antes);
+
+    p.fechar_todos();
+    n.tick(t1 + seg(20));
+    assert!(n.pendente().is_none());
+    assert_eq!(d.valor(&ProfileRef::Base, ID_VSYNC), Some(VSYNC_OFF));
+    assert_eq!(d.valor(&wardogs(), ID_PRESET), Some(5));
+}
+
+#[test]
+fn estado_leva_refresh_vrr_real_e_aviso_do_plano() {
+    use nvt_drs::{FonteFalsa, VrrBruto};
+    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    d.definir_exibicao(FonteFalsa::monitor(
+        7,
+        239_760,
+        Some(VrrBruto {
+            possivel: true,
+            ativo: false,
+        }),
+    ));
+    let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
+    n.iniciar(t0);
+    let gsync = Requisicao::DefinirPreferencias {
+        sincronismo: nvt_ipc::Sincronismo::GSync,
+        qualidade: nvt_ipc::Qualidade::Equilibrado,
+        limite_fps: None,
+    };
+    assert_eq!(n.tratar(gsync, t0), Resposta::Ok);
+    let Resposta::Estado(e) = n.tratar(Requisicao::ObterEstado, t0) else {
+        panic!("esperava estado");
+    };
+    let c = e.gpu.expect("gpu").capacidades;
+    assert_eq!(c.refresh_mhz, Some(239_760));
+    assert_eq!(
+        c.vrr,
+        nvt_ipc::Vrr {
+            possivel: Some(true),
+            ativo: Some(false)
+        }
+    );
+    assert!(
+        e.avisos
+            .iter()
+            .any(|a| a.codigo == codigo_aviso::VRR_DESLIGADO_NO_PAINEL),
+        "{:?}",
+        e.avisos
+    );
+    assert_eq!(e.adiamento, None);
 }

@@ -21,6 +21,9 @@ pub enum ErroEngine {
     Json(String),
     /// Gravação pedida a um estado aberto com `Armazem::abrir_somente_leitura`.
     SomenteLeitura,
+    /// O portão de gravação recusou: jogo ou anticheat vigiado em execução
+    /// (nada foi gravado).
+    Adiada(crate::Adiamento),
 }
 
 impl fmt::Display for ErroEngine {
@@ -42,6 +45,7 @@ impl fmt::Display for ErroEngine {
             Self::SomenteLeitura => {
                 f.write_str("estado aberto em modo somente leitura: gravação recusada")
             }
+            Self::Adiada(a) => write!(f, "{a}"),
         }
     }
 }

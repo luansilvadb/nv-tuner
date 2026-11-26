@@ -77,7 +77,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 ## Envelope e versão
 
 ```json
-{"versao": 3, "corpo": { "tipo": "...", ... }}
+{"versao": 4, "corpo": { "tipo": "...", ... }}
 ```
 
 - `versao` é conferida **antes** de interpretar `corpo`. Versão diferente de
@@ -99,6 +99,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | 1 | protocolo inicial |
 | 2 | `estado.avisos`; `plano.reversoes` e `plano.ignorados` |
 | 3 | `plano.jogos` (fatos por jogo e explicação: regras aplicadas e não aplicadas com motivo, herança do global) |
+| 4 | Fase 1 competitiva (`docs/spec/competitivo.md` §7.6, só o que a fase 1 usa): `capacidades.refresh_mhz` e `capacidades.vrr` (objeto, antes `bool`); `jogo.competitivo`, `jogo.em_execucao`, `jogo.orientacoes`; `estado.adiamento`; `plano.adiada`; resposta `restauracao` (antes `ok`) para `restaurar_original`; avisos `gsync_sem_vrr` e `vrr_desligado_no_painel`; motivos `vrr_inativo` e `jogo_com_reflex`. As variantes de camada (Windows/jogo) ficam para a v5 |
 
 ## Requisições (`corpo.tipo`)
 
@@ -128,18 +129,54 @@ validação semântica (lista permitida, existência do perfil) é do serviço.
 Exemplo:
 
 ```json
-{"versao":3,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
+{"versao":4,"corpo":{"tipo":"travar_setting","perfil":"WARDOGS","setting":"dlss_preset"}}
 ```
 
 ## Respostas (`corpo.tipo`)
 
 | Tipo        | Conteúdo                                                        |
 |-------------|-----------------------------------------------------------------|
-| `estado`    | `versao_servico`, `driver`, `gpu` (com `capacidades`), `preferencias`, `jogos`, `ultima_aplicacao`, `alertas_deriva`, `avisos` |
-| `plano`     | `gerado_unix`, `perfis[]` → `perfil`, `nome_legivel`, `mudancas[]`; `reversoes[]`; `ignorados[]`; `jogos[]` |
+| `estado`    | `versao_servico`, `driver`, `gpu` (com `capacidades`), `preferencias`, `jogos`, `ultima_aplicacao`, `alertas_deriva`, `avisos`, `adiamento` |
+| `plano`     | `gerado_unix`, `perfis[]` → `perfil`, `nome_legivel`, `mudancas[]`; `reversoes[]`; `ignorados[]`; `jogos[]`; `adiada` |
 | `historico` | `entradas[]`                                                    |
+| `restauracao` | `adiada` (resposta de `restaurar_original`)                   |
 | `ok`        | —                                                               |
 | `erro`      | `codigo`, `mensagem`                                            |
+
+`aplicar_agora` responde `plano` (com o resultado da aplicação) e
+`restaurar_original` responde `restauracao`.
+
+### Capacidades (`estado.gpu.capacidades`)
+
+`dlss`, `geracao_quadros`, `reflex`, `rebar` (booleanos), `refresh_mhz`
+(refresh atual do monitor principal em milésimos de Hz, ex.: `239757`;
+`null` = desconhecido) e `vrr` = `{ "possivel": bool|null, "ativo": bool|null }`
+(`null` = desconhecido). Lidos pelo serviço via NVAPI
+(`NvAPI_DISP_GetDisplayConfig` + `NvAPI_Disp_GetVRRInfo`).
+
+### Adiamento (`estado.adiamento`, `plano.adiada`, `restauracao.adiada`)
+
+Toda gravação no driver passa pelo portão do serviço (`docs/servico.md`,
+“Jogo aberto: gravações adiadas”). Com jogo ou anticheat vigiado em execução,
+a gravação fica pendente e o objeto aparece:
+
+```json
+{"processos":["cs2.exe"],"desde_unix":1790000500,"acao":"aplicar_plano"}
+```
+
+- `processos`: processos vigiados em execução (nome do exe);
+- `desde_unix`: desde quando há processo vigiado em execução;
+- `acao`: `aplicar_plano` \| `tratar_deriva` \| `restaurar_original` — só uma
+  pendência por vez; a mais recente substitui as anteriores, exceto
+  `restaurar_original`, que vence qualquer outra.
+
+Um pedido adiado **não é erro**: `aplicar_agora` responde `plano` com
+`adiada` preenchido (as mudanças seguem `pendente`) e `restaurar_original`
+responde `restauracao` com `adiada`. Se `acao` vier diferente do pedido, foi
+a regra acima (ex.: `aplicar_agora` com restauração pendente devolve
+`acao = restaurar_original`). Sem pendência, os três campos são `null`.
+`definir_preferencias` e `destravar_setting` gravam o estado e respondem `ok`;
+a aplicação, se adiada, aparece em `estado.adiamento`.
 
 Cada mudança do plano traz `setting`, `nome_legivel`, `antes`, `depois`,
 `motivo`, `regra`, `impacto_visual` (`nenhum` \| `baixo` \| `medio` \|
@@ -173,6 +210,8 @@ opcional, ex.: a frase original do motor) e `quando_unix`.
 | `estado_aviso` | atencao | outro problema ao abrir/ler o estado |
 | `snapshot_original_perdido` | atencao | marcador `snapshot-perdido.json`: o diretório de estado foi para a quarentena; o snapshot atual (ou o próximo) é uma **base pós-quarentena** e “voltar ao original” volta a ela |
 | `estado_recuperado` | info (atencao se `estado.json` estava ausente) | estado recuperado de `estado.anterior.json` |
+| `gsync_sem_vrr` | atencao | sincronismo G-SYNC num monitor sem VRR (`vrr.possivel = false`): vira V-Sync comum; orientar “sem sincronismo” (aviso `GsyncSemVrr` do plano) |
+| `vrr_desligado_no_painel` | atencao | G-SYNC escolhido, VRR possível mas desligado: ativar em Painel NVIDIA > Configurar G-SYNC (aviso `VrrDesligadoNoPainel`); o app não liga o VRR |
 
 O código é a interface; a UI só trata `snapshot_indisponivel`
 (`Estado::restauracao_bloqueada`) e exibe os demais. Para
@@ -212,7 +251,10 @@ o que o app faz em cada um:
 | `launcher` | ex.: `Steam`, `Riot` (vazio se desconhecido) |
 | `api` | `dx9` \| `dx11` \| `dx12` \| `vulkan` \| `opengl` \| `desconhecida` |
 | `dlss` | versão; `null` = sem DLSS; `""` = DLSS com versão ilegível |
-| `reflex`, `anticheat_kernel` | `true`/`false`; `null` = não determinado |
+| `reflex`, `anticheat_kernel` | `true`/`false`; `null` = não determinado. Jogo da base curada: o valor da base (`regras/jogos.toml`), que vence a detecção em disco |
+| `competitivo` | id do jogo na base curada (ex.: `"cs2"`); `null` = fora da base |
+| `em_execucao` | algum exe do jogo estava aberto na última varredura (a pasta não foi lida; fatos da varredura anterior) |
+| `orientacoes[]` | códigos “faça no jogo” da base, já filtrados pelas preferências (ex.: `"reflex_on_boost"`); a UI traduz |
 | `resumo.aplicadas[]` | `regra`, `descricao`, `settings[]` (nomes simbólicos) |
 | `resumo.nao_aplicadas[]` | `regra`, `descricao`, `motivo` |
 | `resumo.herda_do_global[]` | settings do perfil global que o jogo herda |
@@ -231,12 +273,15 @@ o que o app faz em cada um:
 | `conflito_com_regra_mais_especifica` | `regra` (id ou `preferencia:<nome>`) |
 | `fato_desconhecido` | `fato` (nome da condição, ex.: `jogo_reflex`) |
 | `condicao_nao_atendida` | `condicao`, `esperado`, `encontrado` (forma do TOML) |
+| `vrr_inativo` | — (condição `vrr_ativo = true` com VRR desligado) |
+| `jogo_com_reflex` | — (condição `jogo_reflex = false` num jogo com Reflex) |
 
 Exemplo:
 
 ```json
 {"nome":"WARDOGS","perfil":"WARDOGS","origem_perfil":"driver","launcher":"Steam",
  "api":"dx12","dlss":"310.6","reflex":true,"anticheat_kernel":true,
+ "competitivo":null,"em_execucao":false,"orientacoes":[],
  "resumo":{"aplicadas":[{"regra":"dlss-preset-e-turing","descricao":"…",
    "settings":["dlss_override","dlss_perfil_preset","dlss_preset"]}],
   "nao_aplicadas":[{"regra":"dlss-preset-e-ampere","descricao":"…",
@@ -318,7 +363,10 @@ estão em `AU` e ficam sem acesso. O cliente abre o pipe pedindo exatamente
 
 - Unitários: ida e volta de todas as requisições e respostas, formato JSON
   estável (inclusive de avisos, reversões, jogos ignorados, jogos e todos os
-  motivos de regra não aplicada; plano da versão 2 recusado), ordenação dos
+  motivos de regra não aplicada; plano da versão 2 recusado; formato v4 de
+  `adiamento`, `restauracao`, `vrr` e campos novos do jogo, com capacidades e
+  jogo no formato da v3 recusados; mensagem da v3 recusada com
+  `versao_incompativel`), ordenação dos
   avisos e `restauracao_bloqueada`, validação de forma, enquadramento
   (quadro truncado, tamanho acima do limite na leitura e na escrita, versão
   errada, envelope malformado).

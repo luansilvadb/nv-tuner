@@ -299,9 +299,32 @@ fn eh_admin() -> bool {
     unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
 }
 
-fn mostrar(r: &Resposta, restaurar: bool) -> Result<(), Erro> {
+/// Pedido adiado por jogo aberto. Pelo serviço, a ação fica pendente e roda
+/// quando o jogo fechar; no próprio processo, nada é gravado e o comando falha.
+fn mostrar_adiada(a: &nvt_ipc::Adiamento, pelo_servico: bool) -> Result<(), Erro> {
+    let processos = a.processos.join(", ");
+    if pelo_servico {
+        println!(
+            "Jogo aberto ({processos}): o serviço deixou a ação pendente ({:?}) e a executa quando o jogo fechar.",
+            a.acao
+        );
+        Ok(())
+    } else {
+        Err(
+            format!("jogo aberto ({processos}): nada foi gravado; feche o jogo e repita o comando")
+                .into(),
+        )
+    }
+}
+
+fn mostrar(r: &Resposta, restaurar: bool, pelo_servico: bool) -> Result<(), Erro> {
     match r {
         Resposta::Erro { codigo, mensagem } => Err(format!("{codigo:?}: {mensagem}").into()),
+        Resposta::Plano(p) if p.adiada.is_some() => {
+            imprimir_plano(p);
+            mostrar_adiada(p.adiada.as_ref().expect("conferido acima"), pelo_servico)
+        }
+        Resposta::Restauracao { adiada: Some(a) } => mostrar_adiada(a, pelo_servico),
         Resposta::Plano(p) => {
             imprimir_plano(p);
             let (mut ok, mut falhas) = (0, 0);
@@ -353,7 +376,7 @@ pub fn gravar(dir: &Path, pipe: &str, tentar_ipc: bool, restaurar: bool) -> Exit
                 return sair(
                     c.requisitar(&req)
                         .map_err(Erro::from)
-                        .and_then(|r| mostrar(&r, restaurar)),
+                        .and_then(|r| mostrar(&r, restaurar, true)),
                 );
             }
             Err(ErroIpc::ServicoIndisponivel) => {}
@@ -366,10 +389,18 @@ pub fn gravar(dir: &Path, pipe: &str, tentar_ipc: bool, restaurar: bool) -> Exit
     sair((|| {
         let api = NvApi::load()?;
         let mut n = nucleo(&api, dir, false)?;
-        if !restaurar {
-            n.varrer(Instant::now());
+        // Também na restauração: os exes detectados entram no portão.
+        n.varrer(Instant::now());
+        // Sem o serviço não há quem execute a ação pendente: com jogo aberto,
+        // recusa antes de mudar qualquer coisa (inclusive a autonomia).
+        if let Err(a) = n.engine().pode_gravar() {
+            return Err(format!(
+                "jogo aberto ({}): nada foi gravado; feche o jogo e repita o comando",
+                a.processos.join(", ")
+            )
+            .into());
         }
         let r = n.tratar(req, Instant::now());
-        mostrar(&r, restaurar)
+        mostrar(&r, restaurar, false)
     })())
 }

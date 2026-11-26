@@ -254,7 +254,7 @@ impl Janela {
                 .child(cap(t::CAP_FG, caps.map(|c| c.geracao_quadros)))
                 .child(cap(t::CAP_REFLEX, caps.map(|c| c.reflex)))
                 .child(cap(t::CAP_REBAR, caps.map(|c| c.rebar)))
-                .child(cap(t::CAP_VRR, caps.map(|c| c.vrr))),
+                .child(cap(t::CAP_VRR, caps.and_then(|c| c.vrr.ativo))),
             &tema,
         );
 

@@ -618,6 +618,10 @@ pub fn motivo_curto(m: &MotivoNaoAplicada) -> String {
             format!("não foi possível detectar: {}", nome_condicao(fato))
         }
         MotivoNaoAplicada::CondicaoNaoAtendida { .. } => "condições da regra não atendidas".into(),
+        // IPC v4: textos próprios ficam para a UI da Fase 1.
+        MotivoNaoAplicada::VrrInativo | MotivoNaoAplicada::JogoComReflex => {
+            "condições da regra não atendidas".into()
+        }
     }
 }
 
@@ -677,6 +681,10 @@ pub fn motivo_longo(m: &MotivoNaoAplicada) -> String {
             valor_condicao(esperado),
             valor_condicao(encontrado)
         ),
+        // IPC v4: textos próprios ficam para a UI da Fase 1.
+        MotivoNaoAplicada::VrrInativo | MotivoNaoAplicada::JogoComReflex => {
+            "Condições da regra não atendidas.".into()
+        }
     }
 }
 
@@ -691,7 +699,9 @@ fn relevancia(m: &MotivoNaoAplicada) -> u8 {
         MotivoNaoAplicada::JogoSemDlss => 5,
         MotivoNaoAplicada::FatoDesconhecido { .. } => 6,
         MotivoNaoAplicada::ConflitoComRegraMaisEspecifica { .. } => 7,
-        MotivoNaoAplicada::CondicaoNaoAtendida { .. } => 8,
+        MotivoNaoAplicada::CondicaoNaoAtendida { .. }
+        | MotivoNaoAplicada::VrrInativo
+        | MotivoNaoAplicada::JogoComReflex => 8,
     }
 }
 

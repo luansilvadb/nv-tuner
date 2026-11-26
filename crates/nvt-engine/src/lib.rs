@@ -14,6 +14,10 @@
 //! 4. [`Engine::plano_restauracao`] / [`Engine::restaurar`] — volta ao
 //!    snapshot original.
 //!
+//! Toda gravação no driver passa pelo portão único [`Engine::pode_gravar`]
+//! ([`Portao`], T-02): com jogo ou anticheat vigiado em execução, a operação
+//! devolve [`ErroEngine::Adiada`] sem tocar no driver.
+//!
 //! O acesso ao driver passa pelo trait [`DriverStore`]: [`DrsReal`] (NVAPI) e
 //! [`DriverFalso`] (memória, para testes). Detalhes em `docs/engine.md`.
 
@@ -23,6 +27,7 @@ mod engine;
 mod erro;
 mod estado;
 mod falso;
+mod portao;
 mod store;
 
 pub use aviso::{Aviso, CodigoAviso, NivelAviso};
@@ -43,4 +48,7 @@ pub use estado::{
     mesmo_nome_perfil,
 };
 pub use falso::DriverFalso;
+/// Fonte de processos do portão (reexportada para quem injeta uma fonte).
+pub use nvt_detect::{FonteProcessos, Processo, ProcessosDoSistema, ProcessosFalsos};
+pub use portao::{Adiamento, Licenca, Portao};
 pub use store::{DriverStore, DrsReal, PerfilEncontrado};

@@ -34,7 +34,11 @@ Opções globais:
 `--estado-dir`, eles primeiro tentam pedir a ação ao serviço em execução
 pelo pipe (`AplicarAgora`/`RestaurarOriginal`), para que o estado em memória
 do serviço não sobrescreva o resultado; se o serviço não estiver no ar,
-executam no próprio processo.
+executam no próprio processo. Com jogo aberto (ver “Jogo aberto: gravações
+adiadas”): pelo serviço, a ação fica pendente e o comando sai com código 0
+dizendo isso; no próprio processo não há quem execute a pendência, então o
+comando recusa **antes** de mudar qualquer coisa (nem a autonomia) e sai com
+código 1.
 
 ## Laço
 
@@ -89,6 +93,73 @@ Gatilhos:
 | mudança no DRS | notificação da vigia, depois de **3 s** sem novas notificações (debounce) |
 | verificação periódica | a cada **10 min** desde o último ciclo |
 | varredura periódica | a cada **6 h** (e sob pedido `ReescanearJogos`) + ciclo |
+| reavaliação do adiamento | a cada **15 s**, só enquanto houver ação pendente (jogo aberto) |
+
+### Jogo aberto: gravações adiadas
+
+Regra S1 de `docs/spec/competitivo.md` (F1-06, F1-07, T-02): nenhuma gravação
+no driver com jogo detectado ou anticheat em execução. A justificativa é de
+**produto** (o DRS é lido quando o processo do jogo nasce, a gravação não teria
+efeito e pode resetar o vídeo), não uma exigência dos anticheats.
+
+**Portão único.** O motor guarda a sessão DRS num invólucro que só dá acesso
+de escrita (`criar_perfil`, `criar_aplicacao`, `gravar_setting`,
+`remover_setting`, `salvar`) com uma licença, e a única forma de obter a
+licença é o portão (`Engine::pode_gravar`, `nvt_engine::Portao`). Cada
+operação que grava (`aplicar`, `tratar_deriva` com reaplicação, `restaurar`,
+`gravar_permitido`) consulta a lista de processos **imediatamente antes** da
+primeira alteração (inclusive do snapshot e do estado); recusada, devolve
+`ErroEngine::Adiada { processos, desde }` sem ter mudado nada. Gravar no DRS
+sem passar pelo portão não compila. Travar uma mudança manual (deriva
+pontual, `travar_setting`) só mexe no estado do app e não passa pelo portão.
+
+**Conjunto vigiado** = exes de todos os jogos detectados na última varredura
+(`Portao::vigiar_jogos`, chamado pelo núcleo a cada varredura) + exes do plano
+em aplicação + exes e processos protegidos da base curada
+(`BaseJogos::processos_vigiados`) + anticheats que só existem durante o jogo
+(`EasyAntiCheat.exe`, `EasyAntiCheat_EOS.exe`, `start_protected_game.exe`,
+`BEService.exe`, `BEService_x64.exe`). `vgc.exe` (Vanguard) não entra: roda
+desde o boot. Comparação por nome, sem diferenciar maiúsculas.
+
+**Detecção só pela lista de processos.** `nvt_detect::processos` usa apenas
+`CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)` e lê o nome do exe; **nunca**
+abre handle para processo (`OpenProcess`, nem com
+`PROCESS_QUERY_LIMITED_INFORMATION`) nem enumera módulos. Falso positivo por
+nome (outro `cs2.exe`) só adia. A varredura de jogos também não lê a pasta de
+jogo em execução (reaproveita os fatos anteriores, `JogoEntrada::em_execucao`).
+O teste `crates/nvt-core/tests/proibicoes.rs` barra `OpenProcess`,
+`TH32CS_SNAPMODULE` e `Command::new` no código de produção.
+
+**Ação pendente** (`Nucleo::pendente`: `AplicarPlano`, `TratarDeriva`,
+`RestaurarOriginal`):
+
+- vale para a aplicação automática (início, varredura, verificação
+  periódica, preferências, destravar), o tratamento de deriva com
+  reaplicação, `aplicar_agora` e `restaurar_original`;
+- só uma por vez: a mais recente substitui as anteriores, exceto
+  `RestaurarOriginal`, que vence qualquer outra (com restauração pendente, o
+  ciclo só lê a deriva e `aplicar_agora` responde adiado com
+  `acao = restaurar_original`);
+- enquanto houver pendência, o portão é consultado a cada 15 s (cada novo
+  adiamento reinicia a contagem); **sem pendência não há varredura periódica
+  de processos** — a lista só é lida quando há algo a gravar;
+- quando nenhum processo vigiado está mais em execução, a ação roda **uma
+  vez** (`RestaurarOriginal` restaura; as outras rodam um ciclo completo:
+  deriva → plano → aplicação) e a pendência some; se o jogo reabriu no
+  meio-tempo, volta a ficar pendente;
+- a leitura da deriva continua normal (alertas atualizados); só o
+  tratamento que grava espera;
+- `restaurar_original` pausa a autonomia já no pedido (nada é aplicado por
+  cima da restauração pendente); `aplicar_agora` reativa já no pedido;
+- a pendência é só da memória do serviço: um reinício a perde, e o próximo
+  ciclo (com o jogo fechado) refaz a aplicação automática; uma restauração
+  pendente perdida deixa a autonomia pausada (o usuário repete o pedido).
+
+Pedidos da UI adiados respondem normalmente com `adiada` (não erro):
+`aplicar_agora` → `plano` com `adiada`; `restaurar_original` →
+`restauracao` com `adiada`; `definir_preferencias`/`destravar_setting` →
+`ok` (as preferências ficam gravadas no estado). O estado traz o
+`adiamento` atual (`docs/ipc.md`).
 
 ### Gravações próprias
 
@@ -117,11 +188,11 @@ Tratador de todas as `Requisicao` do `nvt-ipc` (`docs/ipc.md`):
 
 | Requisição | Ação |
 |---|---|
-| `obter_estado` | driver (versão, ramo), GPU (nome, arquitetura, VRAM, capacidades), preferências, nº de jogos, última aplicação, alertas de deriva, avisos |
-| `obter_plano` | diff atual; status `pendente`, `ja_no_valor` ou `travada`; reversões pendentes e jogos ignorados |
-| `aplicar_agora` | reativa a autonomia, trata a deriva, aplica; devolve o plano com `aplicada`/`falhou` (também nas reversões) |
-| `restaurar_original` | pausa a autonomia e restaura o snapshot original; `ok` também sem snapshot |
-| `definir_preferencias` | com autonomia, trata antes a deriva pendente; grava e, com autonomia, aplica o novo plano |
+| `obter_estado` | driver (versão, ramo), GPU (nome, arquitetura, VRAM, capacidades com refresh e VRR reais), preferências, nº de jogos, última aplicação, alertas de deriva, avisos (inclusive os do plano), adiamento |
+| `obter_plano` | diff atual; status `pendente`, `ja_no_valor` ou `travada`; reversões pendentes, jogos ignorados e jogos com fatos curados, `em_execucao` e orientações |
+| `aplicar_agora` | reativa a autonomia, trata a deriva, aplica; devolve o plano com `aplicada`/`falhou` (também nas reversões). Jogo aberto: plano com `adiada` |
+| `restaurar_original` | pausa a autonomia e restaura o snapshot original; `restauracao` (com `adiada = null`) também sem snapshot. Jogo aberto: `restauracao` com `adiada` |
+| `definir_preferencias` | com autonomia, trata antes a deriva pendente; grava e, com autonomia, aplica o novo plano (jogo aberto: aplicação pendente, resposta `ok`); sem autonomia, recalcula o plano só para os avisos |
 | `listar_historico` | mais recentes primeiro; ação: plano/criação de perfil → `aplicacao`, reaplicação → `deriva_detectada`, mudança manual/trava → `travamento`, restauração → `restauracao` |
 | `travar_setting` | vira escolha do usuário (sai do estado esperado, sem gravar no driver); `"global"` = perfil base; o nome do perfil é normalizado para o canônico do DRS (sem diferenciar maiúsculas: todas as grafias viram a mesma trava); setting fora do catálogo → `setting_nao_permitida`; perfil inexistente ou não gerenciável (não é de um jogo detectado, não foi criado pelo app nem tem setting gerida ou trava) → `perfil_nao_encontrado`; acima de `MAX_TRAVADAS` (500) → `interno` com “limite de 500 escolhas travadas atingido” |
 | `destravar_setting` | perfil sem diferenciar maiúsculas; com autonomia, trata antes a deriva pendente, devolve ao automático e aplica |
@@ -136,7 +207,16 @@ ficava sem limite; agora 100 vira trava do usuário).
 
 Capacidades no estado: `dlss` = Tensor Cores; `geracao_quadros` = FG da
 arquitetura; `reflex` = arquitetura reconhecida; `rebar` = ativo, se lido,
-senão suportado; `vrr` ainda não é lido (`false`).
+senão suportado; `refresh_mhz` e `vrr { possivel, ativo }` do monitor
+principal, lidos via NVAPI (`NvAPI_DISP_GetDisplayConfig`,
+`NvAPI_Disp_GetVRRInfo`; desconhecido = `null`).
+
+Jogos no plano: jogo casado na base curada (`regras/jogos.toml`) leva
+`competitivo` (id da base) e `reflex`/`anticheat_kernel` da base (que vence a
+detecção em disco); `orientacoes` são os códigos de `ResumoJogo::orientacoes`
+(já filtrados pelas preferências). Os motivos `condicao_nao_atendida` de
+`vrr_ativo = true` e de `jogo_reflex = false` saem como `vrr_inativo` e
+`jogo_com_reflex`.
 
 Nomes legíveis de settings e valores vêm de
 `docs/pesquisa/settings-referencia.json` (NVIDIA Profile Inspector, MIT),
@@ -183,6 +263,10 @@ inteiro); na falta, usa a descrição e os nomes de valores de
 - **Jogos ignorados** (`Diff::ignorados`) do último plano calculado: um aviso
   com a lista; cada jogo é registrado no log quando a lista muda (nome e
   motivo, sem caminho).
+- **Avisos do plano** (`Plan::avisos`) do último plano calculado:
+  `GsyncSemVrr` → `gsync_sem_vrr`, `VrrDesligadoNoPainel` →
+  `vrr_desligado_no_painel` (nível `atencao`); registrados no log quando
+  mudam.
 
 O plano IPC traz também `reversoes` (de `Diff::reverter`, com o motivo
 derivado da origem da setting: regra ou preferência) e `ignorados`. Cada
@@ -191,7 +275,8 @@ reversão aplicada é registrada no log; a não confirmada, como aviso.
 
 Erros do motor: `ProfileNotFound` → `perfil_nao_encontrado`; demais erros
 do DRS e GPU ausente → `driver_indisponivel`; ID/valor fora da lista →
-`setting_nao_permitida`; estado/regras → `interno`.
+`setting_nao_permitida`; estado/regras → `interno`; `Adiada` que escape da
+conversão em pendência → `ocupado` (não executado).
 
 ## Estado e logs
 
@@ -290,6 +375,16 @@ relógio controlado, sem SCM):
 - reversão: limite de FPS desligado por fora aparece como `pendente` no
   plano e `aplicada` no `aplicar_agora`, depois some;
 - `--somente-leitura`: nenhuma gravação no driver nem no disco;
+- jogo aberto (processos falsos via `Nucleo::novo_com_portao`): aplicação
+  automática, `aplicar_agora`, verificação periódica e mudança no DRS com
+  **zero** gravações e salvamentos no `DriverFalso`; reavaliação a cada 15 s;
+  ao fechar, a ação roda uma vez (um único salvamento) e não se repete;
+  `RestaurarOriginal` com anticheat aberto vence `AplicarAgora` e
+  preferências posteriores; deriva com jogo aberto é lida (alertas) e o
+  tratamento fica pendente, substituído pelo pedido mais recente;
+- estado com refresh e VRR reais e o aviso `vrr_desligado_no_painel`;
+  plano com fatos curados (`competitivo`, Reflex/anticheat da base,
+  orientações);
 - laço completo pelo named pipe (nome único), com parada limpa;
 - laço com um atendente que entra em pânico (no tratador e no ciclo): a
   requisição recebe `interno`, a thread principal sobrevive e um núcleo

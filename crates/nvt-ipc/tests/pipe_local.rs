@@ -54,6 +54,7 @@ fn tratador_falso(req: Requisicao) -> Resposta {
             ultima_aplicacao: None,
             alertas_deriva: vec![],
             avisos: vec![],
+            adiamento: None,
         }),
         Requisicao::ListarHistorico { limite } => Resposta::Historico {
             entradas: (0..u64::from(limite))
@@ -238,7 +239,7 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
     ));
     let r = enviar(
         &mut f,
-        br#"{"versao":3,"corpo":{"tipo":"executar","cmd":"x"}}"#,
+        br#"{"versao":4,"corpo":{"tipo":"executar","cmd":"x"}}"#,
     );
     assert!(matches!(
         r,
@@ -250,7 +251,7 @@ fn versao_errada_e_json_invalido_pelo_pipe() {
     // Mensagem válida depois dos erros: o enquadramento segue alinhado.
     let r = enviar(&mut f, &codificar(&Requisicao::ObterPlano).unwrap());
     assert_eq!(r, Resposta::Ok);
-    assert_eq!(PROTOCOL_VERSION, 3);
+    assert_eq!(PROTOCOL_VERSION, 4);
     drop(f);
     s.parar();
 }
