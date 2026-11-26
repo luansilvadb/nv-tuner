@@ -20,6 +20,9 @@ const RECONEXAO: Duration = Duration::from_secs(3);
 const ATUALIZACAO: Duration = Duration::from_secs(15);
 /// Entradas do histórico pedidas ao serviço.
 const HISTORICO: u32 = 200;
+/// Validade da última resposta de `ObterSaude` (o serviço já guarda cache
+/// próprio; aqui só se evita uma conexão a mais a cada atualização).
+const CACHE_SAUDE: Duration = Duration::from_secs(60);
 
 /// Lado da UI dos canais.
 pub struct Canal {
@@ -53,6 +56,14 @@ enum Falha {
     Recusa(String),
 }
 
+/// Saúde de uma resposta do serviço; inválida ou de outro tipo = sem dados.
+fn saude_da_resposta(r: Resposta) -> Option<nvt_ipc::Saude> {
+    match r {
+        Resposta::Saude(s) if s.validar().is_ok() => Some(s),
+        _ => None,
+    }
+}
+
 fn falha_de(e: ErroIpc) -> Falha {
     match e {
         ErroIpc::ServicoIndisponivel | ErroIpc::ServidorNaoConfiavel => Falha::Ausente(None),
@@ -72,6 +83,9 @@ struct Trabalhador {
     ultimo_estado: Option<nvt_ipc::Estado>,
     /// O nv-tuner foi atualizado (U-42): não reconecta mais.
     encerrado: bool,
+    /// Cache de `ObterSaude` e quando foi lido (`None` = ler de novo).
+    saude: Option<nvt_ipc::Saude>,
+    saude_lida: Option<Instant>,
 }
 
 impl Trabalhador {
@@ -83,6 +97,8 @@ impl Trabalhador {
             ultima_tentativa: None,
             ultimo_estado: None,
             encerrado: false,
+            saude: None,
+            saude_lida: None,
         }
     }
 
@@ -150,6 +166,7 @@ impl Trabalhador {
             reversoes,
             ignorados,
             jogos,
+            saude: None,
         })
     }
 
@@ -179,7 +196,8 @@ impl Trabalhador {
             self.enviar(Evento::Incompativel(m.clone()));
         }
         match resultado {
-            Ok(d) => {
+            Ok(mut d) => {
+                d.saude = self.saude_atual(forcar);
                 self.servico = true;
                 self.ultimo_estado = d.estado.clone();
                 self.enviar(Evento::Servico(d));
@@ -191,6 +209,22 @@ impl Trabalhador {
             }
             Err(_) => self.modo_visualizacao(),
         }
+    }
+
+    /// Saúde do PC com cache de [`CACHE_SAUDE`]. Serviço sem o recurso
+    /// (`RecursoAusente`) ou resposta inválida: sem dados, e a seção some.
+    /// Falha de transporte mantém a última resposta.
+    fn saude_atual(&mut self, forcar: bool) -> Option<nvt_ipc::Saude> {
+        if !forcar && self.saude_lida.is_some_and(|t| t.elapsed() < CACHE_SAUDE) {
+            return self.saude.clone();
+        }
+        match self.requisitar(&Requisicao::ObterSaude) {
+            Ok(r) => self.saude = saude_da_resposta(r),
+            Err(Falha::Recusa(_)) => self.saude = None,
+            Err(Falha::Ausente(_) | Falha::Comunicacao(_)) => {}
+        }
+        self.saude_lida = Some(Instant::now());
+        self.saude.clone()
     }
 
     /// O resultado indica que o serviço foi trocado por uma atualização?
@@ -275,6 +309,10 @@ impl Trabalhador {
             Comando::MarcarAtualizacaoVista { versao } => Requisicao::MarcarAtualizacaoVista {
                 versao: versao.clone(),
             },
+            Comando::MarcarInicioVisto { fonte, nome } => Requisicao::MarcarInicioVisto {
+                fonte: *fonte,
+                nome: nome.clone(),
+            },
             Comando::Atualizar => unreachable!("tratado acima"),
         };
         if let Err(e) = req.validar() {
@@ -290,6 +328,10 @@ impl Trabalhador {
             })),
         };
         let reescaneou = matches!(c, Comando::Reescanear);
+        if matches!(c, Comando::MarcarInicioVisto { .. }) {
+            // A lista muda: a próxima atualização relê a saúde.
+            self.saude_lida = None;
+        }
         self.atualizar(reescaneou);
         self.concluir(c, resultado);
     }
@@ -404,6 +446,19 @@ fn falha_inicio(e: ErroIpc) -> FalhaInicio {
 mod testes_inicio {
     use super::*;
     use nvt_ipc::CodigoErro;
+
+    #[test]
+    fn saude_so_de_resposta_valida() {
+        let s = crate::demonstracao::Cenario::Saude.saude().unwrap();
+        assert_eq!(
+            saude_da_resposta(Resposta::Saude(s.clone())),
+            Some(s.clone())
+        );
+        let mut invalida = s;
+        invalida.sinais.push(invalida.sinais[0]);
+        assert_eq!(saude_da_resposta(Resposta::Saude(invalida)), None);
+        assert_eq!(saude_da_resposta(Resposta::Ok), None);
+    }
 
     #[test]
     fn requisicoes_das_acoes() {

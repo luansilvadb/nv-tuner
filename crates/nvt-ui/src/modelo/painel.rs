@@ -8,21 +8,39 @@ use nvt_ipc::{EstadoExperimental, Jogo};
 
 use super::{Conexao, EstadoUi};
 
-/// Sinais de saúde do PC (espelho de `TipoSinal`, spec §7.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TipoSinal {
-    EspacoLivre,
-    MemoriaRepouso,
-    CpuRepouso,
-    DriverDesatualizado,
-    PlanoEnergia,
-    SensorArmazenamento,
-}
+/// Sinais de saúde do PC (spec §7.3).
+pub use nvt_ipc::TipoSinal;
 
 /// Resumo da resposta de `ObterSaude`: sinais em atenção, mais grave primeiro.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Saude {
     pub em_atencao: Vec<TipoSinal>,
+}
+
+/// Ordem de importância dos sinais no veredito (o primeiro em atenção vence).
+const ORDEM_SINAIS: [TipoSinal; 6] = [
+    TipoSinal::EspacoLivre,
+    TipoSinal::PlanoEnergia,
+    TipoSinal::DriverDesatualizado,
+    TipoSinal::MemoriaRepouso,
+    TipoSinal::CpuRepouso,
+    TipoSinal::SensorArmazenamento,
+];
+
+impl Saude {
+    /// Resume a resposta do serviço. Só a gravidade `Atencao` conta para
+    /// "Algo piorou" (R-S-06); inicialização e limpeza não entram.
+    pub fn de_ipc(s: &nvt_ipc::Saude) -> Self {
+        let em_atencao = ORDEM_SINAIS
+            .into_iter()
+            .filter(|t| {
+                s.sinais
+                    .iter()
+                    .any(|x| x.tipo == *t && x.gravidade == nvt_ipc::Gravidade::Atencao)
+            })
+            .collect();
+        Saude { em_atencao }
+    }
 }
 
 /// Fatos que decidem o veredito e a linha de estado.

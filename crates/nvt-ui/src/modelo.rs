@@ -158,6 +158,9 @@ pub struct Dados {
     pub ignorados: Vec<JogoIgnorado>,
     /// Jogos do plano (fatos e explicação), do serviço ou do cálculo local.
     pub jogos: Vec<Jogo>,
+    /// Última resposta de `ObterSaude` (cache da thread de comunicação);
+    /// `None` = sem dados (serviço antigo, visualização ou ainda lendo).
+    pub saude: Option<nvt_ipc::Saude>,
 }
 
 /// Ações que o usuário pode disparar.
@@ -186,6 +189,11 @@ pub enum Comando {
     /// O usuário dispensou o aviso “Atualizado para a vX” (U-47).
     MarcarAtualizacaoVista {
         versao: String,
+    },
+    /// Incorpora um programa de inicialização à linha de base (v8).
+    MarcarInicioVisto {
+        fonte: nvt_ipc::FonteInicio,
+        nome: String,
     },
 }
 
@@ -219,6 +227,7 @@ impl Comando {
             Comando::ReverterAjusteUsuario { .. } => Some(textos::OK_REVERSAO_USUARIO),
             Comando::ReverterConfigJogo { .. } => Some(crate::arquivo_jogo::OK_REVERSAO_JOGO),
             Comando::MarcarAtualizacaoVista { .. } => None,
+            Comando::MarcarInicioVisto { .. } => Some(textos::saude::OK_MARCADO_VISTO),
         }
     }
 }
@@ -507,6 +516,11 @@ impl EstadoUi {
 
     /// Jogos em ordem alfabética: do plano do serviço quando conectado, do
     /// cálculo local no modo de visualização (mesmo formato).
+    /// Resumo da saúde para o veredito; `None` sem resposta de `ObterSaude`.
+    pub fn saude(&self) -> Option<Saude> {
+        self.dados.saude.as_ref().map(Saude::de_ipc)
+    }
+
     pub fn jogos(&self) -> Vec<Jogo> {
         let mut jogos = self.dados.jogos.clone();
         jogos.sort_by_key(|j| j.nome.to_lowercase());

@@ -199,7 +199,7 @@ impl Janela {
     /// acrescenta algo ao que a tela já diz (no Início, ao veredito).
     pub(super) fn linha_estado(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let f = self.fatos();
-        let v = (self.secao == Secao::Inicio).then(|| veredito(&f, None));
+        let v = (self.secao == Secao::Inicio).then(|| veredito(&f, self.ui.saude().as_ref()));
         let texto = linha_estado_visivel(&f, v.as_ref()).map(|l| t::estado::texto(&l));
         let tema = cx.theme();
         div().when_some(texto, |d, texto| {

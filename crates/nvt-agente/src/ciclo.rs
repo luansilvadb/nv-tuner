@@ -391,6 +391,9 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
                     }
                 }
             }
+        } else if exec.enviar_saude_avulsa()? == Controle::Encerrar {
+            // Sem tarefa nesta consulta: a saúde vai num relato avulso na mesma conexão curta.
+            return Ok(Controle::Encerrar);
         }
 
         exec.agente.fatos_enviados = Some(fatos);
@@ -759,6 +762,39 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
         }
         self.salvar()?;
         Ok(Controle::Continuar)
+    }
+
+    /// Relato só de saúde, sem tarefa (o serviço aceita sem tarefa em voo).
+    /// A pendência só sai após `Ok`; qualquer outra resposta a mantém para a
+    /// consulta seguinte, no mesmo ritmo das consultas.
+    fn enviar_saude_avulsa(&mut self) -> io::Result<Controle> {
+        if self
+            .sessao()
+            .trabalho
+            .as_ref()
+            .is_some_and(|t| !t.confirmado)
+        {
+            return Ok(Controle::Continuar);
+        }
+        let Some(saude) = self.saude_pendente() else {
+            return Ok(Controle::Continuar);
+        };
+        let req = Requisicao::AgenteRelatar {
+            id_tarefa: 0,
+            operacao: OperacaoUsuario::Aplicar,
+            revisao: self.sessao().revisao,
+            resultados: Vec::new(),
+            resultados_jogo: Vec::new(),
+            saude: Some(saude),
+        };
+        match self.agente.transporte.trocar(&req)? {
+            Resposta::Encerrar => Ok(Controle::Encerrar),
+            Resposta::Ok => {
+                self.saude_confirmada();
+                Ok(Controle::Continuar)
+            }
+            _ => Ok(Controle::Continuar),
+        }
     }
 
     fn registrar(&mut self, sessao: u32, tarefa: Option<&ReferenciaTarefa>, r: ResultadoUsuario) {

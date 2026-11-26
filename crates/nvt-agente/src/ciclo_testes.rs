@@ -132,7 +132,12 @@ struct Servico {
 
 impl Transporte for Servico {
     fn trocar(&mut self, req: &Requisicao) -> io::Result<Resposta> {
-        if let Requisicao::AgenteRelatar { resultados, .. } = req {
+        if let Requisicao::AgenteRelatar {
+            resultados,
+            id_tarefa: 1..,
+            ..
+        } = req
+        {
             let estado = self.persistencia.carregar().unwrap();
             assert!(estado.sessoes.values().any(|s| {
                 s.trabalho
@@ -824,4 +829,52 @@ fn saude_adiada_com_jogo_aberto() {
     a.passo(&p, agora, false).unwrap();
     assert!(a.saude.as_ref().unwrap().pendente.is_none());
     assert!(p.carregar().unwrap().saude.vazio());
+}
+
+#[cfg(windows)]
+fn relatos_avulsos(a: &Agente<Ajustes, Servico>) -> usize {
+    a.transporte
+        .chamadas
+        .iter()
+        .filter(|c| {
+            matches!(c, Requisicao::AgenteRelatar { id_tarefa: 0, resultados, saude: Some(_), .. } if resultados.is_empty())
+        })
+        .count()
+}
+
+#[cfg(windows)]
+#[test]
+fn saude_sem_tarefa_vai_em_relato_avulso_e_so_sai_apos_ok() {
+    let (p, mut a, agora) = preparar(ProcessosFalsos::default());
+    a.definir_saude(Box::new(SaudeFalsa));
+    // Serviço recusa o primeiro relato avulso: a pendência fica.
+    responder(
+        &mut a,
+        [
+            plano(1, 0, OperacaoUsuario::Aplicar, vec![]),
+            Resposta::erro(nvt_ipc::CodigoErro::RecursoAusente, "falha"),
+        ],
+    );
+    a.passo(&p, agora, false).unwrap();
+    assert_eq!(
+        relatos_avulsos(&a),
+        1,
+        "um relato por consulta, sem duplicar"
+    );
+    a.transporte.chamadas.last().unwrap().validar().unwrap();
+    assert!(a.saude.as_ref().unwrap().pendente.is_some());
+    // Consulta seguinte (no ritmo normal): reenvia e limpa após Ok.
+    responder(
+        &mut a,
+        [plano(1, 0, OperacaoUsuario::Aplicar, vec![]), Resposta::Ok],
+    );
+    a.passo(&p, agora + Duration::from_secs(61), false).unwrap();
+    assert_eq!(relatos_avulsos(&a), 2);
+    assert!(a.saude.as_ref().unwrap().pendente.is_none());
+    // Sem pendência: a consulta seguinte não relata nada.
+    responder(&mut a, [plano(1, 0, OperacaoUsuario::Aplicar, vec![])]);
+    let antes = a.transporte.chamadas.len();
+    a.passo(&p, agora + Duration::from_secs(122), false)
+        .unwrap();
+    assert_eq!(a.transporte.chamadas.len(), antes + 1, "só a consulta");
 }

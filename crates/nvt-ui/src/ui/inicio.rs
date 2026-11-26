@@ -15,15 +15,17 @@ use gpui_kit::*;
 
 use super::estrutura::Janela;
 use super::estrutura::{Secao, estado_vazio, icone_destaque, superficie};
+use crate::abrir::{self, Bloqueio, FalhaAbrir};
 use crate::demonstracao;
 use crate::local;
 use crate::modelo::{
-    Fatos, MotivoIndisponivel, Saude, StatusJogo, Veredito, status_jogo, veredito,
+    Conexao, Fatos, MotivoIndisponivel, StatusJogo, Veredito, status_jogo, veredito,
 };
 use crate::servico::{self, AcaoInicio, FalhaInicio, RespostaInicio};
 use crate::tema;
 use crate::textos::inicio as t;
 use crate::textos::jogos as tj;
+use crate::textos::saude::{self as ts, SecaoSaude};
 
 /// Jogos mostrados no resumo; o resto fica em "Ver todos".
 const JOGOS_NO_RESUMO: usize = 5;
@@ -47,6 +49,8 @@ pub(super) struct EstadoInicio {
     pub boas_vindas_vista: Option<bool>,
     pub ocupado: Option<AcaoInicio>,
     pub resultado: Option<(Tom, String)>,
+    /// Resposta ao clique em "Abrir inicialização" (só quando não abriu).
+    pub aviso_abrir: Option<&'static str>,
 }
 
 impl Global for EstadoInicio {}
@@ -181,8 +185,175 @@ pub(super) const CONFIRMAR_DESFAZER: Confirmacao = Confirmacao {
 };
 
 /// A seção Saúde do PC aparece? Só com resposta de `ObterSaude`.
-pub(super) fn mostra_saude(saude: Option<&Saude>) -> bool {
+pub(super) fn mostra_saude(saude: Option<&nvt_ipc::Saude>) -> bool {
     saude.is_some()
+}
+
+// ---------------------------------------------------------------------------
+// Abrir inicialização (D3, R-S-04), usado também pelo Avançado
+// ---------------------------------------------------------------------------
+
+/// Último estado **do serviço** (no modo de visualização, desconhecido).
+fn estado_servico(janela: &Janela) -> Option<&nvt_ipc::Estado> {
+    janela
+        .ui
+        .dados
+        .estado
+        .as_ref()
+        .filter(|_| janela.ui.conexao == Conexao::Servico)
+}
+
+/// Bloqueio do botão "Abrir inicialização" no estado atual.
+pub(super) fn bloqueio_abrir(janela: &Janela) -> Option<Bloqueio> {
+    abrir::bloqueio(estado_servico(janela), &janela.ui.dados.jogos)
+}
+
+pub(super) fn texto_bloqueio(b: Bloqueio) -> &'static str {
+    match b {
+        Bloqueio::JogoAberto => ts::ABRIR_BLOQUEADO_JOGO,
+        Bloqueio::EstadoDesconhecido => ts::ABRIR_BLOQUEADO_DESCONHECIDO,
+    }
+}
+
+/// Tratador de clique: única chamada de [`abrir::abrir_inicializacao`].
+/// Na demonstração nada abre.
+pub(super) fn clicar_abrir(janela: &Janela, cx: &mut Context<Janela>) {
+    let aviso = if demonstracao::ativo().is_some() {
+        Some(ts::ABRIR_DEMONSTRACAO)
+    } else {
+        match abrir::abrir_inicializacao(estado_servico(janela), &janela.ui.dados.jogos) {
+            Ok(()) => None,
+            Err(FalhaAbrir::Bloqueado(b)) => Some(texto_bloqueio(b)),
+            Err(FalhaAbrir::Windows) => Some(ts::ABRIR_FALHOU),
+        }
+    };
+    cx.default_global::<EstadoInicio>().aviso_abrir = aviso;
+    cx.notify();
+}
+
+/// Botão "Abrir inicialização" (desabilitado quando bloqueado) e a legenda
+/// com o motivo do bloqueio ou o aviso do último clique.
+pub(super) fn botao_abrir(
+    id: &'static str,
+    rotulo: &'static str,
+    janela: &Janela,
+    cx: &mut Context<Janela>,
+) -> Div {
+    let tema = cx.theme().clone();
+    let bloqueio = bloqueio_abrir(janela);
+    let aviso = bloqueio
+        .map(texto_bloqueio)
+        .or(cx.default_global::<EstadoInicio>().aviso_abrir);
+    v_flex()
+        .gap(px(tema::ESP_1))
+        .items_start()
+        .child(
+            Button::new(id)
+                .outline()
+                .small()
+                .label(rotulo)
+                .disabled(bloqueio.is_some())
+                .on_click(cx.listener(|this, _, _, cx| clicar_abrir(this, cx))),
+        )
+        .when_some(aviso, |c, a| {
+            c.child(
+                div()
+                    .text_size(px(tema::TAM_LEGENDA))
+                    .text_color(tema.muted_foreground)
+                    .child(a),
+            )
+        })
+}
+
+/// Seção Saúde do PC do Início (só com dados de `ObterSaude`).
+fn secao_saude(s: &nvt_ipc::Saude, janela: &Janela, cx: &mut Context<Janela>) -> Div {
+    let tema = cx.theme().clone();
+    let titulo = div()
+        .text_size(px(tema::TAM_CORPO))
+        .font_semibold()
+        .child(t::SECAO_SAUDE);
+    let caixa = superficie(&tema)
+        .id("saude")
+        .p(px(tema::ESP_4))
+        .gap(px(tema::ESP_2));
+    let linhas = match ts::secao_inicio(s) {
+        SecaoSaude::TudoCerto => {
+            return div().child(
+                caixa.child(
+                    h_flex()
+                        .gap(px(tema::ESP_3))
+                        .items_center()
+                        .child(
+                            component::Icon::new(IconName::CircleCheck)
+                                .size(px(tema::ESP_4))
+                                .text_color(tema.success),
+                        )
+                        .child(div().text_size(px(tema::TAM_CORPO)).child(ts::TUDO_CERTO)),
+                ),
+            );
+        }
+        SecaoSaude::Linhas(l) => l,
+    };
+    let mut lista = v_flex();
+    for (i, l) in linhas.into_iter().enumerate() {
+        let botao = l.botao_abrir.then(|| {
+            botao_abrir(
+                "abrir-inicializacao-inicio",
+                ts::BOTAO_ABRIR_INICIO,
+                janela,
+                cx,
+            )
+        });
+        let cor = if l.atencao {
+            tema.warning
+        } else {
+            tema.foreground
+        };
+        lista = lista.child(
+            h_flex()
+                .gap(px(tema::ESP_4))
+                .items_start()
+                .py(px(tema::ESP_3))
+                .when(i > 0, |d| d.border_t_1().border_color(tema.border))
+                .text_size(px(tema::TAM_CORPO))
+                .child(
+                    div()
+                        .w(px(tema::COLUNA_ROTULO))
+                        .flex_none()
+                        .text_color(tema.muted_foreground)
+                        .child(l.rotulo),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(tema::ESP_1))
+                        .child(
+                            h_flex()
+                                .gap(px(tema::ESP_2))
+                                .items_center()
+                                .when(l.atencao, |d| {
+                                    d.child(
+                                        component::Icon::new(IconName::TriangleAlert)
+                                            .size(px(tema::ESP_4))
+                                            .text_color(tema.warning),
+                                    )
+                                })
+                                .child(div().text_color(cor).child(l.frase)),
+                        )
+                        .when_some(l.caminho, |d, c| {
+                            d.child(
+                                div()
+                                    .text_size(px(tema::TAM_LEGENDA))
+                                    .text_color(tema.muted_foreground)
+                                    .child(c),
+                            )
+                        })
+                        .children(botao),
+                ),
+        );
+    }
+    div().child(caixa.child(titulo).child(lista))
 }
 
 /// Resumo de Seus jogos: até `max` linhas (nome, status) e quantos sobram.
@@ -326,10 +497,10 @@ pub(super) fn cor_tom(t: TomVeredito, tema: &component::Theme) -> Hsla {
 pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
     let estado = cx.global::<EstadoInicio>().clone();
     let fatos = janela.fatos();
-    // A UI ainda não consulta `ObterSaude`: sem dados, a seção não aparece
-    // (a demonstração traz sinais fictícios no cenário `piorou`).
-    let saude = demonstracao::ativo().and_then(|c| c.saude());
-    let v = veredito(&fatos, saude.as_ref());
+    // Saúde do PC: cache da thread de comunicação (`ObterSaude`); sem
+    // resposta, a seção não aparece e "piorou" nunca vence.
+    let saude = janela.ui.dados.saude.clone();
+    let v = veredito(&fatos, janela.ui.saude().as_ref());
     let texto = t::veredito(&v);
     let b = botoes(&v, &fatos);
     let tema = cx.theme().clone();
@@ -495,35 +666,12 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
         .max_w(px(tema::LARGURA_CONTEUDO))
         .child(veredito_el)
         .when(!matches!(v, Veredito::Verificando), |c| c.child(jogos_el))
-        .when_some(saude.filter(|s| mostra_saude(Some(s))), |c, s| {
-            let sinais = s.em_atencao.iter().map(|&sinal| {
-                let m = t::motivo(sinal);
-                let mut letras = m.chars();
-                let texto: String = letras
-                    .next()
-                    .map(|p| p.to_uppercase().chain(letras).collect())
-                    .unwrap_or_default();
-                h_flex()
-                    .gap(px(tema::ESP_3))
-                    .items_center()
-                    .child(
-                        component::Icon::new(IconName::TriangleAlert)
-                            .size(px(tema::ESP_4))
-                            .text_color(tema.warning),
-                    )
-                    .child(texto)
-            });
-            c.child(
-                superficie(&tema)
-                    .p(px(tema::ESP_4))
-                    .gap(px(tema::ESP_3))
-                    .child(
-                        div()
-                            .text_size(px(tema::TAM_CORPO))
-                            .font_semibold()
-                            .child(t::SECAO_SAUDE),
-                    )
-                    .children(sinais),
+        .when(!matches!(v, Veredito::Verificando), |c| {
+            c.children(
+                saude
+                    .as_ref()
+                    .filter(|s| mostra_saude(Some(*s)))
+                    .map(|s| secao_saude(s, janela, cx)),
             )
         })
         .children(desfazer_el)
@@ -540,7 +688,7 @@ fn legenda_dinamica(s: String, tema: &component::Theme) -> Div {
 #[cfg(test)]
 mod testes {
     use super::*;
-    use crate::modelo::TipoSinal;
+    use crate::modelo::{Saude, TipoSinal};
     use core::prelude::v1::test;
 
     fn pronto() -> Fatos {
@@ -832,7 +980,22 @@ mod testes {
     #[test]
     fn saude_so_com_dados() {
         assert!(!mostra_saude(None));
-        assert!(mostra_saude(Some(&Saude::default())));
+        let s = crate::demonstracao::Cenario::Piorou.saude().unwrap();
+        assert!(mostra_saude(Some(&s)));
+        // "Algo piorou" vem dos sinais em atenção da resposta (R-S-06).
+        let resumo = Saude::de_ipc(&s);
+        assert_eq!(
+            resumo.em_atencao,
+            vec![TipoSinal::EspacoLivre, TipoSinal::PlanoEnergia]
+        );
+        let f = pronto();
+        assert_eq!(
+            t::veredito(&veredito(&f, Some(&resumo))).titulo,
+            "Algo piorou: pouco espaço livre"
+        );
+        // Programas novos não pioram o veredito; só sinais em `Atencao`.
+        let novos = crate::demonstracao::Cenario::Saude.saude().unwrap();
+        assert!(Saude::de_ipc(&novos).em_atencao.is_empty());
     }
 
     #[test]

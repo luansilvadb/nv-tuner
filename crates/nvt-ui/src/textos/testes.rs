@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use super::{avancado, boas_vindas, estado, inicio, jogos};
+use super::{avancado, boas_vindas, estado, inicio, jogos, saude};
 use crate::modelo::{LinhaEstado, MotivoIndisponivel, StatusJogo, TipoSinal, Veredito};
 
 /// Um caso de cada variante de [`Veredito`] (e de cada sinal em "piorou").
@@ -123,6 +123,7 @@ const FONTES: &[(&str, &str)] = &[
     ("boas_vindas.rs", include_str!("boas_vindas.rs")),
     ("estado.rs", include_str!("estado.rs")),
     ("avancado.rs", include_str!("avancado.rs")),
+    ("saude.rs", include_str!("saude.rs")),
 ];
 
 /// Todos os textos da tela principal, fixos e gerados.
@@ -131,6 +132,7 @@ fn tela_principal() -> Vec<String> {
         .iter()
         .chain(jogos::TODOS)
         .chain(boas_vindas::TODOS)
+        .chain(saude::TODOS)
         .map(|s| (*s).to_owned())
         .collect();
     for c in casos_veredito() {
@@ -153,6 +155,10 @@ fn tela_principal() -> Vec<String> {
     }
     v.push(inicio::piorou_titulo(inicio::MOTIVO_POUCO_ESPACO));
     v.push(inicio::espaco_livre(12_000_000_000, true));
+    v.push(saude::espaco(8_000_000_000, true));
+    for (n, m) in [(0, 0), (1, 0), (2, 1), (0, 3)] {
+        v.push(saude::inicializacao(n, m));
+    }
     v.push(inicio::espaco_livre(210_000_000_000, false));
     v.push(estado::jogo_aberto(""));
     v.push(jogos::passo(1, "No menu Vídeo, ligue \"Baixa latência\"."));

@@ -15,6 +15,7 @@ pub mod boas_vindas;
 pub mod estado;
 pub mod inicio;
 pub mod jogos;
+pub mod saude;
 #[cfg(test)]
 mod testes;
 

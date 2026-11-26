@@ -28,6 +28,7 @@ pub const GRUPO_INICIALIZACAO_DESC: &str = "Programas que começam junto com o W
 pub const BOTAO_MARCAR_VISTO: &str = "Marcar como visto";
 pub const GRUPO_MANUTENCAO: &str = "Manutenção";
 pub const GRUPO_MANUTENCAO_DESC: &str = "Última limpeza de arquivos temporários.";
+pub const ROTULO_MODO_LIMPEZA: &str = "Limpeza";
 pub const GRUPO_ATUALIZACAO: &str = "Atualização";
 pub const BOTAO_VERIFICAR_AGORA: &str = "Verificar agora";
 pub const GRUPO_HISTORICO: &str = "Histórico técnico";
@@ -70,6 +71,7 @@ pub const TODOS: &[&str] = &[
     BOTAO_MARCAR_VISTO,
     GRUPO_MANUTENCAO,
     GRUPO_MANUTENCAO_DESC,
+    ROTULO_MODO_LIMPEZA,
     GRUPO_ATUALIZACAO,
     BOTAO_VERIFICAR_AGORA,
     GRUPO_HISTORICO,

@@ -21,7 +21,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use nvt_ipc::{
     Aviso, EstadoExperimental, ImpactoVisual, Jogo, JogoIgnorado, LIMITE_FPS_MAX, LIMITE_FPS_MIN,
-    NivelAviso, Qualidade, Reversao, Sincronismo, StatusMudanca, SugestaoExperimental,
+    ModoLimpeza, NivelAviso, Qualidade, Reversao, Sincronismo, SituacaoInicio, StatusMudanca,
+    SugestaoExperimental,
 };
 
 use super::estrutura::{Janela, agora_unix, cartao, explicacao, linha};
@@ -32,6 +33,7 @@ use crate::modelo::{
 use crate::tema;
 use crate::textos as t;
 use crate::textos::avancado as ta;
+use crate::textos::saude as ts;
 
 const SINCRONISMOS: [Sincronismo; 3] = [
     Sincronismo::Desligado,
@@ -58,7 +60,7 @@ pub(super) fn render(janela: &Janela, window: &mut Window, cx: &mut Context<Jane
             .child(t::CARREGANDO)
             .into_any_element();
     }
-    let secoes: [(&'static str, &'static str, Desenho); 9] = [
+    let secoes: [(&'static str, &'static str, Desenho); 11] = [
         (
             ta::GRUPO_SISTEMA,
             ta::GRUPO_SISTEMA_DESC,
@@ -80,6 +82,16 @@ pub(super) fn render(janela: &Janela, window: &mut Window, cx: &mut Context<Jane
             ta::GRUPO_PREFERENCIAS,
             ta::GRUPO_PREFERENCIAS_DESC,
             |j, w, cx| j.preferencias(w, cx).into_any_element(),
+        ),
+        (
+            ta::GRUPO_INICIALIZACAO,
+            ta::GRUPO_INICIALIZACAO_DESC,
+            Janela::grupo_inicializacao,
+        ),
+        (
+            ta::GRUPO_MANUTENCAO,
+            ta::GRUPO_MANUTENCAO_DESC,
+            Janela::grupo_manutencao,
         ),
         (
             ta::GRUPO_ATUALIZACAO,
@@ -449,6 +461,153 @@ impl Janela {
                     t::AGENTE_AUSENTE
                 }
             })
+    }
+
+    /// Inicialização (§5.5): lista por fonte, novo/mudou/visto, data de
+    /// detecção; "Marcar como visto" e "Abrir configurações de inicialização".
+    fn grupo_inicializacao(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let tema = cx.theme().clone();
+        let Some(saude) = self.ui.dados.saude.as_ref() else {
+            return explicacao(ts::SEM_DADOS, &tema).into_any_element();
+        };
+        let ocioso = self.ui.ocupado.is_none();
+        let mut programas = saude.inicializacao.clone();
+        // Novidades primeiro; depois por origem e nome.
+        programas.sort_by_key(|p| {
+            (
+                p.situacao == SituacaoInicio::NaBase,
+                p.fonte,
+                p.nome.to_lowercase(),
+            )
+        });
+        let mut lista = v_flex();
+        for (i, p) in programas.iter().enumerate() {
+            let tag = match p.situacao {
+                SituacaoInicio::Novo => Tag::warning(),
+                SituacaoInicio::Mudou => Tag::info(),
+                SituacaoInicio::NaBase => Tag::secondary(),
+            }
+            .small()
+            .child(ts::situacao(p.situacao));
+            let marcar = (p.situacao != SituacaoInicio::NaBase).then(|| {
+                let cmd = Comando::MarcarInicioVisto {
+                    fonte: p.fonte,
+                    nome: p.nome.clone(),
+                };
+                Button::new(("marcar-visto", i))
+                    .ghost()
+                    .small()
+                    .label(ts::BOTAO_MARCAR_VISTO)
+                    .disabled(!ocioso)
+                    .on_click(cx.listener(move |this, _, _, cx| this.enviar(cmd.clone(), cx)))
+            });
+            lista = lista.child(
+                h_flex()
+                    .gap(px(tema::ESP_4))
+                    .items_center()
+                    .py(px(tema::ESP_3))
+                    .when(i > 0, |d| d.border_t_1().border_color(tema.border))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(tema::ESP_1))
+                            .child(
+                                h_flex()
+                                    .gap(px(tema::ESP_2))
+                                    .items_center()
+                                    .text_size(px(tema::TAM_CORPO))
+                                    .child(p.nome.clone())
+                                    .child(tag),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(tema::TAM_LEGENDA))
+                                    .text_color(tema.muted_foreground)
+                                    .child(ts::detalhe_programa(
+                                        p.fonte,
+                                        &p.executavel,
+                                        &formatar_data(p.detectado_unix),
+                                        p.habilitado,
+                                    )),
+                            ),
+                    )
+                    .children(marcar),
+            );
+        }
+        let corpo = if programas.is_empty() {
+            explicacao(ts::SEM_PROGRAMAS, &tema)
+        } else {
+            lista
+        };
+        v_flex()
+            .gap(px(tema::ESP_4))
+            .child(
+                super::estrutura::superficie(&tema)
+                    .p(px(tema::ESP_4))
+                    .child(corpo),
+            )
+            .child(explicacao(ts::EXPLICA_INICIALIZACAO, &tema))
+            .child(super::inicio::botao_abrir(
+                "abrir-inicializacao-avancado",
+                ts::BOTAO_ABRIR_CONFIGURACOES,
+                self,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// Manutenção (§5.5, R-L-08): modo da limpeza e últimas passadas.
+    fn grupo_manutencao(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let tema = cx.theme().clone();
+        let Some(saude) = self.ui.dados.saude.as_ref() else {
+            return explicacao(ts::SEM_DADOS, &tema).into_any_element();
+        };
+        let mut passadas = saude.limpeza.clone();
+        passadas.sort_by_key(|p| p.alvo);
+        let resumo = ts::resumo_limpeza(saude.modo_limpeza, &passadas);
+        let mut corpo = v_flex()
+            .gap(px(tema::ESP_3))
+            .child(linha(
+                ta::ROTULO_MODO_LIMPEZA,
+                ts::modo(saude.modo_limpeza).into(),
+                &tema,
+            ))
+            .when_some(resumo, |c, r| {
+                c.child(
+                    div()
+                        .text_size(px(tema::TAM_CORPO))
+                        .font_semibold()
+                        .child(r),
+                )
+            });
+        if saude.modo_limpeza != ModoLimpeza::Desligada || !passadas.is_empty() {
+            corpo = corpo.child(
+                div()
+                    .text_size(px(tema::TAM_CORPO))
+                    .text_color(tema.muted_foreground)
+                    .child(ts::ROTULO_ULTIMAS),
+            );
+            if passadas.is_empty() {
+                corpo = corpo.child(explicacao(ts::SEM_PASSADAS, &tema));
+            }
+            for p in &passadas {
+                corpo = corpo.child(linha(
+                    ts::alvo(p.alvo),
+                    ts::passada(p, &formatar_data(p.inicio_unix)),
+                    &tema,
+                ));
+            }
+        }
+        v_flex()
+            .gap(px(tema::ESP_4))
+            .child(
+                super::estrutura::superficie(&tema)
+                    .p(px(tema::ESP_4))
+                    .child(corpo),
+            )
+            .child(explicacao(ts::EXPLICA_LIMPEZA, &tema))
+            .into_any_element()
     }
 
     fn grupo_jogos(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {

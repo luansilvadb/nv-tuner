@@ -673,6 +673,7 @@ fn montar_dados<S: DriverStore>(
         reversoes: reversoes(e, diff),
         ignorados: ignorados(diff),
         jogos: Vec::new(),
+        saude: None,
     }
 }
 

@@ -1679,3 +1679,41 @@ fn marcar_inicio_visto_valido_e_invalido() {
     let s = saude_de(&c2, &a, &maquina, agora);
     assert_eq!(s.inicializacao[0].situacao, nvt_ipc::SituacaoInicio::NaBase);
 }
+
+#[test]
+fn relato_so_de_saude_sem_tarefa_em_voo() {
+    let mut c = abrir(Memoria::default());
+    let agora = Instant::now();
+    let id = cliente("S-1-5-21-A", 1);
+    let plano = consultar(&mut c, &id, agora, 0, 0);
+    assert!(plano.tarefa.is_none(), "sem tarefa em voo");
+    // Forma enviada pelo agente sem tarefa: id 0, revisão atual, só saúde.
+    let Requisicao::AgenteRelatar {
+        resultados,
+        resultados_jogo,
+        saude,
+        ..
+    } = relato_saude(vec![programa_inicio(
+        nvt_ipc::FonteInicio::RunUsuario,
+        "Avulso",
+    )])
+    else {
+        unreachable!()
+    };
+    let req = Requisicao::AgenteRelatar {
+        id_tarefa: 0,
+        operacao: OperacaoUsuario::Aplicar,
+        revisao: plano.revisao,
+        resultados,
+        resultados_jogo,
+        saude,
+    };
+    assert_eq!(c.tratar(&id, &req, agora, 12), Some(Resposta::Ok));
+    let maquina = crate::saude::SaudeMaquina::default();
+    let s = saude_de(&c, &id, &maquina, agora);
+    assert_eq!(s.inicializacao.len(), 1);
+    assert_eq!(s.inicializacao[0].nome, "Avulso");
+    // Reenvio idêntico (pendência não limpa no agente) não duplica.
+    assert_eq!(c.tratar(&id, &req, agora, 12), Some(Resposta::Ok));
+    assert_eq!(saude_de(&c, &id, &maquina, agora).inicializacao.len(), 1);
+}

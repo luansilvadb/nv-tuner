@@ -18,6 +18,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod abrir;
 mod arquivo_jogo;
 mod demonstracao;
 mod fuso;

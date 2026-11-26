@@ -24,7 +24,12 @@ use nvt_ipc::{
     ValorJogoIpc,
 };
 
-use crate::modelo::{Comando, Dados, Desfecho, Evento, Saude, TipoSinal, grupos_do_plano};
+use nvt_ipc::{
+    AlvoLimpeza, FonteInicio, Gravidade, ModoLimpeza, MotivoPulo, ProgramaInicio, ResultadoLimpeza,
+    Sinal, SituacaoInicio, TipoSinal, ValorSinal,
+};
+
+use crate::modelo::{Comando, Dados, Desfecho, Evento, grupos_do_plano};
 use crate::servico::{AcaoInicio, Canal, FalhaInicio, RespostaInicio};
 
 /// Cenários de demonstração.
@@ -38,10 +43,12 @@ pub enum Cenario {
     Atualizado,
     SemServico,
     PrimeiraVez,
+    /// Saúde em dia, programas novos na inicialização e limpeza em simulação.
+    Saude,
 }
 
 impl Cenario {
-    pub const TODOS: [Cenario; 8] = [
+    pub const TODOS: [Cenario; 9] = [
         Cenario::Otimizado,
         Cenario::Melhorias,
         Cenario::Piorou,
@@ -50,6 +57,7 @@ impl Cenario {
         Cenario::Atualizado,
         Cenario::SemServico,
         Cenario::PrimeiraVez,
+        Cenario::Saude,
     ];
 
     /// Chave de `--demonstracao`.
@@ -63,6 +71,7 @@ impl Cenario {
             Cenario::Atualizado => "atualizado",
             Cenario::SemServico => "sem-servico",
             Cenario::PrimeiraVez => "primeira-vez",
+            Cenario::Saude => "saude",
         }
     }
 
@@ -75,11 +84,13 @@ impl Cenario {
         Cenario::TODOS.map(Cenario::chave).join(", ")
     }
 
-    /// Sinais de saúde fictícios (só `piorou`).
-    pub fn saude(self) -> Option<Saude> {
-        (self == Cenario::Piorou).then(|| Saude {
-            em_atencao: vec![TipoSinal::EspacoLivre],
-        })
+    /// Resposta fictícia de `ObterSaude` (só `piorou` e `saude`).
+    pub fn saude(self) -> Option<nvt_ipc::Saude> {
+        match self {
+            Cenario::Piorou => Some(saude_piorou()),
+            Cenario::Saude => Some(saude_simulacao()),
+            _ => None,
+        }
     }
 
     /// As boas-vindas aparecem?
@@ -150,6 +161,13 @@ pub fn responder(c: Cenario, d: &mut Dados, cmd: Comando) -> Vec<Evento> {
                 Comando::AplicarAgora => e.autonomia_pausada = false,
                 Comando::MarcarAtualizacaoVista { .. } => e.atualizacao.nao_vista = false,
                 _ => {}
+            }
+        }
+        if let (Comando::MarcarInicioVisto { fonte, nome }, Some(s)) = (&cmd, d.saude.as_mut()) {
+            for p in &mut s.inicializacao {
+                if p.fonte == *fonte && p.nome == *nome {
+                    p.situacao = SituacaoInicio::NaBase;
+                }
             }
         }
         Ok(
@@ -491,6 +509,154 @@ fn estado(c: Cenario, jogos: u32) -> nvt_ipc::Estado {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Saúde fictícia
+// ---------------------------------------------------------------------------
+
+const GB: u64 = 1_000_000_000;
+
+fn sinal(tipo: TipoSinal, gravidade: Gravidade, valor: ValorSinal) -> Sinal {
+    Sinal {
+        tipo,
+        gravidade,
+        valor,
+        lido_unix: QUANDO,
+    }
+}
+
+fn programa(fonte: FonteInicio, nome: &str, exe: &str, situacao: SituacaoInicio) -> ProgramaInicio {
+    ProgramaInicio {
+        fonte,
+        nome: nome.into(),
+        executavel: exe.into(),
+        habilitado: Some(true),
+        situacao,
+        detectado_unix: QUANDO - 86_400,
+    }
+}
+
+fn sinais_em_dia() -> Vec<Sinal> {
+    vec![
+        sinal(
+            TipoSinal::EspacoLivre,
+            Gravidade::Ok,
+            ValorSinal::Bytes {
+                livres: 210 * GB,
+                total: 1000 * GB,
+            },
+        ),
+        sinal(
+            TipoSinal::DriverDesatualizado,
+            Gravidade::Ok,
+            ValorSinal::Versao {
+                atual: 57_614,
+                ultima: 57_614,
+            },
+        ),
+        sinal(
+            TipoSinal::PlanoEnergia,
+            Gravidade::Ok,
+            ValorSinal::Booleano(true),
+        ),
+        sinal(
+            TipoSinal::CpuRepouso,
+            Gravidade::Ok,
+            ValorSinal::Percentual(3),
+        ),
+        sinal(
+            TipoSinal::SensorArmazenamento,
+            Gravidade::Informativo,
+            ValorSinal::Booleano(false),
+        ),
+    ]
+}
+
+/// `piorou`: pouco espaço livre e plano de energia fora do recomendado.
+fn saude_piorou() -> nvt_ipc::Saude {
+    let mut sinais = sinais_em_dia();
+    sinais[0] = sinal(
+        TipoSinal::EspacoLivre,
+        Gravidade::Atencao,
+        ValorSinal::Bytes {
+            livres: 8 * GB,
+            total: 500 * GB,
+        },
+    );
+    sinais[2] = sinal(
+        TipoSinal::PlanoEnergia,
+        Gravidade::Atencao,
+        ValorSinal::Booleano(false),
+    );
+    nvt_ipc::Saude {
+        sinais,
+        inicializacao: vec![
+            programa(
+                FonteInicio::RunUsuario,
+                "Steam",
+                "steam.exe",
+                SituacaoInicio::NaBase,
+            ),
+            programa(
+                FonteInicio::RunMaquina,
+                "Áudio Realtek",
+                "rtkaudservice64.exe",
+                SituacaoInicio::NaBase,
+            ),
+        ],
+        modo_limpeza: ModoLimpeza::Desligada,
+        limpeza: vec![],
+    }
+}
+
+/// `saude`: sinais em dia, 2 programas novos e 1 que mudou, limpeza em
+/// simulação com as duas últimas passadas.
+fn saude_simulacao() -> nvt_ipc::Saude {
+    let passada = |alvo, arquivos, bytes, recentes| ResultadoLimpeza {
+        modo: ModoLimpeza::Simulacao,
+        alvo,
+        inicio_unix: QUANDO - 3_600,
+        duracao_ms: 1_840,
+        arquivos,
+        bytes,
+        pulados: [(MotivoPulo::Recente, recentes), (MotivoPulo::EmUso, 3)].into(),
+        interrompida: None,
+    };
+    nvt_ipc::Saude {
+        sinais: sinais_em_dia(),
+        inicializacao: vec![
+            programa(
+                FonteInicio::RunUsuario,
+                "Discord",
+                "discord.exe",
+                SituacaoInicio::Novo,
+            ),
+            programa(
+                FonteInicio::Tarefa,
+                "Atualizador do navegador",
+                "updater.exe",
+                SituacaoInicio::Novo,
+            ),
+            programa(
+                FonteInicio::RunMaquina,
+                "Áudio Realtek",
+                "rtkaudservice64.exe",
+                SituacaoInicio::Mudou,
+            ),
+            programa(
+                FonteInicio::RunUsuario,
+                "Steam",
+                "steam.exe",
+                SituacaoInicio::NaBase,
+            ),
+        ],
+        modo_limpeza: ModoLimpeza::Simulacao,
+        limpeza: vec![
+            passada(AlvoLimpeza::TempUsuario, 1_284, 2_350_000_000, 412),
+            passada(AlvoLimpeza::TempWindows, 96, 410_000_000, 37),
+        ],
+    }
+}
+
 /// Dados fictícios completos do cenário.
 pub fn dados(c: Cenario) -> Dados {
     let js = jogos(c);
@@ -506,6 +672,7 @@ pub fn dados(c: Cenario) -> Dados {
         reversoes: p.reversoes,
         ignorados: p.ignorados,
         jogos: p.jogos,
+        saude: c.saude(),
     }
 }
 
@@ -522,6 +689,22 @@ mod testes {
     }
 
     #[test]
+    fn marcar_como_visto_tira_a_novidade() {
+        let mut d = dados(Cenario::Saude);
+        let p = d.saude.as_ref().unwrap().inicializacao[0].clone();
+        assert_eq!(p.situacao, SituacaoInicio::Novo);
+        let cmd = Comando::MarcarInicioVisto {
+            fonte: p.fonte,
+            nome: p.nome.clone(),
+        };
+        assert!(responder(Cenario::Saude, &mut d, cmd).len() >= 2);
+        assert_eq!(
+            d.saude.unwrap().inicializacao[0].situacao,
+            SituacaoInicio::NaBase
+        );
+    }
+
+    #[test]
     fn chaves_dos_cenarios() {
         for c in Cenario::TODOS {
             assert_eq!(Cenario::de_chave(c.chave()), Some(c));
@@ -533,11 +716,15 @@ mod testes {
     fn cada_cenario_tem_o_veredito_esperado() {
         for c in Cenario::TODOS {
             let ui = ui(c);
-            let v = veredito(&Fatos::de_ui(&ui, false), c.saude().as_ref());
+            let v = veredito(&Fatos::de_ui(&ui, false), ui.saude().as_ref());
+            if let Some(s) = c.saude() {
+                assert_eq!(s.validar(), Ok(()), "{c:?}");
+            }
             let ok = match c {
-                Cenario::Otimizado | Cenario::Atualizado | Cenario::PrimeiraVez => {
-                    v == Veredito::Otimizado
-                }
+                Cenario::Otimizado
+                | Cenario::Atualizado
+                | Cenario::PrimeiraVez
+                | Cenario::Saude => v == Veredito::Otimizado,
                 Cenario::Melhorias => v == Veredito::Melhorias { quantidade: 3 },
                 Cenario::Piorou => matches!(v, Veredito::Piorou(TipoSinal::EspacoLivre)),
                 Cenario::JogoAberto => v == Veredito::EsperandoJogo,

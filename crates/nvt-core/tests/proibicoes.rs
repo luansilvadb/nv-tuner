@@ -80,9 +80,9 @@ const PERMITIDOS: &[(&str, &str, usize)] = &[
         "CreateProcessAsUserW",
         1,
     ),
-    // D3 (docs/spec/interface-e-saude.md): abrir `ms-settings:startupapps`. O arquivo
-    // nasce no L4, que muda a contagem para 1; até lá, criar o arquivo com o termo falha.
-    ("crates/nvt-ui/src/abrir.rs", "ShellExecuteW", 0), // L4
+    // D3 (docs/spec/interface-e-saude.md): abrir `ms-settings:startupapps` (L4), numa
+    // única chamada; a constante literal é conferida em `abrir_usa_so_a_constante...`.
+    ("crates/nvt-ui/src/abrir.rs", "ShellExecuteW", 1),
     // §8.3: sessão ETW da medição; contagens fixadas no L5, quando o arquivo nascer.
     ("crates/nvt-medicao/src/etw.rs", "StartTraceW", 0), // L5
     ("crates/nvt-medicao/src/etw.rs", "EnableTraceEx2", 0), // L5
@@ -460,14 +460,12 @@ fn lancador_usa_msiexec_da_pasta_de_sistema() {
     );
 }
 
-/// D3: quando `abrir.rs` existir, o único URI aberto é a constante literal
+/// D3: o único URI aberto por `abrir.rs` é a constante literal
 /// `ms-settings:startupapps` (nenhum argumento vindo de dados).
 #[test]
 fn abrir_usa_so_a_constante_de_inicializacao() {
     let caminho = raiz_workspace().join("crates/nvt-ui/src/abrir.rs");
-    let Ok(fonte) = fs::read_to_string(&caminho) else {
-        return; // L4: o arquivo ainda não existe.
-    };
+    let fonte = fs::read_to_string(&caminho).expect("abrir.rs existe desde o L4");
     conferir_abrir(&fonte).unwrap_or_else(|e| panic!("abrir.rs: {e}"));
 }
 

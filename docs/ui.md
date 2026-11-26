@@ -49,12 +49,13 @@ genéricos, sem dado pessoal.
 |---|---|
 | `otimizado` | PC otimizado; Desfazer tudo |
 | `melhorias` | 3 melhorias recomendadas; Aplicar melhorias recomendadas |
-| `piorou` | Algo piorou (pouco espaço livre) e Saúde do PC |
+| `piorou` | Algo piorou (pouco espaço livre e plano de energia) e Saúde do PC |
 | `jogo-aberto` | VALORANT aberto; mudanças esperando o jogo fechar |
 | `desligado` | depois de Desfazer tudo; Voltar a ajustar |
 | `atualizado` | atualização concluída (linha de estado) |
 | `sem-servico` | nv-tuner não está ativo; botões de escrita desabilitados |
 | `primeira-vez` | boas-vindas |
+| `saude` | PC otimizado; Saúde do PC com 2 programas novos e 1 que mudou; limpeza em simulação com duas passadas |
 
 Testes (`demonstracao::testes`): veredito de cada cenário; todo comando e
 toda ação do Início respondem sem serviço; o módulo não contém caminho até
@@ -123,6 +124,17 @@ as bibliotecas localmente.
 
 ## Thread de comunicação
 
+- Saúde do PC (L4): a cada atualização a thread pede `ObterSaude`, com cache
+  de 60 s (`CACHE_SAUDE`); "Marcar como visto" invalida o cache.
+  `RecursoAusente` ou resposta inválida = sem dados: a seção do Início e o
+  veredito "Algo piorou" não aparecem. Só sinais em `Atencao` alimentam o
+  veredito (R-S-06); as frases ficam em `textos/saude.rs`.
+- "Abrir inicialização" (D3, R-S-04): `abrir.rs` tem o único
+  `ShellExecuteW` do workspace, com a constante `ms-settings:startupapps`,
+  chamado só no clique. O botão fica desabilitado e a função recusa com jogo
+  ou anticheat aberto (adiamento ou jogo em execução) e sem estado do
+  serviço (visualização, conectando). Na demonstração nada abre.
+
 - O cliente do `nvt-ipc` é bloqueante; ele roda só na thread `nvt-ui-ipc`.
   A janela envia `Comando`s por canal e consome `Evento`s a cada 100 ms
   numa tarefa do GPUI — a renderização nunca espera E/S.
@@ -152,6 +164,9 @@ só do retângulo da janela (`PrintWindow`, sem a moldura invisível):
 | `jogos.png` | `--demonstracao otimizado --tela jogos` |
 | `jogos-detalhe.png` | `--demonstracao otimizado --tela jogos --expandir "Counter-Strike 2"` |
 | `avancado.png` | `--demonstracao otimizado --tela avancado` |
+| `inicio-saude.png` | `--demonstracao saude`, rolado até Saúde do PC |
+| `avancado-inicializacao.png` | `--demonstracao saude --tela avancado`, rolado até Inicialização |
+| `avancado-manutencao.png` | `--demonstracao saude --tela avancado`, rolado até Manutenção |
 
 Regras visuais (tema em `tema.rs`, testadas em `ui::estrutura::tokens`):
 
@@ -458,6 +473,7 @@ Iniciar.
 | `modelo.rs` | estado da UI sem janela (`EstadoUi`, `Evento`, `Comando`), conformidade, conversão do plano, datas |
 | `servico.rs` | thread de comunicação, reconexão, despacho de comandos |
 | `demonstracao.rs` | modo de demonstração: cenários, dados fictícios e canal simulado (sem pipe) |
+| `abrir.rs` | abre `ms-settings:startupapps` (D3), com a regra de bloqueio testada |
 | `local.rs` | modo de visualização: `SomenteLeitura`, detecção e conversão para os DTOs do protocolo |
 | `fuso.rs` | conversão de UTC para o fuso local do Windows |
 | `textos.rs` | textos da interface |
