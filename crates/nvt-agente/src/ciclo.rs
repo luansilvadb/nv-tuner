@@ -25,6 +25,13 @@ pub trait Transporte {
     fn trocar(&mut self, requisicao: &Requisicao) -> io::Result<Resposta>;
 }
 
+/// Só leitura: executável do agente e entrada Run gravada pelo instalador.
+pub trait Instalacao {
+    fn presente(&self) -> bool;
+}
+
+const ABANDONO: Duration = Duration::from_secs(120);
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Controle {
     Continuar,
@@ -45,6 +52,7 @@ pub struct Agente<A, T> {
     retentar_em: Instant,
     proxima_deriva: Instant,
     falhas: u32,
+    indisponivel_desde: Option<Instant>,
 }
 
 fn erro(mensagem: &'static str) -> io::Error {
@@ -83,6 +91,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             retentar_em: agora,
             proxima_deriva: agora,
             falhas: 0,
+            indisponivel_desde: None,
         })
     }
 
@@ -90,6 +99,14 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
     /// logoff, quando o identificador da sessão anterior já deixou de existir.
     pub fn definir_sessoes_existentes(&mut self, sessoes: Option<BTreeSet<u32>>) {
         self.sessoes_existentes = sessoes.filter(|s| s.contains(&self.sessao));
+    }
+
+    /// Depois de `ABANDONO` sem serviço, a ausência do executável ou da
+    /// entrada Run indica desinstalação: o agente sai e libera o arquivo.
+    pub fn desinstalado(&self, agora: Instant, instalacao: &impl Instalacao) -> bool {
+        self.indisponivel_desde
+            .is_some_and(|desde| agora.saturating_duration_since(desde) >= ABANDONO)
+            && !instalacao.presente()
     }
 
     pub fn passo(
@@ -167,17 +184,18 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             },
         });
         let geracao_restaurada = sessao.geracao;
-        let resposta = exec
-            .agente
-            .transporte
-            .trocar(&Requisicao::AgenteConsultar {
-                fatos: fatos.clone(),
-                ultima_tarefa,
-                geracao_restaurada,
-            })
-            .map_err(|erro| {
-                io::Error::other(format!("lista atual do serviço indisponível: {erro}"))
-            })?;
+        let resposta = exec.agente.transporte.trocar(&Requisicao::AgenteConsultar {
+            fatos: fatos.clone(),
+            ultima_tarefa,
+            geracao_restaurada,
+        });
+        exec.agente.indisponivel_desde = match resposta {
+            Ok(_) => None,
+            Err(_) => Some(exec.agente.indisponivel_desde.unwrap_or(agora)),
+        };
+        let resposta = resposta.map_err(|erro| {
+            io::Error::other(format!("lista atual do serviço indisponível: {erro}"))
+        })?;
         let plano = match resposta {
             Resposta::Encerrar if restaurar => {
                 return Ok(Controle::Bloqueado("serviço em encerramento".into()));
@@ -384,7 +402,27 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
                 _ => None,
             }),
             diagnosticos: armazem.diagnosticos(),
+            gestao: self.gestao(),
         }
+    }
+
+    /// O serviço reidrata dessa lista a gestão perdida em reinício ou nova sessão.
+    fn gestao(&self) -> Vec<nvt_ipc::GestaoAgente> {
+        self.estado
+            .destinos
+            .iter()
+            .filter(|d| self.acessivel(d) && (d.travado || d.antes_gestao.is_some()))
+            .map(|d| nvt_ipc::GestaoAgente {
+                destino: d.destino.clone(),
+                valores: d
+                    .antes_gestao
+                    .clone()
+                    .zip(d.esperado.clone())
+                    .and_then(|(antes, esperado)| mudanca(&d.destino, antes, esperado)),
+                travado: d.travado,
+            })
+            .take(64)
+            .collect()
     }
 
     fn deriva(&mut self) -> io::Result<()> {

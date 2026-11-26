@@ -499,6 +499,7 @@ fn consulta_agente() -> Requisicao {
             swap_effect_upgrade: Fato::Ausente,
             captura_historica: Fato::Conhecido(1),
             diagnosticos: vec![],
+            gestao: vec![],
         },
         ultima_tarefa: None,
         geracao_restaurada: 0,

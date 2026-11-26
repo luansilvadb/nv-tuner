@@ -882,6 +882,7 @@ mod testes {
                     codigo: "drr".into(),
                     estado: nvt_ipc::EstadoDiagnostico::Indisponivel,
                 }],
+                gestao: vec![],
             },
             ultima_tarefa: None,
             geracao_restaurada: 0,

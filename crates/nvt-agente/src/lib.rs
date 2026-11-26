@@ -5,6 +5,6 @@ mod valores;
 #[cfg(windows)]
 pub mod windows;
 
-pub use ciclo::{Agente, Controle, Transporte};
+pub use ciclo::{Agente, Controle, Instalacao, Transporte};
 pub use estado::{Estado, Persistencia};
 pub use valores::{EscritaUsuario, LeituraUsuario, ValorLido};

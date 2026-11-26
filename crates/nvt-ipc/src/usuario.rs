@@ -75,6 +75,23 @@ pub struct FatosUsuario {
     pub swap_effect_upgrade: Fato<String>,
     pub captura_historica: Fato<u32>,
     pub diagnosticos: Vec<Diagnostico>,
+    /// Gestão persistida pelo agente, fonte de verdade da camada usuário.
+    /// Agentes anteriores omitem o campo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gestao: Vec<GestaoAgente>,
+}
+
+/// Estado persistido pelo agente para um destino acessível na sessão.
+/// `valores.antes` é o valor de antes da gestão e `valores.depois` o esperado;
+/// no Refresh, `alvo` é o alvo da tela.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GestaoAgente {
+    pub destino: SettingUsuario,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valores: Option<AjusteUsuario>,
+    #[serde(default)]
+    pub travado: bool,
 }
 
 impl FatosUsuario {
@@ -85,6 +102,22 @@ impl FatosUsuario {
         }
         if let Fato::Conhecido(token) = &self.swap_effect_upgrade {
             validar_token(token)?;
+        }
+        if self.gestao.len() > 64 {
+            return Err("muitos destinos geridos pelo agente".into());
+        }
+        let mut vistos = BTreeSet::new();
+        for g in &self.gestao {
+            g.destino.validar()?;
+            if !vistos.insert(&g.destino) {
+                return Err("destino gerido repetido".into());
+            }
+            if let Some(valores) = &g.valores {
+                valores.validar()?;
+                if valores.destino() != g.destino {
+                    return Err("gestão não corresponde ao destino".into());
+                }
+            }
         }
         if self.diagnosticos.len() > 256 {
             return Err("muitos diagnósticos do agente".into());

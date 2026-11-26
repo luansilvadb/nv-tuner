@@ -325,6 +325,22 @@ e a camada Windows e os diagnósticos continuam consultáveis. Sem agente
 presente ou sem fatos válidos, nenhuma tarefa é emitida; uma restauração com
 snapshot continua pendente até ser atendida.
 
+A gestão (valor de antes da gestão, esperado e travas) da camada Windows tem
+uma única fonte de verdade: o estado do agente em `%LOCALAPPDATA%`. O
+serviço não a grava em `usuarios.json`; a cada `agente_consultar` ele
+reidrata a sessão com `fatos.gestao` (tipos conferidos contra o destino,
+só para o próprio SID e sessão, sem apagar o que já conhece). Assim reboot,
+logoff/logon e reinício do serviço não deixam ajuste órfão: retirar o aceite
+ainda emite `Restaurar` e a reversão individual volta ao valor de antes da
+gestão, inclusive “não existia”. Antes da primeira consulta após o reinício,
+a reversão é recusada até o agente reportar a gestão.
+
+O serviço não emite `encerrar` na desinstalação: o SCM manda o mesmo `Stop`
+de uma parada comum e o pipe fecha logo em seguida. O próprio agente sai
+quando o serviço fica indisponível por 2 min e o seu executável ou a
+entrada `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\nv-tuner-agente`
+não existe mais (só leitura; erro de leitura conta como presente).
+
 ### Aceites por SID
 
 Os aceites de regras experimentais ficam nas preferências por SID em

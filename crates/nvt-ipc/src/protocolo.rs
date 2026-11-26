@@ -917,6 +917,7 @@ mod testes {
                     codigo: "drr".into(),
                     estado: crate::EstadoDiagnostico::Indisponivel,
                 }],
+                gestao: vec![],
             },
             ultima_tarefa: None,
             geracao_restaurada: 0,

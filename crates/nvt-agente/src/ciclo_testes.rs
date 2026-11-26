@@ -615,3 +615,85 @@ fn releitura_dx_so_aceita_registro_restante_se_houver_outros_tokens() {
     assert!(atingiu(&terceiros, &ausente));
     assert!(atingiu(&terceiros, &vazio));
 }
+
+fn gestao_consultada(a: &Agente<Ajustes, Servico>) -> Vec<nvt_ipc::GestaoAgente> {
+    let Some(Requisicao::AgenteConsultar { fatos, .. }) = a
+        .transporte
+        .chamadas
+        .iter()
+        .rev()
+        .find(|r| matches!(r, Requisicao::AgenteConsultar { .. }))
+    else {
+        panic!("consulta ausente")
+    };
+    fatos.gestao.clone()
+}
+
+#[test]
+fn consulta_envia_gestao_persistida_para_reidratar_o_servico() {
+    let (p, mut a, agora) = preparar(ProcessosFalsos::default());
+    responder(&mut a, [aplicar(1), Resposta::Ok]);
+    a.passo(&p, agora, false).unwrap();
+    assert!(gestao_consultada(&a).is_empty());
+
+    // Um agente novo (nova sessão, reboot) lê a gestão do perfil persistido.
+    let mut a = Agente::novo(
+        a.armazem,
+        a.transporte,
+        Portao::new(ProcessosFalsos::default()),
+        2,
+    )
+    .unwrap();
+    responder(&mut a, [plano(2, 0, OperacaoUsuario::Aplicar, Vec::new())]);
+    a.passo(&p, agora + Duration::from_secs(5), false).unwrap();
+    assert_eq!(
+        gestao_consultada(&a),
+        [nvt_ipc::GestaoAgente {
+            destino: DVR,
+            valores: Some(AjusteUsuario::GameDvrCapturaHistorica {
+                antes: Some(1),
+                depois: Some(0),
+            }),
+            travado: false,
+        }]
+    );
+}
+
+struct InstalacaoFalsa(Cell<bool>);
+
+impl Instalacao for InstalacaoFalsa {
+    fn presente(&self) -> bool {
+        self.0.get()
+    }
+}
+
+#[test]
+fn sai_quando_servico_some_e_instalacao_foi_removida() {
+    let (p, mut a, agora) = preparar(ProcessosFalsos::default());
+    let removida = InstalacaoFalsa(Cell::new(false));
+    let presente = InstalacaoFalsa(Cell::new(true));
+    assert!(!a.desinstalado(agora + Duration::from_secs(600), &removida));
+
+    a.transporte
+        .respostas
+        .push_back(Err(io::Error::other("pipe indisponível")));
+    assert!(a.passo(&p, agora, false).is_err());
+    let depois = agora + Duration::from_secs(121);
+    assert!(!a.desinstalado(agora + Duration::from_secs(60), &removida));
+    assert!(!a.desinstalado(depois, &presente));
+    assert!(a.desinstalado(depois, &removida));
+
+    // A falha persiste desde a primeira; o serviço voltar zera a contagem.
+    a.transporte
+        .respostas
+        .push_back(Err(io::Error::other("pipe indisponível")));
+    assert!(
+        a.passo(&p, agora + Duration::from_secs(100), false)
+            .is_err()
+    );
+    assert!(a.desinstalado(depois, &removida));
+    responder(&mut a, [plano(1, 0, OperacaoUsuario::Aplicar, Vec::new())]);
+    a.passo(&p, agora + Duration::from_secs(200), false)
+        .unwrap();
+    assert!(!a.desinstalado(agora + Duration::from_secs(900), &removida));
+}

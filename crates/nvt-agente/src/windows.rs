@@ -31,7 +31,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::{Agente, Controle, Estado, Persistencia, Transporte};
+use crate::{Agente, Controle, Estado, Instalacao, Persistencia, Transporte};
 
 mod ajustes;
 mod janela;
@@ -54,6 +54,27 @@ impl Transporte for Pipe {
         )
         .map_err(io::Error::other)?;
         cliente.requisitar(requisicao).map_err(io::Error::other)
+    }
+}
+
+/// Leitura do executável e da entrada Run; erros de leitura contam como presente.
+struct InstalacaoWindows;
+
+impl Instalacao for InstalacaoWindows {
+    fn presente(&self) -> bool {
+        use winreg::{
+            RegKey,
+            enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_WOW64_64KEY},
+        };
+        let nao_encontrado = |e: &io::Error| e.kind() == io::ErrorKind::NotFound;
+        let exe = std::env::current_exe().and_then(|exe| fs::symlink_metadata(exe).map(|_| ()));
+        let run = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey_with_flags(
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+                KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            )
+            .and_then(|chave| chave.get_raw_value("nv-tuner-agente").map(|_| ()));
+        !exe.as_ref().is_err_and(nao_encontrado) && !run.as_ref().is_err_and(nao_encontrado)
     }
 }
 
@@ -332,10 +353,10 @@ fn executar_ciclo(perfil: &Perfil, sessao: u32, restaurar: bool) -> io::Result<C
     let limite_trava = Instant::now() + Duration::from_secs(15);
     let mut proxima_lista_sessoes = Instant::now();
     loop {
-        if janela::encerrando() {
+        let agora = Instant::now();
+        if janela::encerrando() || (!restaurar && agente.desinstalado(agora, &InstalacaoWindows)) {
             return Ok(Controle::Encerrar);
         }
-        let agora = Instant::now();
         if agora >= proxima_lista_sessoes {
             agente.definir_sessoes_existentes(sessoes_existentes());
             proxima_lista_sessoes = agora + Duration::from_secs(60);

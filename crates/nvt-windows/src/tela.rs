@@ -27,7 +27,17 @@ pub trait Display {
     /// Confere que a configuracao ativa ainda e a preparada. Chamado antes do portao.
     fn conferir(&self, configuracao: &Self::Configuracao) -> Result<(), Erro>;
     /// Apenas envia os vetores preparados, sem consultas.
-    fn gravar(&self, configuracao: Self::Configuracao) -> Result<(), Erro>;
+    fn gravar(&self, configuracao: &Self::Configuracao) -> Result<(), Erro>;
+    /// Rele depois de gravar e exige o estado esperado inteiro (topologia,
+    /// resolucao, tamanho ativo, profundidade, rotacao, escala e varredura),
+    /// com a taxa do alvo igual a pedida.
+    fn confirmar(&self, configuracao: &Self::Configuracao) -> Result<(), Erro>;
+    /// Prepara a volta aos vetores originais consultados em `preparar`
+    /// (inclusive o modo de destino), conferida contra o estado observado agora.
+    fn preparar_compensacao(
+        &self,
+        configuracao: Self::Configuracao,
+    ) -> Result<Self::Configuracao, Erro>;
 }
 
 #[derive(Debug, Default)]
@@ -35,17 +45,25 @@ pub struct DisplayWindows;
 
 /// Vetores transitorios para uma unica tentativa de escrita.
 pub struct ConfiguracaoDisplay {
+    /// Estado que deve estar ativo imediatamente antes de gravar.
     ativa: Vec<EstadoCaminho>,
+    /// Estado exigido depois de gravar, exceto a taxa do alvo.
+    esperada: Vec<EstadoCaminho>,
     alvo: String,
+    pedida: RefreshRacional,
+    anterior: RefreshRacional,
     vetores: Vetores,
+    /// Vetores como consultados, com o modo de destino original.
+    original: Vetores,
 }
 
+#[derive(Clone)]
 struct Vetores {
     caminhos: Vec<DISPLAYCONFIG_PATH_INFO>,
     modos: Vec<DISPLAYCONFIG_MODE_INFO>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct EstadoCaminho {
     origem: (i32, u32, u32),
     destino: (i32, u32, u32),
@@ -55,6 +73,19 @@ struct EstadoCaminho {
     taxa: RefreshRacional,
     rotacao: DISPLAYCONFIG_ROTATION,
     escala: DISPLAYCONFIG_SCALING,
+    varredura: (
+        DISPLAYCONFIG_SCANLINE_ORDERING,
+        DISPLAYCONFIG_SCANLINE_ORDERING,
+    ),
+}
+
+impl EstadoCaminho {
+    fn igual_exceto_taxa(&self, outro: &Self) -> bool {
+        Self {
+            taxa: outro.taxa,
+            ..self.clone()
+        } == *outro
+    }
 }
 
 impl Display for DisplayWindows {
@@ -79,15 +110,18 @@ impl Display for DisplayWindows {
         let caminho = vetores.caminhos[indice];
         let ativa = vetores.estados()?;
         let anterior = taxa(&caminho)?;
+        let original = vetores.clone();
+        let configuracao = |vetores| ConfiguracaoDisplay {
+            esperada: ativa.clone(),
+            ativa: ativa.clone(),
+            alvo: alvo.to_owned(),
+            pedida,
+            anterior,
+            vetores,
+            original: original.clone(),
+        };
         if mesma_taxa(anterior, pedida) {
-            return Ok((
-                anterior,
-                ConfiguracaoDisplay {
-                    ativa,
-                    alvo: alvo.to_owned(),
-                    vetores,
-                },
-            ));
+            return Ok((anterior, configuracao(vetores)));
         }
         let nome_gdi = nome_origem(&caminho.sourceInfo)?;
         let (formato, modos) = TelaDoSistema.modos(&nome_gdi).map_err(|e| match e {
@@ -115,14 +149,7 @@ impl Display for DisplayWindows {
             }
             _ => e,
         })?;
-        Ok((
-            anterior,
-            ConfiguracaoDisplay {
-                ativa,
-                alvo: alvo.to_owned(),
-                vetores,
-            },
-        ))
+        Ok((anterior, configuracao(vetores)))
     }
 
     fn conferir(&self, configuracao: &Self::Configuracao) -> Result<(), Erro> {
@@ -134,18 +161,64 @@ impl Display for DisplayWindows {
         Ok(())
     }
 
-    fn gravar(&self, configuracao: Self::Configuracao) -> Result<(), Erro> {
+    fn gravar(&self, configuracao: &Self::Configuracao) -> Result<(), Erro> {
         configuracao
             .vetores
             .enviar(SDC_APPLY | SDC_SAVE_TO_DATABASE)
+    }
+
+    fn confirmar(&self, configuracao: &Self::Configuracao) -> Result<(), Erro> {
+        let atual = consultar()?;
+        let indice = atual.identificar(&configuracao.alvo)?;
+        let estados = atual.estados()?;
+        if estados.len() != configuracao.esperada.len() {
+            return Err(Erro::Releitura);
+        }
+        let divergente =
+            estados
+                .iter()
+                .zip(&configuracao.esperada)
+                .enumerate()
+                .any(|(i, (lido, esperado))| {
+                    if i == indice {
+                        !lido.igual_exceto_taxa(esperado)
+                            || !mesma_taxa(lido.taxa, configuracao.pedida)
+                    } else {
+                        lido != esperado
+                    }
+                });
+        if divergente {
+            return Err(Erro::Releitura);
+        }
+        Ok(())
+    }
+
+    fn preparar_compensacao(
+        &self,
+        configuracao: Self::Configuracao,
+    ) -> Result<Self::Configuracao, Erro> {
+        let atual = consultar()?;
+        atual.identificar(&configuracao.alvo)?;
+        Ok(ConfiguracaoDisplay {
+            ativa: atual.estados()?,
+            esperada: configuracao.esperada,
+            alvo: configuracao.alvo,
+            pedida: configuracao.anterior,
+            anterior: configuracao.pedida,
+            vetores: configuracao.original.clone(),
+            original: configuracao.original,
+        })
     }
 }
 
 impl Vetores {
     fn alterar_taxa(&mut self, indice: usize, pedida: RefreshRacional) -> Result<(), Erro> {
         // Um target mode explicito sobrepoe refreshRate com o timing antigo.
-        // Mantemos os modos de origem e os demais caminhos intactos e deixamos
-        // o driver escolher apenas o timing do alvo na taxa solicitada.
+        // Fornecer um target mode com a taxa nova exigiria sintetizar um timing
+        // completo (pixelRate, totalSize, hSync/vSync) que a CCD nao enumera nem
+        // garante aceitar; por isso o modo e removido e o driver escolhe o
+        // timing do alvo. Como ele pode trocar mais que a taxa, `confirmar`
+        // rele o estado inteiro e `escrever` compensa com os vetores originais.
         // SAFETY: QDC_ONLY_ACTIVE_PATHS, sem modo virtual, usa modeInfoIdx.
         let modo_alvo = unsafe { self.caminhos[indice].targetInfo.Anonymous.modeInfoIdx };
         // SAFETY: a mesma consulta garante o membro nao virtual em cada caminho.
@@ -256,6 +329,7 @@ impl Vetores {
                     taxa: taxa(caminho)?,
                     rotacao: alvo.rotation,
                     escala: alvo.scaling,
+                    varredura: (alvo.scanLineOrdering, sinal.scanLineOrdering),
                 })
             })
             .collect()
@@ -394,32 +468,24 @@ pub(crate) fn escrever(
     }
     display.conferir(&config)?;
     autorizar()?;
-    display.gravar(config)?;
-    let falha = match confirmar(display, alvo, depois) {
+    display.gravar(&config)?;
+    let falha = match display.confirmar(&config) {
         Ok(()) => return Ok(()),
         Err(falha) => falha,
     };
+    // Sem modo de destino o driver escolhe o timing e pode trocar mais que a
+    // taxa. Volta aos vetores originais completos, com portao colado.
     let compensacao = (|| {
-        let (atual, config) = display.preparar(alvo, antes)?;
-        if !mesma_taxa(atual, antes) {
-            display.conferir(&config)?;
-            autorizar()?;
-            display.gravar(config)?;
-        }
-        confirmar(display, alvo, antes)
+        let config = display.preparar_compensacao(config)?;
+        display.conferir(&config)?;
+        autorizar()?;
+        display.gravar(&config)?;
+        display.confirmar(&config)
     })();
     Err(Erro::RefreshNaoConfirmado {
         falha: Box::new(falha),
         compensacao: compensacao.map_err(Box::new),
     })
-}
-
-fn confirmar(display: &impl Display, alvo: &str, taxa: RefreshRacional) -> Result<(), Erro> {
-    if mesma_taxa(display.ler(alvo)?, taxa) {
-        Ok(())
-    } else {
-        Err(Erro::Releitura)
-    }
 }
 
 #[cfg(test)]

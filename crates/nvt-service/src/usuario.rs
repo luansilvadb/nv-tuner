@@ -361,6 +361,9 @@ impl Coordenador {
             s.travas.clear();
             s.reversoes.clear();
         }
+        if reidratar(s, &fatos.gestao) {
+            s.invalidar();
+        }
         s.restaurada = restaurada;
         s.contato = Some(agora);
         s.diagnosticos.clone_from(&fatos.diagnosticos);
@@ -739,6 +742,33 @@ fn taxa_core(t: nvt_ipc::RefreshRacional) -> usuario::RefreshRacional {
         numerador: t.numerador,
         denominador: t.denominador,
     }
+}
+
+/// O agente persiste a gestão da camada usuário; a sessão em memória do
+/// serviço só a reconstrói, sem nunca apagar o que já conhece.
+fn reidratar(s: &mut Sessao, gestao: &[nvt_ipc::GestaoAgente]) -> bool {
+    let mut mudou = false;
+    for g in gestao {
+        if let Some(ajuste) = g.valores.as_ref().filter(|a| a.destino() == g.destino) {
+            let (antes, esperado) = valores(ajuste);
+            let tipo = setting(&g.destino);
+            if tipo.aceita(&antes) && tipo.aceita(&esperado) {
+                let nova = GestaoUsuario {
+                    antes,
+                    esperado,
+                    alvo_tela: alvo(&g.destino).map(str::to_owned),
+                };
+                if s.gestao.get(&g.destino) != Some(&nova) {
+                    s.gestao.insert(g.destino.clone(), nova);
+                    mudou = true;
+                }
+            }
+        }
+        if g.travado {
+            mudou |= s.travas.insert(g.destino.clone());
+        }
+    }
+    mudou
 }
 
 fn preencher_gestao(fatos: &mut FatosUsuario, s: &Sessao) {

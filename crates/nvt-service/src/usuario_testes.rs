@@ -44,6 +44,7 @@ fn fatos(captura: u32) -> nvt_ipc::FatosUsuario {
         swap_effect_upgrade: Fato::Desconhecido,
         captura_historica: Fato::Conhecido(captura),
         diagnosticos: vec![],
+        gestao: vec![],
     }
 }
 
@@ -378,4 +379,271 @@ fn retirada_e_reversao_usam_original_e_preservam_trava() {
         c.resumo(&a, c.sessoes.get(&a)).mudancas[0].status,
         StatusMudanca::Travada
     );
+}
+
+const REGRAS_USUARIO: [&str; 4] = [
+    "windows-refresh-maximo",
+    "windows-mouse-sem-aceleracao",
+    "windows-otimizacoes-janela",
+    CAPTURA,
+];
+
+fn fatos_base() -> nvt_ipc::FatosUsuario {
+    nvt_ipc::FatosUsuario {
+        tela: Fato::Conhecido(nvt_ipc::FatoTela {
+            alvo: "monitor".into(),
+            atual: nvt_ipc::RefreshRacional {
+                numerador: 60,
+                denominador: 1,
+            },
+            maximo: nvt_ipc::RefreshRacional {
+                numerador: 144,
+                denominador: 1,
+            },
+        }),
+        mouse: Fato::Conhecido(nvt_ipc::MouseSpi {
+            limiar1: 6,
+            limiar2: 10,
+            aceleracao: 1,
+        }),
+        swap_effect_upgrade: Fato::Ausente,
+        captura_historica: Fato::Conhecido(1),
+        diagnosticos: vec![],
+        gestao: vec![],
+    }
+}
+
+/// Fatos lidos pelo agente depois de `ajuste` (ou antes, com `depois` falso).
+fn lido(
+    ajuste: &AjusteUsuario,
+    depois: bool,
+    gestao: Option<&AjusteUsuario>,
+) -> nvt_ipc::FatosUsuario {
+    let mut f = fatos_base();
+    let opcional = |v: Option<_>| v.map_or(Fato::Ausente, Fato::Conhecido);
+    match ajuste.clone() {
+        AjusteUsuario::Refresh {
+            antes, depois: d, ..
+        } => {
+            if let Fato::Conhecido(t) = &mut f.tela {
+                t.atual = if depois { d } else { antes };
+            }
+        }
+        AjusteUsuario::MouseAceleracao { antes, depois: d } => {
+            f.mouse = Fato::Conhecido(if depois { d } else { antes });
+        }
+        AjusteUsuario::DxSwapEffectUpgrade { antes, depois: d } => {
+            f.swap_effect_upgrade = opcional(if depois { d } else { antes });
+        }
+        AjusteUsuario::GameDvrCapturaHistorica { antes, depois: d } => {
+            f.captura_historica =
+                (if depois { d } else { antes }).map_or(Fato::Ausente, Fato::Conhecido);
+        }
+    }
+    f.gestao = gestao
+        .map(|g| nvt_ipc::GestaoAgente {
+            destino: g.destino(),
+            valores: Some(g.clone()),
+            travado: false,
+        })
+        .into_iter()
+        .collect();
+    f
+}
+
+fn inverso(ajuste: &AjusteUsuario) -> AjusteUsuario {
+    match ajuste.clone() {
+        AjusteUsuario::Refresh {
+            alvo,
+            antes,
+            depois,
+        } => AjusteUsuario::Refresh {
+            alvo,
+            antes: depois,
+            depois: antes,
+        },
+        AjusteUsuario::MouseAceleracao { antes, depois } => AjusteUsuario::MouseAceleracao {
+            antes: depois,
+            depois: antes,
+        },
+        AjusteUsuario::DxSwapEffectUpgrade { antes, depois } => {
+            AjusteUsuario::DxSwapEffectUpgrade {
+                antes: depois,
+                depois: antes,
+            }
+        }
+        AjusteUsuario::GameDvrCapturaHistorica { antes, depois } => {
+            AjusteUsuario::GameDvrCapturaHistorica {
+                antes: depois,
+                depois: antes,
+            }
+        }
+    }
+}
+
+fn consultar_com(
+    c: &mut Coordenador,
+    id: &IdentidadeCliente,
+    agora: Instant,
+    fatos: nvt_ipc::FatosUsuario,
+) -> Option<TarefaUsuario> {
+    let req = Requisicao::AgenteConsultar {
+        fatos,
+        ultima_tarefa: None,
+        geracao_restaurada: 0,
+    };
+    let Some(Resposta::PlanoAgente(plano)) = c.tratar(id, &req, agora, 12) else {
+        panic!("esperado plano do agente");
+    };
+    plano.tarefa
+}
+
+fn relatar(
+    c: &mut Coordenador,
+    id: &IdentidadeCliente,
+    agora: Instant,
+    t: &TarefaUsuario,
+    ajuste: &AjusteUsuario,
+) -> Option<Resposta> {
+    let ReferenciaTarefa {
+        id_tarefa,
+        operacao,
+        revisao,
+    } = t.tarefa;
+    let req = Requisicao::AgenteRelatar {
+        id_tarefa,
+        operacao,
+        revisao,
+        resultados: vec![ResultadoUsuario {
+            destino: ajuste.destino(),
+            status: StatusMudanca::Aplicada,
+            detalhe: None,
+            mudanca: Some(ajuste.clone()),
+        }],
+    };
+    c.tratar(id, &req, agora, 12)
+}
+
+/// Aceita, aplica e devolve o ajuste efetivamente gravado pelo agente.
+fn aplicar_regra(
+    c: &mut Coordenador,
+    id: &IdentidadeCliente,
+    agora: Instant,
+    regra: &str,
+) -> AjusteUsuario {
+    aceite(c, id, agora, regra, true);
+    let t = consultar_com(c, id, agora, fatos_base()).expect("tarefa de aplicação");
+    let [AcaoUsuario::Aplicar { ajuste }] = t.acoes.as_slice() else {
+        panic!("esperada uma aplicação: {:?}", t.acoes);
+    };
+    let ajuste = ajuste.clone();
+    assert_eq!(relatar(c, id, agora, &t, &ajuste), Some(Resposta::Ok));
+    ajuste
+}
+
+fn pedido_reverter(destino: &SettingUsuario) -> Requisicao {
+    Requisicao::ReverterAjusteUsuario {
+        alvo_tela: alvo(destino).map(str::to_owned),
+        destino: destino.clone(),
+    }
+}
+
+#[test]
+fn gestao_reidratada_do_agente_restaura_apos_reinicio_e_nova_sessao() {
+    let agora = Instant::now();
+    for regra in REGRAS_USUARIO {
+        let memoria = Memoria::default();
+        let a = cliente("A", 1);
+        let ajuste = aplicar_regra(&mut abrir(memoria.clone()), &a, agora, regra);
+        if regra == "windows-otimizacoes-janela" {
+            assert!(
+                matches!(
+                    ajuste,
+                    AjusteUsuario::DxSwapEffectUpgrade { antes: None, .. }
+                ),
+                "o valor de antes da gestão é a ausência"
+            );
+        }
+        let depois = || lido(&ajuste, true, Some(&ajuste));
+        let restaurado = inverso(&ajuste);
+
+        // Sem a gestão do agente, o serviço reiniciado não teria o que restaurar.
+        let mut sem = abrir(memoria.clone());
+        aceite(&mut sem, &a, agora, regra, false);
+        assert!(consultar_com(&mut sem, &a, agora, lido(&ajuste, true, None)).is_none());
+        aceite(&mut sem, &a, agora, regra, true);
+
+        // Reinício do serviço (ou reboot): retirar o aceite restaura.
+        let mut reiniciado = abrir(memoria.clone());
+        assert!(
+            consultar_com(&mut reiniciado, &a, agora, depois()).is_none(),
+            "{regra}"
+        );
+        aceite(&mut reiniciado, &a, agora, regra, false);
+        let t = consultar_com(&mut reiniciado, &a, agora, depois()).expect(regra);
+        assert_eq!(t.tarefa.operacao, OperacaoUsuario::Restaurar, "{regra}");
+        assert_eq!(
+            t.acoes,
+            [AcaoUsuario::Restaurar {
+                destino: ajuste.destino()
+            }]
+        );
+        assert!(recusado(relatar(&mut reiniciado, &a, agora, &t, &ajuste)));
+        assert_eq!(
+            relatar(&mut reiniciado, &a, agora, &t, &restaurado),
+            Some(Resposta::Ok),
+            "{regra}"
+        );
+        assert!(consultar_com(&mut reiniciado, &a, agora, lido(&ajuste, false, None)).is_none());
+        aceite(&mut reiniciado, &a, agora, regra, true);
+
+        // Nova sessão (logoff/logon) no mesmo serviço.
+        let mut c = abrir(memoria.clone());
+        let ajuste = aplicar_regra(&mut c, &a, agora, regra);
+        let a2 = cliente("A", 2);
+        aceite(&mut c, &a2, agora, regra, false);
+        let t = consultar_com(&mut c, &a2, agora, lido(&ajuste, true, Some(&ajuste))).expect(regra);
+        assert_eq!(t.tarefa.operacao, OperacaoUsuario::Restaurar, "{regra}");
+        assert_eq!(
+            relatar(&mut c, &a2, agora, &t, &inverso(&ajuste)),
+            Some(Resposta::Ok)
+        );
+
+        // Outro SID não herda a gestão do agente de A.
+        let b = cliente("B", 3);
+        assert!(recusado(c.tratar(
+            &b,
+            &pedido_reverter(&ajuste.destino()),
+            agora,
+            12
+        )));
+    }
+}
+
+#[test]
+fn reverter_individual_apos_reinicio_usa_valor_do_agente() {
+    let agora = Instant::now();
+    for regra in REGRAS_USUARIO {
+        let memoria = Memoria::default();
+        let a = cliente("A", 1);
+        let ajuste = aplicar_regra(&mut abrir(memoria.clone()), &a, agora, regra);
+        let mut c = abrir(memoria);
+        let reverter = pedido_reverter(&ajuste.destino());
+        // Antes de o agente consultar, o serviço reiniciado não conhece a gestão.
+        assert!(recusado(c.tratar(&a, &reverter, agora, 12)));
+        assert!(consultar_com(&mut c, &a, agora, lido(&ajuste, true, Some(&ajuste))).is_none());
+        assert_eq!(
+            c.tratar(&a, &reverter, agora, 12),
+            Some(Resposta::Ok),
+            "{regra}"
+        );
+        let t = consultar_com(&mut c, &a, agora, lido(&ajuste, true, Some(&ajuste))).expect(regra);
+        assert_eq!(t.tarefa.operacao, OperacaoUsuario::Reverter, "{regra}");
+        assert!(recusado(relatar(&mut c, &a, agora, &t, &ajuste)));
+        assert_eq!(
+            relatar(&mut c, &a, agora, &t, &inverso(&ajuste)),
+            Some(Resposta::Ok),
+            "{regra}"
+        );
+    }
 }

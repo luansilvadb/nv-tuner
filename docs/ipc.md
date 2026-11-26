@@ -116,7 +116,7 @@ verificação do dono do pipe exigem chamadas Win32 de qualquer forma.
 | `travar_setting`        | `perfil`, `setting`                                        |
 | `destravar_setting`     | `perfil`, `setting`                                        |
 | `reescanear_jogos`      | —                                                          |
-| `agente_consultar`      | `fatos` (fatos da sessão e diagnósticos de sessão), `ultima_tarefa` (estado da última tarefa ou `null`), `geracao_restaurada` |
+| `agente_consultar`      | `fatos` (fatos da sessão, diagnósticos de sessão e, opcional, `gestao[]`: por destino `destino`, `valores` — ajuste tipado com `antes` = valor de antes da gestão e `depois` = esperado; no refresh, `alvo` é o alvo da tela — e `travado`), `ultima_tarefa` (estado da última tarefa ou `null`), `geracao_restaurada` |
 | `agente_relatar`        | `id_tarefa`, `operacao`, `revisao`, `resultados[]` (`destino`, `status`, `detalhe`, `mudanca`) |
 | `definir_aceite_experimental` | `regra` (ID), `aceito` (bool)                        |
 | `reverter_ajuste_usuario` | `destino` (setting de usuário tipada), `alvo_tela` (opcional, caminho estável do monitor) |
@@ -148,7 +148,7 @@ Exemplo:
 | `restauracao` | `adiada` (resposta de `restaurar_original`)                   |
 | `adiada`    | `adiamento` (resposta de `definir_preferencias`/`destravar_setting` aceitos com a aplicação pendente) |
 | `plano_agente` | `revisao`, `geracao_restauracao`, `tarefa` (ações tipadas ou `null`), `processos_vigiados` (resposta de `agente_consultar`) |
-| `encerrar`  | instrui o agente a encerrar; o serviço atual não a emite       |
+| `encerrar`  | instrui o agente a encerrar; o serviço atual não a emite (o SCM não distingue desinstalação de parada comum; ver `docs/servico.md`) |
 | `ok`        | —                                                               |
 | `erro`      | `codigo`, `mensagem`                                            |
 

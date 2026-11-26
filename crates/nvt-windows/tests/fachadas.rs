@@ -119,11 +119,16 @@ struct DisplayFalso {
     preparadas: RefCell<Vec<RefreshRacional>>,
     escritas: RefCell<Vec<RefreshRacional>>,
     log: RefCell<Vec<&'static str>>,
+    /// A proxima gravacao troca resolucao/escala alem da taxa.
+    divergir: Cell<bool>,
+    divergente: Cell<bool>,
 }
 
 impl Default for DisplayFalso {
     fn default() -> Self {
         Self {
+            divergir: Cell::default(),
+            divergente: Cell::default(),
             taxa: Cell::new(ANTES),
             falha: RefCell::default(),
             resultados: RefCell::default(),
@@ -134,8 +139,11 @@ impl Default for DisplayFalso {
     }
 }
 
+/// (taxa anterior, taxa pedida, e compensacao com os vetores originais).
+type ConfigFalsa = (RefreshRacional, RefreshRacional, bool);
+
 impl Display for &DisplayFalso {
-    type Configuracao = RefreshRacional;
+    type Configuracao = ConfigFalsa;
 
     fn ler(&self, alvo: &str) -> Result<RefreshRacional, Erro> {
         self.log.borrow_mut().push("ler");
@@ -155,7 +163,8 @@ impl Display for &DisplayFalso {
     ) -> Result<(RefreshRacional, Self::Configuracao), Erro> {
         self.log.borrow_mut().push("preparar");
         self.preparadas.borrow_mut().push(taxa);
-        Ok((self.ler(alvo)?, taxa))
+        let atual = self.ler(alvo)?;
+        Ok((atual, (atual, taxa, false)))
     }
 
     fn conferir(&self, _: &Self::Configuracao) -> Result<(), Erro> {
@@ -163,12 +172,32 @@ impl Display for &DisplayFalso {
         Ok(())
     }
 
-    fn gravar(&self, taxa: Self::Configuracao) -> Result<(), Erro> {
+    fn gravar(&self, &(_, taxa, compensa): &Self::Configuracao) -> Result<(), Erro> {
         self.log.borrow_mut().push("gravar");
         self.escritas.borrow_mut().push(taxa);
         self.taxa
             .set(self.resultados.borrow_mut().pop_front().unwrap_or(taxa));
+        // Gravacao normal pode trocar resolucao/escala; os vetores originais
+        // da compensacao devolvem o estado inteiro.
+        self.divergente.set(!compensa && self.divergir.take());
         Ok(())
+    }
+
+    fn confirmar(&self, &(_, taxa, _): &Self::Configuracao) -> Result<(), Erro> {
+        if self.ler("monitor-estavel")? != taxa || self.divergente.get() {
+            return Err(Erro::Releitura);
+        }
+        Ok(())
+    }
+
+    fn preparar_compensacao(
+        &self,
+        (anterior, pedida, _): Self::Configuracao,
+    ) -> Result<Self::Configuracao, Erro> {
+        self.log.borrow_mut().push("preparar");
+        self.preparadas.borrow_mut().push(anterior);
+        self.ler("monitor-estavel")?;
+        Ok((pedida, anterior, true))
     }
 }
 
@@ -377,6 +406,34 @@ fn display_rele_e_compensa_com_vetores_novos_e_mesmo_portao() {
         assert_eq!(d.taxa.get(), if bloqueada { DIVERGENTE } else { ANTES });
         assert_eq!(d.escritas.borrow().len(), if bloqueada { 1 } else { 2 });
     }
+}
+
+#[test]
+fn display_com_resolucao_ou_escala_trocada_compensa_com_portao_colado() {
+    let r = RegistroFalso::default();
+    let s = SpiFalso::default();
+    let d = DisplayFalso::default();
+    let a = ArmazemUsuario::novo(&r, &s, &d);
+    let anterior = a.ler(TelaRefresh, Some("monitor-estavel")).unwrap();
+    // A taxa confere, mas o driver trocou resolucao/escala ao gravar.
+    d.divergir.set(true);
+    d.log.borrow_mut().clear();
+    let erro = a
+        .escrever(&anterior, &ValorUsuario::Refresh(DEPOIS), portao(&d.log))
+        .unwrap_err();
+    assert_eq!(
+        erro,
+        Erro::RefreshNaoConfirmado {
+            falha: Box::new(Erro::Releitura),
+            compensacao: Ok(()),
+        }
+    );
+    assert_eq!(*d.escritas.borrow(), [DEPOIS, ANTES]);
+    assert_eq!(d.taxa.get(), ANTES);
+    assert!(!d.divergente.get());
+    let ciclo = ["preparar", "ler", "conferir", "portao", "gravar", "ler"];
+    assert_eq!(*d.log.borrow(), [ciclo, ciclo].concat());
+    portao_cola_na_gravacao(&d.log.borrow());
 }
 
 #[derive(Default)]
