@@ -96,7 +96,7 @@ de `competitivo-anticheat.md` §4; as correções da revisão estão indicadas.
 | N4 | Nunca empacotar, instalar ou carregar driver de kernel (WinRing0, inpout, PawnIO, `.sys` próprio). Sensores só por NVAPI/NVML/WMI | [3] |
 | N5 | Nunca escrever em IFEO (`PerfOptions`, `Debugger`, `GlobalFlag`, `VerifierDlls`) | [4]; revisão §5 |
 | N6 | Nunca alterar Secure Boot, TPM, VBS, HVCI, IOMMU, Vulnerable Driver Blocklist, DEP, Defender, Windows Update ou mitigações de CPU | [5], [17] |
-| N7 | Nunca alterar no BCD `testsigning`, `nointegritychecks`, `debug`, `hypervisorlaunchtype`, `nx`. O único elemento do BCD que o app pode tocar é `useplatformclock` do objeto `{current}`: **remover** (F2-08) e, só na reversão, **regravar exatamente o valor do snapshot**; as duas operações têm as mesmas travas (BitLocker, confirmação, reinício) | [6] |
+| N7 | Na Fase 2, o BCD é exclusivamente diagnóstico de `useplatformclock` (F2-08); nenhuma escrita no BCD. | D1 |
 | N8 | Nunca alterar executáveis, DLLs ou qualquer arquivo dentro da pasta de instalação do jogo | [7] |
 | N9 | Nunca aplicar configuração que altere visibilidade ou informação (ver §2, item 5) | [8] |
 | N10 | Nunca recomendar nem adicionar `-allow_third_party_software` ou opção que desligue proteção do jogo | [9] |
@@ -154,7 +154,7 @@ promessa nunca anunciar o que ainda não existe.
 
 > - Somente Windows e GPUs NVIDIA.
 > - Atua em **camadas de ajuste**: `driver` (perfis DRS via NVAPI, FFI própria),
->   `windows` (registro, parâmetros do sistema, modo de vídeo e BCD, só itens da lista
+>   `windows` (registro do usuário, parâmetros do sistema e modo de vídeo, só itens da lista
 >   permitida) e `jogo` (arquivos de configuração do usuário e opções de inicialização da
 >   Steam, só jogos e chaves da lista permitida).
 > - Cada camada tem snapshot do original, releitura após gravar, histórico e restauração.
@@ -171,7 +171,7 @@ promessa nunca anunciar o que ainda não existe.
 | T-01 | Nenhum crate chama as APIs listadas em N1 e N2 sobre processo alheio. Um teste de lint de código (`crates/nvt-core/tests/` ou um `xtask`) procura, como **palavra inteira**, `OpenProcess`, `TH32CS_SNAPMODULE`, `ReadProcessMemory`, `SetWindowsHookEx`, `SetPriorityClass`, `Image File Execution Options` e `Command::new`, e falha se encontrar em código de produção. Fora da busca: `tests/`, `examples/`, `build.rs` e módulos sob `#[cfg(test)]` (hoje `Command::new` aparece só nos testes de `crates/nvt-service/src/{diretorio,logs}.rs`). `OpenProcessToken` sobre `GetCurrentProcess()` (`crates/nvt-service/src/diretorio.rs:677`) é permitido e não pode casar com o padrão | teste automatizado |
 | T-02 | Toda gravação passa por um único portão, `Engine::pode_gravar() -> Result<(), Adiamento>`, que consulta a lista de processos (F1-06) imediatamente antes de gravar | teste com `ProcessosFalsos` |
 | T-03 | Toda regra nova tem `motivo`, `evidencia` (fonte ou medição, sem dados pessoais) e entra como `experimental`; só vira `estavel` com o critério de laboratório da fase | revisão de PR + `carrega_regras_reais` |
-| T-04 | “Estabilidade > latência > FPS” ganha um eixo explícito na regra, além de `impacto_visual`: campo opcional `requer_reinicio` (bool) e `confirmacao` (`automatica` \| `usuario`). Regras com `confirmacao = "usuario"` nunca entram no plano automático: aparecem como ação pendente na UI | teste do avaliador |
+| T-04 | Adiado até haver ação que precise de confirmação explícita ou reinício. Nessa fase futura, introduzir `confirmacao` e `requer_reinicio` conforme as necessidades da ação. | teste do avaliador |
 | T-05 | A explicação “o que o app fez” (`plan.resumos`, `ResumoJogo`) cobre todas as camadas: para cada jogo, as mudanças no perfil do driver, as do arquivo de config e as orientações; para o sistema, um `ResumoSistema` com as mudanças de Windows | teste do avaliador + UI |
 | T-06 | O núcleo continua sem gerar texto: motivos, orientações e diagnósticos são códigos; a UI traduz em `crates/nvt-ui/src/textos.rs` | inspeção |
 | T-07 | `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings` e `cargo fmt --check` passam em cada fase | CI |
@@ -181,6 +181,9 @@ promessa nunca anunciar o que ainda não existe.
 ## 6. Arquitetura
 
 ### 6.1 Camadas de ajuste (modelo generalizado)
+
+O desenho generalizado abaixo é referência futura. Para a Fase 2 prevalecem §8 e D1–D6
+em §12: o DRS conserva seu estado v1 e a camada de usuário usa um modelo paralelo.
 
 Hoje tudo é `ProfileRef` + `id: u32` do DRS (`estado-atual` §4). O modelo passa a ser:
 
@@ -307,8 +310,9 @@ Desenho:
   informação por link); essa leitura é do agente.
 - “Restaurar original” incrementa um contador `geracao_restauracao` no serviço; cada
   agente, ao ver geração maior que a sua (inclusive no próximo logon de outro usuário),
-  restaura a própria camada. Sem agente presente, o serviço restaura driver e sistema na
-  hora e a UI mostra “ajustes do seu usuário: restauração pendente até o agente rodar”.
+  restaura a própria camada. Sem agente presente, o serviço restaura o driver assim
+  que o portão permitir, e a UI mostra “ajustes do seu usuário: restauração pendente
+  até o agente rodar”.
 - A UI continua sem gravar nada (`crates/nvt-ui/src/local.rs:1-13`).
 
 ### 6.3 Revisão das proibições de `docs/arquitetura.md:118-119`
@@ -320,8 +324,7 @@ jogos (`estado-atual` §5.2). Nova redação:
 > - **Nenhum componente executa processos externos** (nem `powercfg.exe`, `bcdedit.exe`,
 >   `reg.exe`, `cmd.exe`): toda ação usa APIs Win32/NVAPI/WMI diretamente. Exceção: o
 >   instalador.
-> - O serviço **grava** apenas: no DRS (via NVAPI), nos seus diretórios de estado e nos
->   destinos `Sistema` da lista permitida (`regras/windows.toml`).
+> - O serviço **grava** apenas: no DRS (via NVAPI) e nos seus diretórios de estado na Fase 2.
 > - O serviço **lê** arquivos fora do seu estado só para detecção: pastas de instalação
 >   dos jogos, com compartilhamento total, sem seguir reparse points e sem manter
 >   mapeamento (S3). Não lê arquivos no perfil dos usuários.
@@ -330,9 +333,7 @@ jogos (`estado-atual` §5.2). Nova redação:
 > - Toda requisição continua validada contra a lista permitida da camada; destinos fora
 >   dela são rejeitados mesmo vindos de regra válida.
 
-Consequência concreta: o BCD (fase 2) é alterado pelo provedor WMI `root\WMI`, classes
-`BcdStore`/`BcdObject` (`OpenStore`, `OpenObject`, `GetElement`, `DeleteElement`), não por
-`bcdedit`. O plano de energia, se um dia entrar, usará `PowerGetActiveScheme`/
+O BCD é somente diagnóstico na Fase 2 (D1). O plano de energia, se um dia entrar, usará `PowerGetActiveScheme`/
 `PowerSetActiveScheme`/`PowerWriteACValueIndex`, não `powercfg`.
 
 ### 6.4 Novos módulos e crates
@@ -344,7 +345,7 @@ Consequência concreta: o BCD (fase 2) é alterado pelo provedor WMI `root\WMI`,
 | `nvt-drs::exibicao` | FFI de `NvAPI_DISP_GetDisplayConfig` (origem com `bGDIPrimary`, `refreshRate1K` e `displayId` do alvo), `NvAPI_Disp_GetVRRInfo` e `NvAPI_GPU_GetConnectedDisplayIds`. Roda no serviço (sessão 0), como o DRS | 1 |
 | `nvt-detect::tela` | `QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS)` + `DisplayConfigGetDeviceInfo` (`DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME`, nome GDI da **origem**) para refresh racional; `EnumDisplaySettingsExW` para o maior refresh na resolução atual. **Só na sessão do usuário** (agente): `QueryDisplayConfig` devolve `ERROR_ACCESS_DENIED` sem acesso à sessão de console, e o `EnumDisplaySettingsExW` da sessão 0 enumera a tela virtual da sessão 0 | 2 (leitura e escrita no agente) |
 | `nvt-core::jogos` | `BaseJogos` (carga e validação de `regras/jogos.toml`), `IdJogo`, `Orientacao` | 1 |
-| `crates/nvt-windows` | leitura/escrita de registro por lista permitida, edição de token em `REG_SZ`, SPI, `SetDisplayConfig`, BCD via WMI, diagnósticos somente leitura | 2 |
+| `crates/nvt-windows` | leitura/escrita de registro por lista permitida, edição de token em `REG_SZ`, SPI, `SetDisplayConfig` e diagnósticos somente leitura | 2 |
 | `crates/nvt-agente` | binário do agente do usuário | 2 |
 | `crates/nvt-jogocfg` | editores que preservam bytes para INI (Unreal/Ubisoft) e KeyValues/VDF (Valve), resolvedor de caminhos, backup com SHA-256 | 3 |
 
@@ -506,11 +507,9 @@ Observações:
 instala UI, serviço e agente juntos. **Decisão do líder (§12):** a v4 leva só os campos
 que a fase 1 precisa (`Capacidades.refresh_mhz`/`vrr`, `Jogo.competitivo`/`em_execucao`/
 `orientacoes`, `adiamento`/`adiada`, os avisos `GsyncSemVrr`/`VrrDesligadoNoPainel` e os
-motivos da fase 1). As variantes de camada (`camada`, `AlvoIpc::Sistema`/`Usuario`/
-`ConfigJogo`, `ValorIpc` além de DWORD, mensagens do agente, `ConfirmarAcao`/`RecusarAcao`
-e os itens marcados F2/F3) entram na **v5**, no início da fase 2, com o modelo
-generalizado (F1-13). A tabela abaixo descreve o esquema completo; o que é de camada
-Windows/Jogo é v5.
+motivos da fase 1). A Fase 2 adota v5 para os campos e mensagens de §8.4.
+A tabela abaixo inclui o desenho generalizado para referência futura. O
+[plano de execução](fase2-plano.md) define o contrato da v5 para a Fase 2.
 
 | Mudança | Detalhe |
 |---|---|
@@ -521,7 +520,7 @@ Windows/Jogo é v5.
 | `Jogo` | `competitivo: Option<String>` (id da base), `em_execucao`, `orientacoes: Vec<String>` (códigos) |
 | `Estado` | `adiamento: Option<Adiamento { processos, desde, acao }>`; `avisos` ganha `GsyncSemVrr`, `VrrDesligadoNoPainel`; (F2) `reinicio_pendente`, `diagnosticos`, `agente: Option<EstadoAgente>` |
 | `Aplicacao` (resposta de `AplicarAgora`/`RestaurarOriginal`) | `adiada: Option<Adiamento>` |
-| `MotivoNaoAplicada` | novos: `VrrInativo`, `JogoComReflex`; (v5) `CamadaIndisponivel`; (F2) `RequerConfirmacao`, `RequerReinicio`, `AgenteAusente`, `BitLockerAtivo`; (F3) `ConfigPolitica { politica }`, `JanelaFechadaExigida { processos }`, `ArquivoNaNuvem`, `ArquivoSomenteLeitura`, `FormatoInesperado`, `ArquivoAlteradoPeloJogo`, `ContaAmbigua` |
+| `MotivoNaoAplicada` | novos: `VrrInativo`, `JogoComReflex`; (v5) `CamadaIndisponivel`; (F2) `AgenteAusente`; (F3) `ConfigPolitica { politica }`, `JanelaFechadaExigida { processos }`, `ArquivoNaNuvem`, `ArquivoSomenteLeitura`, `FormatoInesperado`, `ArquivoAlteradoPeloJogo`, `ContaAmbigua` |
 | Agente (F2) | `RegistrarAgente { versao }`, `RelatarFatosUsuario { fatos }`, `ObterTarefasUsuario`, `RelatarExecucaoUsuario { resultados, geracao_restauracao }`; resposta `Encerrar` (desinstalação, F2-11) |
 | Ações pendentes (F2) | `ConfirmarAcao { regra }`, `RecusarAcao { regra }` |
 
@@ -590,17 +589,17 @@ Só entram como **escrita** os itens recomendados/condicionais que sobreviveram 
 
 | # | Requisito | Verificação |
 |---|---|---|
-| F2-01 | Crate `nvt-windows` com armazéns `Sistema` (no serviço) e `Usuario` (no agente) implementando `ArmazemCamada`. Toda escrita confere o destino contra `regras/windows.toml` | testes com registro falso (`HKCU\Software\nv-tuner-teste`) |
+| F2-01 | `nvt-windows` oferece armazém `Usuario` no agente, com destinos da lista de §8.2. O serviço não grava ajustes do Windows. | testes com fachadas falsas |
 | F2-02 | Agente `nvt-agente` (6.2): registro no logon, mutex por sessão, conexão ao pipe, envio de fatos, execução de tarefas, snapshot e histórico em `%LOCALAPPDATA%\nv-tuner\usuario\`, relato ao serviço. Sem agente conectado, tarefas de usuário ficam com motivo `AgenteAusente` | teste de integração com pipe local (`crates/nvt-ipc/tests/pipe_local.rs` como modelo) |
 | F2-03 | O agente aplica o portão S1 localmente também (mesma lista vigiada do serviço, via `TH32CS_SNAPPROCESS`, que enumera todas as sessões sem abrir handle) antes de cada escrita | teste |
 | F2-04 | **Refresh máximo** por `QueryDisplayConfig`/`SetDisplayConfig` (não `ChangeDisplaySettingsExW`: perde o racional, revisão §1a). Só modos enumerados na **resolução atual**; nunca muda resolução nem profundidade. O snapshot guarda o identificador estável do alvo (caminho do dispositivo do monitor, `DISPLAYCONFIG_TARGET_DEVICE_NAME.monitorDevicePath`) e o refresh racional original; os vetores `DISPLAYCONFIG_PATH_INFO`/`DISPLAYCONFIG_MODE_INFO` **não** são reaproveitados depois (LUIDs de adaptador e índices de modo mudam entre boots e atualizações de driver). Aplicar e reverter = ler a configuração atual, trocar só o refresh daquele alvo e chamar `SetDisplayConfig` com `SDC_APPLY \| SDC_USE_SUPPLIED_DISPLAY_CONFIG \| SDC_SAVE_TO_DATABASE`. Após aplicar, relê; se o refresh lido não for o pedido, reverte e registra falha | teste com fachada falsa; laboratório L2-1 |
 | F2-05 | **Aceleração do mouse**: `SystemParametersInfoW(SPI_GETMOUSE)` lê o trio original; aplica `[0, 0, 0]` com `SPI_SETMOUSE` e `SPIF_UPDATEINIFILE \| SPIF_SENDCHANGE`; reverte para o trio original. Não toca `MouseSensitivity` | teste com fachada falsa; laboratório |
 | F2-06 | **Otimizações para jogos em janela**: edita só o token `SwapEffectUpgradeEnable` em `HKCU\Software\Microsoft\DirectX\UserGpuPreferences` → `DirectXUserGlobalSettings` (REG_SZ `k=v;`), preservando os demais tokens (`VRROptimizeEnable`, `AutoHDREnable` etc.) e a ordem. Reverter restaura o token original ou o remove se não existia; valor vazio após remover → apaga o valor (ou mantém `Ausente`, conforme o original). Não toca valores por executável | testes de token (tabela de casos) |
 | F2-07 | **Captura em segundo plano**: só se `HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR\HistoricalCaptureEnabled = 1`, grava `0` (DWORD). Não toca `AppCaptureEnabled`, `HKCU\System\GameConfigStore\GameDVR_Enabled` nem a política `AllowGameDVR` | teste |
-| F2-08 | **`useplatformclock`**: o serviço lê o elemento `BcdOSLoaderBoolean_UsePlatformClock` (`0x260000F2`, a confirmar) do objeto `{current}` pelo WMI `root\WMI` (`BcdStore`); só se estiver `true`, propõe removê-lo (`DeleteElement`). Exige `confirmacao = "usuario"` e marca `reinicio_pendente`. Se o volume do sistema tiver BitLocker com proteção ativa (`Win32_EncryptableVolume.ProtectionStatus = 1`, namespace `root\CIMV2\Security\MicrosoftVolumeEncryption`), não age: motivo `BitLockerAtivo` e orientação para suspender a proteção por um reinício (`manage-bde -protectors -disable C: -RebootCount 1`, executado pelo usuário). A **reversão** (regravar `true` com `SetBooleanElement`, só se o snapshot tinha `true`) passa pelas mesmas travas: BitLocker, confirmação do usuário e `reinicio_pendente`; nunca roda sem confirmação, nem na desinstalação | teste com fachada WMI falsa |
+| F2-08 | **`useplatformclock`** é diagnóstico. O serviço pode consultar o elemento do objeto atual via WMI `root\WMI`/`BcdStore` se a leitura for simples e verificável; caso contrário, mostrar orientação estática. | teste de leitura ou da orientação |
 | F2-09 | **Diagnósticos somente leitura** (8.3), apresentados com estado, recomendação e link oficial; nenhum gera escrita | teste: o armazém de diagnóstico não tem método de escrita |
 | F2-10 | Deriva da camada Windows: verificação no início do serviço/agente e a cada 10 min; mudança manual vira travada e é informada | teste |
-| F2-11 | Desinstalação: a restauração continua **opcional**, pela propriedade existente `RESTAURAR_PERFIL=1` (padrão `0`, `instalador/nv-tuner.wxs:83`). Com `1`, o MSI chama o serviço para restaurar driver (como hoje, `restore-original --yes`) e roda `nvt-agente --restaurar` como o usuário que desinstala (custom action diferida com `Impersonate="yes"`, `Return="ignore"`). A desinstalação **não** reverte o BCD (exige confirmação e reinício, F2-08): lista-o no log e a UI orienta antes. Na desinstalação, a regra S1 não pode adiar: com jogo detectado, a restauração é pulada e registrada no log do MSI. Antes de remover arquivos, o MSI pede ao agente que encerre (mensagem IPC `Encerrar`, ou Restart Manager), sem matar processo; a entrada `Run` é removida. Sem `RESTAURAR_PERFIL=1`, ou para outros usuários da máquina, as camadas de usuário ficam como estão (R10); a UI avisa que cada usuário deve usar “Restaurar original” antes | inspeção do `.wxs`; teste manual |
+| F2-11 | Desinstalação: a restauração continua **opcional**, pela propriedade existente `RESTAURAR_PERFIL=1` (padrão `0`, `instalador/nv-tuner.wxs`). Com `1`, o MSI chama o serviço para restaurar driver (como hoje, `restore-original --yes`) e roda `nvt-agente --restaurar` como o usuário que desinstala (custom action diferida com `Impersonate="yes"`, `Return="ignore"`). Na desinstalação, a regra S1 não pode adiar: com jogo detectado, a restauração é pulada e registrada no log do MSI. Antes de remover arquivos, o MSI pede ao agente que encerre (Restart Manager), sem matar processo; a entrada `Run` é removida. Sem `RESTAURAR_PERFIL=1`, as camadas ficam como estão; a ação direta do MSI só restaura o usuário que desinstala (R10); a UI avisa que cada usuário deve usar “Restaurar original” antes | inspeção do `.wxs`; teste manual |
 | F2-12 | Promessa pública com o item “Windows” (§4) | inspeção |
 
 ### 8.2 Regras e catálogo (`regras/windows.toml`)
@@ -613,12 +612,10 @@ Catálogo (lista permitida), um destino por entrada:
 | `mouse_aceleracao` | windows / usuario | `Spi(Mouse)` | `off = [0,0,0]`, `original` |
 | `dx_swap_effect_upgrade` | windows / usuario | `TokenRegistro { HKCU\Software\Microsoft\DirectX\UserGpuPreferences, DirectXUserGlobalSettings, SwapEffectUpgradeEnable }` | `on = "1"`, `off = "0"`, `ausente` |
 | `gamedvr_captura_historica` | windows / usuario | `Registro { HKCU\Software\Microsoft\Windows\CurrentVersion\GameDVR, HistoricalCaptureEnabled, DWORD }` | `off = 0`, `on = 1`, `ausente` |
-| `bcd_useplatformclock` | windows / sistema | `Bcd { 0x260000F2 }` | `ausente` (aplicação); `original` (só reversão para o valor do snapshot, N7) |
 
 Novas condições: `windows_build_min` (inteiro, `RtlGetVersion`), `refresh_abaixo_do_maximo`
 (bool), `mouse_aceleracao_ligada` (bool), `swap_effect_upgrade` (`on`/`off`/`ausente`),
-`captura_historica_ligada` (bool), `useplatformclock_ligado` (bool),
-`bitlocker_protegendo_sistema` (bool). Fatos de usuário vêm do agente; sem agente, são
+`captura_historica_ligada` (bool). Fatos de usuário vêm do agente; sem agente, são
 desconhecidos e nada casa.
 
 | Regra | Escopo | Condição | Valor | Evidência | Status de lançamento |
@@ -627,7 +624,6 @@ desconhecidos e nada casa.
 | `windows-mouse-sem-aceleracao` | usuario | `mouse_aceleracao_ligada = true` | `mouse_aceleracao = off` | Microsoft Learn `SystemParametersInfoW` (`SPI_SETMOUSE`); raw input ignora a curva (efeito em menus, MOBAs, jogos sem raw input); revisão §1b | experimental → estável após L2-2 |
 | `windows-otimizacoes-janela` | usuario | `windows_build_min = 22000`, `swap_effect_upgrade = ["off", "ausente"]` | `dx_swap_effect_upgrade = on` | DirectX Dev Blog (fev/2022) e Microsoft Support “Optimizations for windowed games”; chave por fonte comunitária (ElevenForum, TheWindowsClub); revisão §1e | experimental → estável após L2-3 |
 | `windows-captura-historica-off` | usuario | `captura_historica_ligada = true` | `gamedvr_captura_historica = off` | Xbox Wire (2016): gravação em segundo plano custa desempenho e vem desligada por padrão; corretivo (revisão §1d) | experimental → estável após L2-4 |
-| `windows-remover-useplatformclock` | sistema | `useplatformclock_ligado = true`, `bitlocker_protegendo_sistema = false` | `bcd_useplatformclock = ausente`; `requer_reinicio = true`; `confirmacao = "usuario"` | Microsoft Learn “Acquiring high-resolution time stamps” (timer de plataforma mais caro que o TSC); revisão §1f | experimental → estável após L2-5 |
 
 Todas com `impacto_visual = "nenhum"`. Game Mode **não** é escrito: efeito misto (revisão
 §1c); vira diagnóstico.
@@ -650,28 +646,29 @@ Todas com `impacto_visual = "nenhum"`. Game Mode **não** é escrito: efeito mis
 | `secure_boot` | `HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\State\UEFISecureBootEnabled` | idem; nota sobre certificados UEFI CA 2011 (a verificar, revisão §6) |
 | `iommu` | `Win32_DeviceGuard.AvailableSecurityProperties` / Kernel DMA Protection | FACEIT acima de 3.000 de Elo, Vanguard On-Demand |
 | `windows_11` | `RtlGetVersion` (build ≥ 22000) | FACEIT exige Windows 11 desde out/2026 |
+| `useplatformclock` | WMI no serviço, se viável (F2-08) | informa; orientação estática se a leitura não for adotada |
 | `polling_mouse` | — | orientação estática: ≥ 1000 Hz no software do mouse |
 
 ### 8.4 Arquitetura e IPC da fase 2
 
-- Armazém `Sistema` no serviço (BCD) e armazém `Usuario` no agente; `snapshot-sistema.json`
-  no serviço; `%LOCALAPPDATA%\nv-tuner\usuario\{estado.json,snapshot.json}` no agente,
-  com dono = usuário e ACL herdada do perfil.
-- `ResumoSistema` em `plan.resumos` (T-05).
-- IPC v5 (7.6, §12): camadas, mensagens do agente e `ConfirmarAcao`/`RecusarAcao`;
-  `Estado.reinicio_pendente`, `Estado.diagnosticos`, `Estado.agente`.
-- `windows-sys` ganha as features `Win32_Devices_Display`, `Win32_UI_WindowsAndMessaging`,
-  `Win32_System_Registry`, `Win32_System_Power`, `Win32_System_Diagnostics_ToolHelp`,
-  `Win32_System_RemoteDesktop` e `Win32_Security`. WMI/COM pelo crate `windows`
-  (Microsoft) no `nvt-windows`, sem crate de terceiros (decisão a confirmar no PR).
+- Modelo paralelo para `Usuario` no agente, com `%LOCALAPPDATA%\nv-tuner\usuario\{estado.json,snapshot.json}`.
+  O serviço mantém o modelo DRS, avalia as duas camadas e usa o token do cliente para
+  separar usuários e sessões. Ver o [plano de execução](fase2-plano.md).
+- IPC v5 com mensagens curtas do agente, `ResumoSistema`, diagnósticos, estado do agente,
+  restauração por geração e aceite experimental. T-04 fica adiado; ficam fora da v5
+  `ConfirmarAcao`, `RecusarAcao`, `confirmacao = usuario`, `requer_reinicio`,
+  `reinicio_pendente` e `BitLockerAtivo`. A Fase 2 não tem armazém de escrita `Sistema`.
+- Usar `windows-sys` para as fachadas Win32 e `windows` para WMI/COM quando necessário.
 
 ### 8.5 UI da fase 2
 
-- Aba **Windows** com três blocos: “O que o app fez” (mudanças, cada uma com reverter),
-  “Ações que pedem sua confirmação” (BCD, com aviso de reinício e de BitLocker) e
-  “Diagnóstico” (somente leitura, com links oficiais).
-- Indicador de agente: “ajustes do seu usuário: ativos / agente não está em execução”.
-- Faixa “reinício pendente” quando houver.
+- Aba **Windows** com “O que o app fez”, reversão individual, sugestões experimentais
+  e “Diagnóstico” com links oficiais.
+- “Aceitar” e “Retirar” por regra experimental para Windows e driver. Aceitar equivale
+  a habilitá-la como estável para fins de avaliação; a explicação indica “experimental
+  aceita por você”. Ao retirar, se a setting sair do plano, reverter pelo valor de
+  antes da gestão. O serviço persiste o aceite nas preferências do usuário.
+- Indicador de presença do agente e de restauração de usuário pendente.
 
 ### 8.6 Critérios de aceite da fase 2
 
@@ -681,9 +678,9 @@ Todas com `impacto_visual = "nenhum"`. Game Mode **não** é escrito: efeito mis
    agente não grava fora dos destinos `Usuario`.
 3. Nenhum processo externo é lançado (T-01 cobre `Command::new`).
 4. Diagnósticos sem nenhuma escrita (teste de tipo: armazém sem `gravar`).
-5. “Restaurar original” restaura driver, sistema e o usuário atual; outro usuário
-   restaura no próximo logon; o BCD só com confirmação (F2-08).
-6. Laboratório L2-1 a L2-6 registrados.
+5. “Restaurar original” restaura driver e ajustes do usuário por geração; um agente
+   ausente retoma a restauração no próximo contato.
+6. Laboratório L2-1 a L2-6 registrados. Assinatura de código é pré-requisito de lançamento.
 7. Com UI aberta e dois agentes (duas sessões) ativos, a UI nunca recebe tempo esgotado
    do pipe por causa dos agentes (conexões curtas, 6.2).
 
@@ -695,7 +692,7 @@ Todas com `impacto_visual = "nenhum"`. Game Mode **não** é escrito: efeito mis
 | L2-2 | Mouse | ligar “Aprimorar precisão do ponteiro”; app desliga; LoL (cursor do sistema) | sensação de mira/cursor consistente; reverter religa sem logoff |
 | L2-3 | Otimizações para jogos em janela | Rocket League e LoL em sem bordas (DX11), antes/depois | PresentMon `PresentMode` passa de `Composed: Copy…` para `…Independent Flip`; entrada→fóton igual ou menor |
 | L2-4 | Captura histórica | ligar “Gravar o que aconteceu”; app desliga | valor volta a 0; Game Bar continua funcionando |
-| L2-5 | `useplatformclock` | `bcdedit /set useplatformclock true` manual pelo mantenedor (BitLocker suspenso); app propõe; confirmar; reiniciar | elemento removido; frametime p99 em CS2 igual ou melhor |
+| L2-5 | `useplatformclock` | usar configuração de laboratório já conhecida ou simular indisponibilidade | diagnóstico compatível com a leitura ou orientação estática; BCD intacto |
 | L2-6 | Anticheat | CS2, Fortnite, R6, LoL abertos com agente e serviço ativos | sem erro de anticheat; agente sem handle para processo de jogo (Process Explorer sobre `nvt-agente`) |
 
 ---
@@ -793,7 +790,7 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
 | R5 | `Hz − Hz²/3600` não bater com o limite automático real em outros refreshes | o mínimo com `Hz − 3` garante a margem da Blur Busters; L1-2 confere a 240 Hz |
 | R6 | Migração de estado v1 → v2 corromper histórico | migração testada; cópia do `estado.json` v1 preservada como `estado.v1.json` |
 | R7 | `SetDisplayConfig` escolher timing diferente (modos personalizados do Painel NVIDIA, overclock de monitor) | só modos enumerados na resolução atual; releitura; reversão automática em falha; nunca com jogo aberto |
-| R8 | Remover ou restaurar `useplatformclock` disparar recuperação do BitLocker | não age (nem na reversão) com BitLocker protegendo; confirmação do usuário; nunca na desinstalação |
+| R8 | Leitura WMI de `useplatformclock` indisponível | orientação estática (D1) |
 | R9 | Agente ausente (desativado no logon, política corporativa) | motivo `AgenteAusente` visível; camada do driver segue funcionando |
 | R10 | Desinstalação deixar HKCU/arquivos alterados em outros usuários | F2-11 + aviso na UI; os itens de usuário escolhidos são todos de baixo impacto e fáceis de reverter manualmente |
 | R11 | Jogo/Steam Cloud regravar o arquivo e o usuário achar que o app “não funciona” | deriva vira escolha do usuário com mensagem explicando quem mudou |
@@ -817,7 +814,7 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
    (L1-7).
 6. **Monitor principal × monitor do jogo** em multimonitor com refreshes diferentes:
    o refresh do principal basta, ou é preciso um limite por jogo?
-7. **Elemento BCD** `0x260000F2` (`BcdOSLoaderBoolean_UsePlatformClock`) e GUID de
+7. **Resolvido (D1): BCD somente leitura.** Validar elemento e objeto atual apenas se a via WMI for adotada. BitLocker sai do escopo.
    `{current}` pelo provedor WMI; se `useplatformclock` faz parte do perfil de validação
    do BitLocker.
 8. **DRR (taxa dinâmica do Win11)**: onde ler o estado sem API pública.
@@ -831,14 +828,12 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
     menu de `FrameRateLimit`); chave de Reflex em `cs2_video.txt`.
 12. **Faixas do menu**: Dota 2 (`fps_max` até 240?), Deadlock, Rocket League, Fortnite.
 13. **Codificação real** dos arquivos (UTF-16LE em algum INI do Unreal?).
-14. **Opt-in de regras experimentais**: o produto precisa de um caminho para o usuário
-    aceitar uma sugestão, ou o laboratório basta (hoje se altera o status no TOML e
-    compila localmente)? Fora desta especificação até decisão.
+14. **Resolvido (D2):** aceite e retirada por regra, nas duas camadas, com persistência por usuário.
 15. **Energia por jogo** em notebook na bateria: falta o fato `em_bateria`
     (`GetSystemPowerStatus`); decidir se a regra exige `em_bateria = false`.
 16. **Páginas oficiais** de FACEIT, Steam (VAC/Trusted Mode) e Embark que retornaram 403/404
     na pesquisa: reconferir manualmente antes de cada lançamento (S8).
-17. **Assinatura de código**: fornecedor e custo, pré-requisito da fase 2 (R13).
+17. **Resolvido (D3):** assinatura exigida no lançamento da Fase 2. Fornecedor e custo pendentes.
 18. **NVAPI de exibição na sessão 0**: `NvAPI_DISP_GetDisplayConfig` e
     `NvAPI_Disp_GetVRRInfo` respondem no serviço (LocalSystem) como o DRS responde?
     Se não, a fase 1 precisa de outra fonte de refresh/VRR (antecipar um agente só de
@@ -852,10 +847,7 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
     não detecta nem liga. Com Reflex desligado em DX12, o jogo fica sem limite algum
     (L1-5). Alternativa: só remover o limite do driver depois de o usuário confirmar a
     orientação “Reflex ligado” (`confirmacao = "usuario"`).
-21. **Custo × valor do item `useplatformclock`**: exige WMI/COM, checagem de BitLocker,
-    confirmação, reinício e reversão com as mesmas travas, para um caso corretivo raro.
-    Alternativa mais barata e sem escrita no BCD: só diagnóstico com orientação. Decidir
-    antes de implementar a fase 2.
+21. **Resolvido (D1):** `useplatformclock` é diagnóstico, com orientação estática se a leitura WMI não for simples.
 22. **Corte de escopo sem perda de fluidez percebida** (candidatos): diagnósticos de
     segurança (`vbs_hvci`, `tpm`, `secure_boot`, `iommu`, `windows_11`), que não mexem
     em fluidez; `windows-captura-historica-off` (corretivo, padrão já é `0`);
@@ -864,13 +856,12 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
 23. **Orientação `modo_performance_opcional` (Fortnite)**: o modo Performance reduz
     folhagem e efeitos; conferir se não colide com o §2, item 5 (vantagem visual). Se
     colidir, retirar o código de orientação.
-24. **Regras experimentais não entram no plano** (`docs/regras.md`, “Status”): quase
-    toda escrita das fases 2 e 3 nasce `experimental`, então o ganho percebido de cada
-    fase depende de o laboratório promover as regras antes do lançamento. Os critérios
-    de aceite exigem só o registro do laboratório; decidir se a promoção é condição de
-    lançamento.
-25. **Padrão de `RESTAURAR_PERFIL`** com três camadas: continua `0` (decisão herdada da
-    v0.0.x) ou passa a `1`, já que agora há alterações de Windows e de arquivos?
+24. **Resolvido (D2):** experimental aceita pode entrar no plano. Promoção para estável depende da validação da regra; a fase pode lançar com regras experimentais.
+25. **Padrão de `RESTAURAR_PERFIL`:** continua `0` na Fase 2 (F2-11). A decisão para
+    três camadas fica para a Fase 3.
+
+26. **Resolvido (D4–D6):** agente interativo e avaliação exclusiva no serviço, modelo
+    paralelo preservando o DRS e IPC v5. Ver §12 e o plano de execução.
 
 ## 12. Registro de decisões (revisão × relatório)
 
@@ -896,7 +887,7 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
 | Plano de energia | `powercfg` | sobreposição do Win11, Modern Standby | revisão; só diagnóstico com `PowerGetActualOverlayScheme` |
 | Modelo generalizado e IPC de camadas na fase 1 | — | — (decisão do líder) | F1-13 (modelo generalizado de camadas, estado v2) e as variantes de IPC para as camadas Windows/Jogo ficam para o **início da fase 2**: não entregam valor perceptível na fase 1 e tocam quase todo o código. A fase 1 usa IPC v4 só com os campos que ela precisa; a fase 2 sobe para v5 (custo baixo: sem negociação, o MSI instala tudo junto) |
 | Fonte do refresh na fase 1 | `QueryDisplayConfig` | — (revisão da especificação) | NVAPI no serviço: as APIs Win32 de modo de vídeo não atendem a sessão 0; Win32 só no agente (fase 2) |
-| Reversão de `useplatformclock` | “só remover” | — (revisão da especificação) | “Tudo reversível” exige regravar o original; mesma trava de BitLocker e confirmação (N7, F2-08) |
+| Reversão de `useplatformclock` | “só remover” | reversão com travas | Decisão anterior substituída por D1. |
 | `MotivoNaoAplicada::JogoEmExecucao` (7.6) | — | — (decisão do líder) | Não criado: o adiamento (`Estado.adiamento` e respostas `adiada`) o substitui, pois o motor nunca deixa de aplicar uma regra por jogo aberto — ele adia a gravação inteira |
 | Critério de aceite 7.8, item 1 | — | — (decisão do líder) | Reescrito: como `sincronismo-gsync-limite` sai experimental (7.4), na fase 1 o limite aparece como sugestão experimental com o valor da tabela (224 a 240 Hz); entra no plano global só após a promoção com L1-2 e L1-3 |
 | Casamento da base (F1-03) | — | — (decisão do líder) | Na fase 1, nome do exe + AppID da Steam; ID de outros launchers fica para quando a base trouxer esses IDs |
@@ -904,3 +895,14 @@ renderização (Fortnite Performance fica como orientação), resolução ou FOV
 | Falha ao ler a lista de processos | — | — (decisão do líder, commit `ddccbdb`) | Falha fechada: se a lista de processos não puder ser lida, o portão (T-02) adia e a detecção não lê pastas de jogos |
 | Jogo fora da base com exe desconhecido | — | — (decisão do líder) | Risco residual aceito: jogo **fora** da base, de exe desconhecido, aberto sem nenhum processo vigiado (exes da base, `processos_protegidos`, `ANTICHEAT_SO_DURANTE_JOGO`), pode ter a pasta lida a partir da segunda varredura. Aceito porque a leitura usa compartilhamento total, sem mapear e sem tocar o processo (F1-08), e jogos com anticheat de kernel ou estão na base ou têm processo EAC/BattlEye vigiado; a alternativa (nunca analisar jogos fora da base) remove valor para muitos jogos |
 | Pendência de `RestaurarOriginal` | — | — (correção de revisão) | A pendência `RestaurarOriginal` passa a ser persistida, e a CLI de restauração sai com código ≠ 0 quando adiada |
+
+### Decisões do líder técnico para a Fase 2
+
+| ID | Decisão |
+|---|---|
+| D1 | `useplatformclock` fica apenas como diagnóstico (WMI `root\WMI`/`BcdStore` no serviço se simples, ou orientação estática). Sem escrita Windows pelo serviço, sem armazém `Sistema`; T-04 e os fluxos de confirmação, reinício e BitLocker ficam para uma ação futura que os exija. |
+| D2 | Aceite por regra experimental, persistido nas preferências por usuário no serviço. Vale para Windows e driver, inclusive regras da Fase 1. A UI oferece Aceitar/Retirar e identifica “experimental aceita por você”. Retirar faz a setting voltar ao valor de antes da gestão quando ela sai do plano. |
+| D3 | Assinatura de código é pré-requisito de lançamento da Fase 2. O desenvolvimento pode usar artefatos sem assinatura. |
+| D4 | Mantida §6.2: `nvt-agente` grava `Usuario` na sessão interativa; o serviço é o único avaliador. |
+| D5 | F1-13 limitado à camada `Usuario`: modelo paralelo com snapshot, releitura, histórico e travas, preservando o motor e estado DRS. Explicação, histórico e “Restaurar original” cobrem as duas camadas. Substitui a previsão de migração geral no início da Fase 2. |
+| D6 | IPC v5, sem negociação com v4; o instalador atualiza os componentes juntos. |
