@@ -182,6 +182,10 @@ pub enum Comando {
     ReverterAjusteUsuario {
         destino: SettingUsuario,
     },
+    /// Reversão individual de uma chave de arquivo de jogo (Fase 3).
+    ReverterConfigJogo {
+        destino: nvt_ipc::DestinoJogoIpc,
+    },
     /// O usuário dispensou o aviso “Atualizado para a vX” (U-47).
     MarcarAtualizacaoVista {
         versao: String,
@@ -216,6 +220,7 @@ impl Comando {
             Comando::Destravar { .. } => Some(textos::OK_DESTRAVADO),
             Comando::DefinirAceiteExperimental { .. } => Some(textos::OK_ACEITE),
             Comando::ReverterAjusteUsuario { .. } => Some(textos::OK_REVERSAO_USUARIO),
+            Comando::ReverterConfigJogo { .. } => Some(crate::arquivo_jogo::OK_REVERSAO_JOGO),
             Comando::MarcarAtualizacaoVista { .. } => None,
         }
     }

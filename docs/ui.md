@@ -231,6 +231,40 @@ LoL e TFT “jogo sem DLSS”) e `jogos-ada.png` (mesma máquina com
 `NVT_UI_SIMULAR_GPU=ada`). Ambas no modo de visualização (`--pipe` para um
 pipe inexistente, `--tela jogos --expandir WARDOGS`), sem gravar nada.
 
+#### Arquivo do jogo (Fase 3)
+
+Jogo com `jogo.config_jogo` (IPC v7) ganha, no fim da explicação expandida,
+a seção **Arquivo do jogo** (`arquivo_jogo.rs`). Para cada arquivo: o nome,
+o caminho já anonimizado pelo agente (`%USERPROFILE%\…`, nunca o nome do
+usuário), a conta escolhida, o estado do backup (“sem backup (nada foi
+gravado ainda)”, “original guardado e íntegro”, “backup ausente ou alterado:
+o app não grava mais neste arquivo”) e cada chave como
+`nome: antes → depois (situação)`, com o motivo quando não aplicada. Chave
+aplicada com `reversivel` tem o botão **Reverter**, que envia
+`ReverterConfigJogo`; a projeção v7 não traz a instância opaca, então o
+destino usa `conta` quando ela já está na forma canônica de instância e,
+senão, o botão fica desabilitado com a explicação.
+
+Orientações (`config_jogo.orientacoes`), uma frase por item:
+
+| Orientação | Texto |
+|---|---|
+| `fechar_steam` | Feche a Steam para aplicar. |
+| `fechar_jogo` | Feche o jogo para aplicar (processos). |
+| `desmarcar_somente_leitura` | Desmarque Somente leitura em `<arquivo>`. |
+| `ajustar_no_jogo` | O arquivo é sincronizado na nuvem: faça o ajuste no menu do jogo. |
+| `escolher_conta` | Mais de uma conta encontrada: abra o jogo com a conta que você usa. |
+
+Os motivos da Fase 3 (`config_politica`, `janela_fechada_exigida` — “Feche a
+Steam para aplicar” quando a lista tem `steam.exe`, senão “Feche o jogo para
+aplicar” —, `arquivo_na_nuvem`, `arquivo_somente_leitura`,
+`formato_inesperado`, `arquivo_alterado_pelo_jogo`, `conta_ambigua`,
+`arquivo_ausente`, `reparse_recusado`) têm texto curto e longo próprios;
+nenhum atribui a restrição a exigência de anticheat. Sugestões experimentais
+de config do jogo (regras `jogo-<id>-…` em `sugestoes_driver`) aparecem na
+mesma seção com **Aceitar**/**Retirar** (`DefinirAceiteExperimental`, o
+fluxo da Fase 2). A UI continua sem gravar nada.
+
 ### Mudanças (`mudancas.png`)
 
 O plano do driver é agrupado por perfil (global primeiro). Os ajustes do

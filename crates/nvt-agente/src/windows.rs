@@ -350,6 +350,7 @@ pub fn executar(restaurar: bool) -> io::Result<Controle> {
 
 fn executar_ciclo(perfil: &Perfil, sessao: u32, restaurar: bool) -> io::Result<Controle> {
     let mut agente = Agente::novo(Ajustes::novo()?, Pipe, Portao::do_sistema(), sessao)?;
+    agente.definir_ambiente_jogo(crate::config_jogo::AmbienteJogo::do_usuario());
     let limite_trava = Instant::now() + Duration::from_secs(15);
     let mut proxima_lista_sessoes = Instant::now();
     loop {

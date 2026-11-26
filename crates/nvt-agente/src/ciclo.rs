@@ -13,6 +13,7 @@ use nvt_ipc::{
     TarefaUsuario,
 };
 
+use crate::config_jogo::final_jogo;
 use crate::estado::{Backup, Destino, Intencao, Operacao, Trabalho};
 use crate::valores::{atingiu, iguais, mouse, mudanca, valido, valores};
 use crate::{EscritaUsuario, Estado, LeituraUsuario, Persistencia, ValorLido};
@@ -44,9 +45,12 @@ pub enum Controle {
 pub struct Agente<A, T> {
     pub armazem: A,
     pub transporte: T,
-    portao: Portao,
-    base: BaseJogos,
-    sessao: u32,
+    pub(crate) portao: Portao,
+    pub(crate) base: BaseJogos,
+    pub(crate) sessao: u32,
+    /// Perfil para arquivos de jogo (Fase 3); `None` desliga a família jogo.
+    #[cfg(windows)]
+    pub(crate) jogo: Option<crate::config_jogo::AmbienteJogo>,
     sessoes_existentes: Option<BTreeSet<u32>>,
     fatos_enviados: Option<FatosUsuario>,
     proxima_consulta: Instant,
@@ -87,6 +91,20 @@ fn confirmado(r: &ResultadoUsuario) -> bool {
     matches!(r.status, StatusMudanca::Aplicada | StatusMudanca::JaNoValor)
 }
 
+/// Mensagem de `--restaurar` bloqueado por arquivo de jogo; os backups ficam.
+fn bloqueio_jogo(r: &nvt_ipc::ResultadoJogo) -> String {
+    match &r.motivo {
+        Some(nvt_ipc::MotivoNaoAplicada::JanelaFechadaExigida { processos }) => format!(
+            "configuração de jogo não restaurada: feche {} e tente de novo (backups preservados)",
+            processos.join(", ")
+        ),
+        _ => format!(
+            "configuração de jogo não restaurada ({}): restauração pendente (backups preservados)",
+            r.destino.setting
+        ),
+    }
+}
+
 impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
     pub fn novo(armazem: A, transporte: T, portao: Portao, sessao: u32) -> io::Result<Self> {
         let agora = Instant::now();
@@ -104,7 +122,15 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             falhas: 0,
             indisponivel_desde: None,
             ausente_desde: Cell::new(None),
+            #[cfg(windows)]
+            jogo: None,
         })
+    }
+
+    /// Liga a configuração de arquivo de jogo sobre o perfil dado.
+    #[cfg(windows)]
+    pub fn definir_ambiente_jogo(&mut self, ambiente: crate::config_jogo::AmbienteJogo) {
+        self.jogo = Some(ambiente);
     }
 
     /// Uma lista confiável permite recuperar o snapshot do mesmo monitor após
@@ -164,15 +190,21 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             p,
             estado,
             vigiados: None,
+            cadeia: BTreeMap::new(),
         };
         let tela = exec.agente.armazem.tela();
         exec.recuperar_escopo_tela(&tela)?;
         exec.recuperar()?;
-        if restaurar && !exec.estado.destinos.iter().any(|d| exec.acessivel(d)) {
+        exec.recuperar_jogo()?;
+        if restaurar
+            && !exec.estado.destinos.iter().any(|d| exec.acessivel(d))
+            && !exec.estado.jogo.gerido()
+        {
             return Ok(Controle::Restaurado);
         }
         if agora >= exec.agente.proxima_deriva {
             exec.deriva()?;
+            exec.deriva_jogo()?;
             exec.agente.proxima_deriva = agora + Duration::from_secs(600);
         }
 
@@ -247,19 +279,24 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
                 .estado
                 .destinos
                 .iter()
-                .any(|d| exec.acessivel(d) && d.geracao_snapshot < plano.geracao_restauracao);
+                .any(|d| exec.acessivel(d) && d.geracao_snapshot < plano.geracao_restauracao)
+            || exec.geracao_jogo_pendente(plano.geracao_restauracao);
         if restaurar {
             let resultados = exec.restaurar_snapshot(None, None)?;
-            return Ok(resultados.values().find(|r| !confirmado(r)).map_or(
-                Controle::Restaurado,
-                |r| {
-                    Controle::Bloqueado(format!(
-                        "{:?}: {}",
-                        r.destino,
-                        r.detalhe.as_deref().unwrap_or("restauração pendente")
-                    ))
-                },
-            ));
+            let jogo = exec.restaurar_jogo(None, None)?;
+            if let Some(r) = resultados.values().find(|r| !confirmado(r)) {
+                return Ok(Controle::Bloqueado(format!(
+                    "{:?}: {}",
+                    r.destino,
+                    r.detalhe.as_deref().unwrap_or("restauração pendente")
+                )));
+            }
+            return Ok(jogo
+                .iter()
+                .find(|r| !final_jogo(r))
+                .map_or(Controle::Restaurado, |r| {
+                    Controle::Bloqueado(bloqueio_jogo(r))
+                }));
         }
 
         if exec.enviar_pendente(tarefa.as_ref())? == Controle::Encerrar {
@@ -275,14 +312,18 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             }
             let resultados =
                 exec.restaurar_snapshot(Some(plano.geracao_restauracao), ref_restauracao)?;
-            if resultados.values().all(confirmado) {
+            let jogo = exec.restaurar_jogo(Some(plano.geracao_restauracao), ref_restauracao)?;
+            if resultados.values().all(confirmado) && jogo.iter().all(final_jogo) {
                 if ref_restauracao.is_some() {
                     let trabalho = exec
                         .sessao_mut()
                         .trabalho
                         .as_mut()
                         .expect("tarefa iniciada");
-                    if !trabalho.pronto && trabalho.resultados.iter().all(confirmado) {
+                    if !trabalho.pronto
+                        && trabalho.resultados.iter().all(confirmado)
+                        && trabalho.resultados_jogo.iter().all(final_jogo)
+                    {
                         trabalho.geracao_concluida = Some(plano.geracao_restauracao);
                     }
                 } else {
@@ -297,17 +338,29 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
             }
         }
 
-        if let Some(tarefa) = tarefa {
+        // A tarefa de jogo corre junto da tarefa Windows de mesma referência ou,
+        // sem tarefa Windows, sozinha; com referências diferentes, espera a seguinte.
+        let referencia = tarefa
+            .as_ref()
+            .map(|t| t.tarefa)
+            .or(plano.tarefa_jogo.as_ref().map(|t| t.tarefa));
+        let tarefa_jogo = plano.tarefa_jogo.filter(|t| Some(t.tarefa) == referencia);
+        if let Some(referencia) = referencia {
             let geracao_ok = exec.sessao().geracao == plano.geracao_restauracao;
             if (geracao_ok && !nova_geracao)
-                || tarefa.acoes.contains(&AcaoUsuario::RestaurarSnapshot)
+                || tarefa
+                    .as_ref()
+                    .is_some_and(|t| t.acoes.contains(&AcaoUsuario::RestaurarSnapshot))
             {
-                exec.iniciar(&tarefa.tarefa)?;
+                exec.iniciar(&referencia)?;
                 if !exec.sessao().trabalho.as_ref().is_some_and(|t| t.pronto) {
-                    for acao in tarefa.acoes {
-                        exec.executar(acao, &tarefa.tarefa, plano.geracao_restauracao)?;
+                    for acao in tarefa.into_iter().flat_map(|t| t.acoes) {
+                        exec.executar(acao, &referencia, plano.geracao_restauracao)?;
                     }
-                    if exec.tem_intencao(&tarefa.tarefa) {
+                    for acao in tarefa_jogo.iter().flat_map(|t| &t.acoes) {
+                        exec.executar_jogo(acao, &referencia, plano.geracao_restauracao)?;
+                    }
+                    if exec.tem_intencao(&referencia) || exec.tem_intencao_jogo(&referencia) {
                         exec.agente.fatos_enviados = Some(fatos);
                         exec.agente.proxima_consulta = agora + Duration::from_secs(5);
                         return Ok(Controle::Continuar);
@@ -333,15 +386,17 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
     }
 }
 
-struct Execucao<'a, A, T, P> {
-    agente: &'a mut Agente<A, T>,
+pub(crate) struct Execucao<'a, A, T, P> {
+    pub(crate) agente: &'a mut Agente<A, T>,
     p: &'a P,
-    estado: Estado,
-    vigiados: Option<BTreeSet<String>>,
+    pub(crate) estado: Estado,
+    pub(crate) vigiados: Option<BTreeSet<String>>,
+    /// Hash de cada arquivo de jogo antes da tarefa e depois da última escrita dela.
+    pub(crate) cadeia: BTreeMap<std::path::PathBuf, (String, String)>,
 }
 
 impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execucao<'_, A, T, P> {
-    fn sessao(&self) -> &crate::estado::Sessao {
+    pub(crate) fn sessao(&self) -> &crate::estado::Sessao {
         &self.estado.sessoes[&self.agente.sessao]
     }
 
@@ -352,7 +407,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             .expect("sessão inicializada")
     }
 
-    fn salvar(&self) -> io::Result<()> {
+    pub(crate) fn salvar(&self) -> io::Result<()> {
         self.p.salvar(&self.estado)
     }
 
@@ -433,7 +488,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             }),
             diagnosticos: armazem.diagnosticos(),
             gestao: self.gestao(),
-            config_jogo: Vec::new(),
+            config_jogo: self.fatos_jogo(),
         }
     }
 
@@ -481,6 +536,14 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             || plano.revisao < self.sessao().revisao
         {
             return Err(erro("plano obsoleto"));
+        }
+        if plano.validar().is_err()
+            || plano
+                .tarefa_jogo
+                .as_ref()
+                .is_some_and(|t| t.tarefa.revisao != plano.revisao)
+        {
+            return Err(erro("tarefa de jogo obsoleta ou inválida"));
         }
         if plano.processos_vigiados.len() > 4096
             || plano.processos_vigiados.iter().any(|nome| {
@@ -593,6 +656,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             pronto: false,
             confirmado: false,
             geracao_concluida: None,
+            resultados_jogo: Vec::new(),
         });
         self.salvar()
     }
@@ -613,7 +677,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             operacao: t.tarefa.operacao,
             revisao: t.tarefa.revisao,
             resultados: t.resultados.clone(),
-            resultados_jogo: Vec::new(),
+            resultados_jogo: t.resultados_jogo.clone(),
         };
         match self.agente.transporte.trocar(&req)? {
             Resposta::Encerrar => return Ok(Controle::Encerrar),

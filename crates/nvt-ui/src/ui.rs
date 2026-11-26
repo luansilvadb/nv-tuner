@@ -27,6 +27,7 @@ use nvt_ipc::{
     NivelAviso, Qualidade, Reversao, Sincronismo, StatusMudanca, SugestaoExperimental,
 };
 
+use crate::arquivo_jogo as aj;
 use crate::modelo::{
     Comando, Conexao, EstadoUi, Evento, GrupoMudancas, ItemMudanca, Tela, TipoMensagem,
     destino_usuario, formatar_data, linha_setting,
@@ -627,7 +628,7 @@ impl Janela {
             v_flex()
                 .when(i % 2 == 1, |d| d.bg(tema.table_even))
                 .child(linha)
-                .when(aberto, |d| d.child(self.detalhe_jogo(&j, &tema)))
+                .when(aberto, |d| d.child(self.detalhe_jogo(i, &j, &tema, cx)))
         });
         v_flex()
             .gap_2()
@@ -649,7 +650,7 @@ impl Janela {
 
     /// Lista completa de um jogo: regras aplicadas (com as settings),
     /// não aplicadas (com o motivo) e o que herda do global.
-    fn detalhe_jogo(&self, j: &Jogo, tema: &Theme) -> Div {
+    fn detalhe_jogo(&self, i: usize, j: &Jogo, tema: &Theme, cx: &mut Context<Self>) -> Div {
         let titulo = |s: &'static str| {
             div()
                 .text_xs()
@@ -770,6 +771,107 @@ impl Janela {
             .child(nao_aplicadas)
             .child(herda)
             .children(faca_no_jogo)
+            .children(self.arquivo_do_jogo(i, j, tema, cx))
+    }
+
+    /// “Arquivo do jogo” (Fase 3): caminho anonimizado, antes/depois, backup,
+    /// Reverter, orientações e sugestões experimentais do jogo.
+    fn arquivo_do_jogo(
+        &self,
+        i: usize,
+        j: &Jogo,
+        tema: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let sugestoes = aj::sugestoes_do_jogo(j, &self.ui.dados.sugestoes_driver);
+        if j.config_jogo.is_none() && sugestoes.is_empty() {
+            return None;
+        }
+        let pode = self.ui.pode_escrever();
+        let sub = |s: String| div().text_xs().text_color(tema.muted_foreground).child(s);
+        let mut v = v_flex().gap_2().child(
+            div()
+                .text_xs()
+                .font_semibold()
+                .text_color(tema.muted_foreground)
+                .child(aj::SECAO_ARQUIVO_JOGO),
+        );
+        if let Some(c) = &j.config_jogo {
+            for (k, a) in c.arquivos.iter().enumerate() {
+                let mut bloco = v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .child(aj::nome_arquivo(&a.rotulo.0).to_owned()),
+                    )
+                    .child(sub(a.rotulo.0.clone()))
+                    .children(
+                        a.conta
+                            .as_ref()
+                            .map(|c| sub(format!("{}: {c}", aj::ROTULO_CONTA))),
+                    )
+                    .child(sub(format!(
+                        "{}: {}",
+                        aj::ROTULO_BACKUP,
+                        aj::backup(a.backup)
+                    )))
+                    .when(a.mudancas.is_empty(), |d| {
+                        d.child(sub(aj::SEM_MUDANCAS_ARQUIVO.into()))
+                    });
+                for (n, m) in a.mudancas.iter().enumerate() {
+                    let destino = (a.reversivel && m.status == nvt_ipc::StatusMudanca::Aplicada)
+                        .then(|| aj::destino_reverter(a, &m.setting));
+                    let mut linha = h_flex().gap_3().justify_between().child(
+                        div()
+                            .text_sm()
+                            .pl_3()
+                            .flex_1()
+                            .min_w_0()
+                            .child(format!("• {}", aj::linha_mudanca(m))),
+                    );
+                    if let Some(destino) = destino {
+                        let ok = pode && destino.is_some();
+                        let dica = if destino.is_none() {
+                            aj::REVERTER_INDISPONIVEL
+                        } else {
+                            t::SO_COM_SERVICO
+                        };
+                        linha = linha.child(
+                            Button::new(("reverter-jogo", i * 10_000 + k * 100 + n))
+                                .small()
+                                .outline()
+                                .label(t::BOTAO_REVERTER)
+                                .disabled(!ok)
+                                .when(!ok, |b| b.tooltip(dica))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(d) = &destino {
+                                        this.enviar(
+                                            Comando::ReverterConfigJogo { destino: d.clone() },
+                                            cx,
+                                        )
+                                    }
+                                })),
+                        );
+                    }
+                    bloco = bloco.child(linha);
+                }
+                v = v.child(bloco);
+            }
+            v = v.children(
+                aj::orientacoes(j)
+                    .into_iter()
+                    .map(|o| div().text_sm().font_semibold().child(o)),
+            );
+        }
+        if !sugestoes.is_empty() {
+            let lista: Vec<SugestaoExperimental> = sugestoes.into_iter().cloned().collect();
+            v = v
+                .child(sub(aj::SECAO_SUGESTOES_JOGO.into()))
+                .child(self.experimentais(&lista, tema, cx));
+        }
+        Some(v)
     }
 
     // -----------------------------------------------------------------------

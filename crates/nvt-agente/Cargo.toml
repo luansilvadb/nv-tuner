@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
+nvt-jogocfg = { path = "../nvt-jogocfg" }
 nvt-windows = { path = "../nvt-windows" }
 winreg = "0.56"
 windows-sys = { version = "0.61", features = [

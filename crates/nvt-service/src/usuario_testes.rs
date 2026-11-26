@@ -785,3 +785,461 @@ fn sessoes_agente_so_com_presenca() {
     assert_eq!(c.sessoes_agente(agora), esperado);
     assert!(c.sessoes_agente(agora + PRESENCA).is_empty());
 }
+
+// ── Família jogo (Fase 3, L2-d) ─────────────────────────────────────────────
+
+const R6: &str = "jogo-limite-no-jogo-r6";
+const ARQ_R6: &str = "r6-game-settings";
+
+fn h(c: char) -> String {
+    c.to_string().repeat(64)
+}
+
+fn destino_r6(instancia: &str) -> DestinoJogoIpc {
+    DestinoJogoIpc {
+        alvo: AlvoIpc::ConfigJogo {
+            jogo: "r6-siege".into(),
+            arquivo: ARQ_R6.into(),
+        },
+        setting: "r6_fps_limit".into(),
+        instancia: instancia.into(),
+    }
+}
+
+fn fato_r6(atual: i64, hash: &str, gestao: Vec<nvt_ipc::GestaoJogoIpc>) -> FatoConfigJogo {
+    FatoConfigJogo {
+        alvo: destino_r6("conta1").alvo,
+        instancia: "conta1".into(),
+        rotulo: nvt_ipc::RotuloCaminho(
+            "%USERPROFILE%\\Documents\\My Games\\Rainbow Six - Siege\\conta1\\GameSettings.ini"
+                .into(),
+        ),
+        presente: true,
+        hash: Some(hash.into()),
+        somente_leitura: false,
+        na_nuvem: false,
+        conta_ambigua: false,
+        backup: nvt_ipc::EstadoBackup::Integro,
+        valores: vec![nvt_ipc::ValorAtualJogo {
+            setting: "r6_fps_limit".into(),
+            valor: Fato::Conhecido(ValorJogoIpc::Inteiro(atual)),
+        }],
+        gestao,
+    }
+}
+
+fn gestao_r6(antes: i64, esperado: i64) -> nvt_ipc::GestaoJogoIpc {
+    nvt_ipc::GestaoJogoIpc {
+        setting: "r6_fps_limit".into(),
+        antes: ValorJogoIpc::Inteiro(antes),
+        esperado: ValorJogoIpc::Inteiro(esperado),
+        hash_antes: h('a'),
+        hash_depois: h('b'),
+        travado: false,
+    }
+}
+
+fn consultar_jogo(
+    c: &mut Coordenador,
+    id: &IdentidadeCliente,
+    agora: Instant,
+    geracao: u64,
+    jogo: Vec<FatoConfigJogo>,
+) -> PlanoAgente {
+    let mut f = fatos(0);
+    f.config_jogo = jogo;
+    let req = Requisicao::AgenteConsultar {
+        fatos: f,
+        ultima_tarefa: None,
+        geracao_restaurada: geracao,
+    };
+    let Some(Resposta::PlanoAgente(plano)) = c.tratar(id, &req, agora, 12) else {
+        panic!("esperado plano do agente");
+    };
+    plano
+}
+
+fn relato_jogo(tarefa: &TarefaJogo, resultados: Vec<ResultadoJogo>) -> Requisicao {
+    let ReferenciaTarefa {
+        id_tarefa,
+        operacao,
+        revisao,
+    } = tarefa.tarefa;
+    Requisicao::AgenteRelatar {
+        id_tarefa,
+        operacao,
+        revisao,
+        resultados: vec![],
+        resultados_jogo: resultados,
+    }
+}
+
+fn resultado(
+    status: StatusMudanca,
+    antes: i64,
+    depois: i64,
+    hash_antes: &str,
+    motivo: Option<MotivoNaoAplicada>,
+) -> ResultadoJogo {
+    let sucesso = matches!(status, StatusMudanca::Aplicada | StatusMudanca::JaNoValor);
+    ResultadoJogo {
+        destino: destino_r6("conta1"),
+        status,
+        motivo,
+        antes: Some(ValorJogoIpc::Inteiro(antes)),
+        depois: sucesso.then_some(ValorJogoIpc::Inteiro(depois)),
+        hash_antes: Some(hash_antes.into()),
+        hash_depois: sucesso.then(|| h('b')),
+        chaves_alteradas: vec![],
+    }
+}
+
+fn com_limite(memoria: Memoria) -> Coordenador {
+    let mut c = abrir(memoria);
+    c.definir_preferencias(&Preferences {
+        limite_fps: Some(141),
+        ..Default::default()
+    });
+    c
+}
+
+fn r6_efetivo(c: &Coordenador, sid: Option<&str>) -> bool {
+    c.limites_no_jogo_efetivos(sid)
+        .keys()
+        .any(|j| j.as_str() == "r6-siege")
+}
+
+#[test]
+fn jogo_exige_aceite_aplica_relato_idempotente_e_f313_so_do_sid_da_console() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    let b = cliente("S-1-5-21-2", 2);
+
+    // Sem aceite: só sugestão, nenhuma tarefa de jogo.
+    let p = consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('a'), vec![])]);
+    assert!(p.tarefa_jogo.is_none());
+    assert!(
+        plano_projetado(&c, &a, agora)
+            .sugestoes
+            .iter()
+            .any(|s| s.regra == R6 && s.estado == EstadoExperimental::Aceitavel)
+    );
+
+    aceite(&mut c, &a, agora, R6, true);
+    let p = consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('a'), vec![])]);
+    assert!(p.validar().is_ok());
+    let tarefa = p.tarefa_jogo.expect("tarefa de jogo");
+    assert_eq!(
+        tarefa.acoes,
+        vec![AcaoJogo::Aplicar {
+            destino: destino_r6("conta1"),
+            valor: ValorJogoIpc::Inteiro(141),
+            hash_esperado: h('a'),
+        }]
+    );
+    // A mesma consulta reaproveita a tarefa.
+    let p2 = consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('a'), vec![])]);
+    assert_eq!(p2.tarefa_jogo.as_ref(), Some(&tarefa));
+    // Ainda não aplicado: o driver mantém o limite.
+    assert!(!r6_efetivo(&c, Some(&a.sid)));
+
+    // Hash diferente do esperado ou destino fora da tarefa: recusado.
+    let errado = resultado(StatusMudanca::Aplicada, 0, 141, &h('c'), None);
+    assert!(recusado(c.tratar(
+        &a,
+        &relato_jogo(&tarefa, vec![errado]),
+        agora,
+        12
+    )));
+    let mut fora = resultado(StatusMudanca::Aplicada, 0, 141, &h('a'), None);
+    fora.destino = destino_r6("conta2");
+    assert!(recusado(c.tratar(
+        &a,
+        &relato_jogo(&tarefa, vec![fora]),
+        agora,
+        12
+    )));
+    let mut outro_jogo = resultado(StatusMudanca::Aplicada, 0, 141, &h('a'), None);
+    outro_jogo.destino.setting = "cs2_fps_max".into();
+    assert!(recusado(c.tratar(
+        &a,
+        &relato_jogo(&tarefa, vec![outro_jogo]),
+        agora,
+        12
+    )));
+    // Outra identidade não relata a tarefa.
+    let ok = resultado(StatusMudanca::Aplicada, 0, 141, &h('a'), None);
+    assert!(recusado(c.tratar(
+        &b,
+        &relato_jogo(&tarefa, vec![ok.clone()]),
+        agora,
+        12
+    )));
+
+    let req = relato_jogo(&tarefa, vec![ok.clone()]);
+    assert_eq!(c.tratar(&a, &req, agora, 12), Some(Resposta::Ok));
+    assert_eq!(c.tratar(&a, &req, agora, 12), Some(Resposta::Ok));
+    let diferente = resultado(StatusMudanca::Falhou, 0, 141, &h('a'), None);
+    assert!(recusado(c.tratar(
+        &a,
+        &relato_jogo(&tarefa, vec![diferente]),
+        agora,
+        12
+    )));
+    assert!(historico(&c, &a, agora).iter().any(
+        |e| e.setting.as_deref() == Some("r6_fps_limit") && e.depois.as_deref() == Some("141")
+    ));
+    assert!(historico(&c, &b, agora).is_empty());
+
+    // F3-13 só para o SID da console.
+    assert!(r6_efetivo(&c, Some(&a.sid)));
+    assert!(!r6_efetivo(&c, Some(&b.sid)));
+    assert!(!r6_efetivo(&c, None));
+    assert!(c.aceites_drs(Some(&a.sid)).is_empty());
+
+    // Releitura no valor: nada a fazer, continua efetivo; projeção só do SID.
+    let p = consultar_jogo(
+        &mut c,
+        &a,
+        agora,
+        0,
+        vec![fato_r6(141, &h('b'), vec![gestao_r6(0, 141)])],
+    );
+    assert!(p.tarefa_jogo.is_none());
+    assert!(r6_efetivo(&c, Some(&a.sid)));
+    let ui = c.config_jogo_ui(&a, agora);
+    let arquivo = &ui["r6-siege"].arquivos[0];
+    assert!(arquivo.reversivel);
+    assert_eq!(arquivo.mudancas[0].status, StatusMudanca::JaNoValor);
+    assert!(ui["r6-siege"].validar().is_ok());
+    assert!(c.config_jogo_ui(&b, agora).is_empty());
+
+    // Retirar o aceite devolve o original.
+    aceite(&mut c, &a, agora, R6, false);
+    assert!(!r6_efetivo(&c, Some(&a.sid)));
+    let p = consultar_jogo(
+        &mut c,
+        &a,
+        agora,
+        0,
+        vec![fato_r6(141, &h('b'), vec![gestao_r6(0, 141)])],
+    );
+    let t = p.tarefa_jogo.expect("restauração");
+    assert_eq!(t.tarefa.operacao, OperacaoUsuario::Restaurar);
+    assert!(
+        matches!(&t.acoes[..], [AcaoJogo::Restaurar { hash_esperado, .. }] if *hash_esperado == h('b'))
+    );
+}
+
+#[test]
+fn falha_mantem_limite_do_driver_nao_repete_e_adiamento_orienta() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    aceite(&mut c, &a, agora, R6, true);
+    let jogo = || vec![fato_r6(0, &h('a'), vec![])];
+
+    let t = consultar_jogo(&mut c, &a, agora, 0, jogo())
+        .tarefa_jogo
+        .unwrap();
+    let falha = resultado(
+        StatusMudanca::Falhou,
+        0,
+        0,
+        &h('a'),
+        Some(MotivoNaoAplicada::FormatoInesperado),
+    );
+    assert_eq!(
+        c.tratar(&a, &relato_jogo(&t, vec![falha]), agora, 12),
+        Some(Resposta::Ok)
+    );
+    assert!(!r6_efetivo(&c, Some(&a.sid)));
+    // Mesmo arquivo: não regrava em loop.
+    assert!(
+        consultar_jogo(&mut c, &a, agora, 0, jogo())
+            .tarefa_jogo
+            .is_none()
+    );
+    // Arquivo mudou: tenta de novo.
+    let t = consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('c'), vec![])])
+        .tarefa_jogo
+        .unwrap();
+    let adiado = resultado(
+        StatusMudanca::Pendente,
+        0,
+        0,
+        &h('c'),
+        Some(MotivoNaoAplicada::JanelaFechadaExigida {
+            processos: vec!["RainbowSix.exe".into(), "steam.exe".into()],
+        }),
+    );
+    assert_eq!(
+        c.tratar(&a, &relato_jogo(&t, vec![adiado]), agora, 12),
+        Some(Resposta::Ok)
+    );
+    assert!(!r6_efetivo(&c, Some(&a.sid)));
+    let ui = c.config_jogo_ui(&a, agora);
+    let ui = &ui["r6-siege"];
+    assert!(ui.orientacoes.contains(&OrientacaoConfigJogo::FecharSteam));
+    assert!(ui.orientacoes.contains(&OrientacaoConfigJogo::FecharJogo {
+        processos: vec!["RainbowSix.exe".into()],
+    }));
+    assert!(ui.validar().is_ok());
+    // Adiamento é tentado de novo na próxima consulta.
+    assert!(
+        consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('c'), vec![])])
+            .tarefa_jogo
+            .is_some()
+    );
+
+    // Somente leitura e conta ambígua: sem tarefa, com orientação.
+    let mut f = fato_r6(0, &h('d'), vec![]);
+    f.somente_leitura = true;
+    f.conta_ambigua = true;
+    assert!(
+        consultar_jogo(&mut c, &a, agora, 0, vec![f])
+            .tarefa_jogo
+            .is_none()
+    );
+    let ui = c.config_jogo_ui(&a, agora);
+    assert!(
+        ui["r6-siege"]
+            .orientacoes
+            .contains(&OrientacaoConfigJogo::DesmarcarSomenteLeitura)
+    );
+    assert!(
+        ui["r6-siege"]
+            .orientacoes
+            .contains(&OrientacaoConfigJogo::EscolherConta)
+    );
+}
+
+#[test]
+fn reidratacao_valida_catalogo_e_reverter_usa_valor_de_antes() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    let b = cliente("S-1-5-21-2", 2);
+    aceite(&mut c, &a, agora, R6, true);
+
+    // Gestão fora do catálogo (setting de outro jogo) é ignorada.
+    let mut estranha = gestao_r6(0, 141);
+    estranha.setting = "cs2_fps_max".into();
+    let p = consultar_jogo(
+        &mut c,
+        &a,
+        agora,
+        0,
+        vec![fato_r6(141, &h('b'), vec![gestao_r6(60, 141), estranha])],
+    );
+    assert!(p.tarefa_jogo.is_none());
+    let pedido = |destino| Requisicao::ReverterConfigJogo { destino };
+    let mut cs2 = destino_r6("conta1");
+    cs2.setting = "cs2_fps_max".into();
+    assert!(recusado(c.tratar(&a, &pedido(cs2), agora, 12)));
+    assert!(recusado(c.tratar(
+        &a,
+        &pedido(destino_r6("conta2")),
+        agora,
+        12
+    )));
+    // Outro SID não reverte a gestão desta sessão.
+    assert!(recusado(c.tratar(
+        &b,
+        &pedido(destino_r6("conta1")),
+        agora,
+        12
+    )));
+
+    assert_eq!(
+        c.tratar(&a, &pedido(destino_r6("conta1")), agora, 12),
+        Some(Resposta::Ok)
+    );
+    // Reidratação sem a gestão não apaga o que já se conhece.
+    let t = consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(141, &h('b'), vec![])])
+        .tarefa_jogo
+        .expect("reversão");
+    assert_eq!(t.tarefa.operacao, OperacaoUsuario::Reverter);
+    // Reversão volta ao valor de antes da gestão (60), não a outro.
+    let errado = resultado(StatusMudanca::Aplicada, 141, 0, &h('b'), None);
+    assert!(recusado(c.tratar(
+        &a,
+        &relato_jogo(&t, vec![errado]),
+        agora,
+        12
+    )));
+    let ok = resultado(StatusMudanca::Aplicada, 141, 60, &h('b'), None);
+    assert_eq!(
+        c.tratar(&a, &relato_jogo(&t, vec![ok]), agora, 12),
+        Some(Resposta::Ok)
+    );
+    // Travado após a reversão: o plano não reaplica.
+    assert!(
+        consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(60, &h('c'), vec![])])
+            .tarefa_jogo
+            .is_none()
+    );
+    assert!(!r6_efetivo(&c, Some(&a.sid)));
+    assert!(recusado(c.tratar(
+        &a,
+        &pedido(destino_r6("conta1")),
+        agora,
+        12
+    )));
+}
+
+#[test]
+fn restauracao_por_geracao_cobre_config_de_jogo_e_revisao_obsoleta() {
+    let agora = Instant::now();
+    let mut c = com_limite(Memoria::default());
+    let a = cliente("S-1-5-21-1", 1);
+    aceite(&mut c, &a, agora, R6, true);
+    let t = consultar_jogo(&mut c, &a, agora, 0, vec![fato_r6(0, &h('a'), vec![])])
+        .tarefa_jogo
+        .unwrap();
+    // Nova geração invalida a tarefa em voo: relato obsoleto descartado.
+    c.atualizar_restauracao(1, true);
+    let ok = resultado(StatusMudanca::Aplicada, 0, 141, &h('a'), None);
+    assert!(recusado(c.tratar(
+        &a,
+        &relato_jogo(&t, vec![ok]),
+        agora,
+        12
+    )));
+
+    let p = consultar_jogo(
+        &mut c,
+        &a,
+        agora,
+        0,
+        vec![fato_r6(141, &h('b'), vec![gestao_r6(0, 141)])],
+    );
+    let t = p.tarefa_jogo.expect("restauração por geração");
+    assert_eq!(t.tarefa.operacao, OperacaoUsuario::Restaurar);
+    assert_eq!(
+        t.acoes,
+        vec![AcaoJogo::Restaurar {
+            destino: destino_r6("conta1"),
+            hash_esperado: h('b'),
+        }]
+    );
+    let ok = resultado(StatusMudanca::Aplicada, 141, 0, &h('b'), None);
+    assert_eq!(
+        c.tratar(&a, &relato_jogo(&t, vec![ok]), agora, 12),
+        Some(Resposta::Ok)
+    );
+    assert!(!r6_efetivo(&c, Some(&a.sid)));
+}
+
+#[test]
+fn usuarios_json_antigo_sem_resultados_jogo_carrega() {
+    let json = r#"{"por_sid":{"S-1-5-21-1":{"aceites":["windows-captura-historica-off"],
+        "historico":[],"recibos":{"1":[{"tarefa":{"id_tarefa":7,"operacao":"aplicar","revisao":3},
+        "resultados":[]}]},"atualizacao_vista":null}}}"#;
+    let dados: DadosUsuarios = serde_json::from_str(json).unwrap();
+    let recibo = &dados.por_sid["S-1-5-21-1"].recibos[&1][0];
+    assert!(recibo.resultados_jogo.is_empty());
+    let texto = serde_json::to_string(&dados).unwrap();
+    assert!(!texto.contains("resultados_jogo"));
+}

@@ -408,10 +408,13 @@ fn fora_do_menu_e_descartado() {
             .any(|d| d.destino.setting == SettingJogo::R6FpsLimit
                 && d.motivo == MotivoDescarteJogo::ForaDoMenu { pedido: 25 })
     );
+    assert!(valor(&p, SettingJogo::Cs2FpsMax).is_none());
+    let p = plano(&fatos_todos(), Some(45), None);
     assert_eq!(
-        valor(&p, SettingJogo::Cs2FpsMax),
-        Some(&ValorJogo::TokenLancamento(Some(25)))
+        valor(&p, SettingJogo::R6FpsLimit),
+        Some(&ValorJogo::Inteiro(45))
     );
+    assert!(valor(&p, SettingJogo::Cs2FpsMax).is_none());
     let p = plano(&fatos_todos(), Some(300), None);
     assert!(valor(&p, SettingJogo::Dota2FpsMax).is_none());
     assert!(

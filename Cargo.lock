@@ -4515,6 +4515,7 @@ dependencies = [
  "nvt-detect",
  "nvt-engine",
  "nvt-ipc",
+ "nvt-jogocfg",
  "nvt-windows",
  "serde",
  "serde_json",

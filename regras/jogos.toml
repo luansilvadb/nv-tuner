@@ -242,7 +242,10 @@ setting = "r6_fps_limit"
 secao = "DISPLAY"
 chave = "FPSLimit"
 tipo = "inteiro"
-faixa = { min = 30, max = 1000 }             # abaixo de 30 desliga o limitador; teto a medir (L3-1)
+# Mínimo 30 confirmado (Ubisoft: abaixo de 30 desliga o limitador). Teto sem
+# fonte: 360 é conservador (maior teto de menu documentado na pesquisa, o do
+# Fortnite pela Epic; há relato de travamento acima de 100). A medir em L3-1.
+faixa = { min = 30, max = 360 }
 
 [[arquivo.chave]]
 setting = "r6_reflex"
@@ -310,7 +313,11 @@ setting = "cs2_fps_max"
 chave = "UserLocalConfigStore/Software/Valve/Steam/apps/730/LaunchOptions"
 token = "+fps_max"
 tipo = "token_lancamento"
-faixa = { min = 20, max = 1000 }             # mesma faixa do limite do usuário
+# +fps_max confirmado (totalcsgo; Prima). 0 = sem limite e exige V-Sync off:
+# o app nunca grava 0 (o mínimo da faixa impede). Faixa sem fonte: 60-360 é
+# conservadora (piso do menu do Dota 2, mesmo motor; teto igual ao do R6).
+# A medir em L3-3.
+faixa = { min = 60, max = 360 }
 
 [[arquivo]]
 id = "cs2-video"
@@ -373,7 +380,7 @@ quando = { jogo = ["r6-siege"], limite_fps_definido = true }
 aplicar = { r6_fps_limit = { preferencia = "limite_fps" } }
 limite_no_jogo = true
 impacto_visual = "nenhum"
-motivo = "O limitador do jogo segura a CPU e a fila melhor que o do driver; o driver fica sem limite para não empilhar."
+motivo = "Usa o limitador do próprio jogo; o driver fica sem limite para não empilhar dois limitadores. Efeito na latência a medir."
 evidencia = "https://www.ubisoft.com/en-us/game/rainbow-six/siege/news-updates/7MPHeuO6hPcy49Mdc3rbDg/100-cpu-usage"
 
 [[regra]]
@@ -385,8 +392,8 @@ quando = { jogo = ["cs2", "dota2"], limite_fps_definido = true }
 aplicar = { cs2_fps_max = { preferencia = "limite_fps" }, dota2_fps_max = { preferencia = "limite_fps" } }
 limite_no_jogo = true
 impacto_visual = "nenhum"
-motivo = "fps_max é o limitador do motor; o driver fica sem limite para não empilhar."
-evidencia = "https://totalcsgo.com/commands/fpsmax; https://www.esportstales.com/dota-2/how-to-increase-fps-video-settings-launch-options"
+motivo = "fps_max é o limitador do motor; o driver fica sem limite para não empilhar dois limitadores. Efeito na latência a medir."
+evidencia = "https://totalcsgo.com/commands/fpsmax; https://primagames.com/tips/how-to-cap-fps-in-counter-strike;https://www.esportstales.com/dota-2/how-to-increase-fps-video-settings-launch-options"
 
 [[regra]]
 id = "jogo-dota2-fps-max-padrao"
@@ -407,5 +414,5 @@ escopo = "config_jogo"
 quando = { jogo = ["rocket-league"] }
 aplicar = { rl_one_frame_thread_lag = { booleano = false } }
 impacto_visual = "nenhum"
-motivo = "Desligar OneFrameThreadLag reduz a latência ao custo de algum FPS."
+motivo = "Desliga o quadro extra de fila; relatos de usuários indicam menos latência ao custo de algum FPS, ainda não medido."
 evidencia = "https://steamcommunity.com/app/252950/discussions/0/3192489717248185958"

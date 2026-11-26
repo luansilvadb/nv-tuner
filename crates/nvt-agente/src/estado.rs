@@ -19,6 +19,9 @@ pub struct Estado {
     pub(crate) destinos: Vec<Destino>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) backups_msi: Vec<Backup>,
+    /// Arquivos de jogo geridos (Fase 3); estado v6 carrega sem eles.
+    #[serde(default, skip_serializing_if = "crate::config_jogo::EstadoJogo::vazio")]
+    pub(crate) jogo: crate::config_jogo::EstadoJogo,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +46,9 @@ pub(crate) struct Trabalho {
     pub confirmado: bool,
     #[serde(default)]
     pub geracao_concluida: Option<u64>,
+    /// Resultados das ações de arquivo de jogo (v7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resultados_jogo: Vec<nvt_ipc::ResultadoJogo>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

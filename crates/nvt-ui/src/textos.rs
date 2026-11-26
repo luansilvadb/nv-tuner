@@ -795,8 +795,18 @@ pub fn motivo_curto(m: &MotivoNaoAplicada) -> String {
         MotivoNaoAplicada::CondicaoNaoAtendida { .. } => "condições da regra não atendidas".into(),
         MotivoNaoAplicada::VrrInativo => "G-SYNC (VRR) não está ativo".into(),
         MotivoNaoAplicada::JogoComReflex => "o jogo tem Reflex, que já cuida disso".into(),
-        // Motivos de arquivo de jogo (v7): textos próprios ficam para a L2-e.
-        _ => "condições da regra não atendidas".into(),
+        // Motivos de arquivo de jogo (v7, Fase 3).
+        MotivoNaoAplicada::ConfigPolitica { .. }
+        | MotivoNaoAplicada::JanelaFechadaExigida { .. }
+        | MotivoNaoAplicada::ArquivoNaNuvem
+        | MotivoNaoAplicada::ArquivoSomenteLeitura
+        | MotivoNaoAplicada::FormatoInesperado
+        | MotivoNaoAplicada::ArquivoAlteradoPeloJogo
+        | MotivoNaoAplicada::ContaAmbigua
+        | MotivoNaoAplicada::ArquivoAusente
+        | MotivoNaoAplicada::ReparseRecusado => {
+            crate::arquivo_jogo::motivo_curto_jogo(m).unwrap_or_default()
+        }
     }
 }
 
@@ -864,7 +874,17 @@ pub fn motivo_longo(m: &MotivoNaoAplicada) -> String {
             jogo tem Reflex: ligue-o nas opções do jogo, que ele já controla a fila de quadros \
             e a latência."
             .into(),
-        _ => "Condições da regra não atendidas.".into(),
+        MotivoNaoAplicada::ConfigPolitica { .. }
+        | MotivoNaoAplicada::JanelaFechadaExigida { .. }
+        | MotivoNaoAplicada::ArquivoNaNuvem
+        | MotivoNaoAplicada::ArquivoSomenteLeitura
+        | MotivoNaoAplicada::FormatoInesperado
+        | MotivoNaoAplicada::ArquivoAlteradoPeloJogo
+        | MotivoNaoAplicada::ContaAmbigua
+        | MotivoNaoAplicada::ArquivoAusente
+        | MotivoNaoAplicada::ReparseRecusado => {
+            crate::arquivo_jogo::motivo_longo_jogo(m).unwrap_or_default()
+        }
     }
 }
 

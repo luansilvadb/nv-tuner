@@ -268,6 +268,9 @@ impl Trabalhador {
                 },
                 destino: destino.clone(),
             },
+            Comando::ReverterConfigJogo { destino } => Requisicao::ReverterConfigJogo {
+                destino: destino.clone(),
+            },
             Comando::MarcarAtualizacaoVista { versao } => Requisicao::MarcarAtualizacaoVista {
                 versao: versao.clone(),
             },
