@@ -50,6 +50,8 @@ struct Ajustes {
     releituras: Cell<usize>,
     crash: Option<usize>,
     divergencia: Option<ValorLido>,
+    #[cfg(windows)]
+    compensacao_interna: bool,
 }
 
 impl LeituraUsuario for Ajustes {
@@ -85,6 +87,7 @@ impl EscritaUsuario for Ajustes {
         destino: &SettingUsuario,
         antes: &ValorLido,
         pedido: &ValorLido,
+        _restauracao: bool,
         autorizar: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         assert_eq!(self.valores.get(destino), Some(antes));
@@ -96,16 +99,27 @@ impl EscritaUsuario for Ajustes {
             .unwrap();
         assert!(entrada.intencao.is_some());
         autorizar()?;
-        self.valores.insert(
-            destino.clone(),
-            self.divergencia.take().unwrap_or_else(|| pedido.clone()),
-        );
+        let lido = self.divergencia.take().unwrap_or_else(|| pedido.clone());
+        self.valores.insert(destino.clone(), lido.clone());
         self.gravacoes.push(destino.clone());
         assert_ne!(
             self.crash,
             Some(self.gravacoes.len()),
             "crash depois de gravar"
         );
+        #[cfg(windows)]
+        if self.compensacao_interna && !iguais(&lido, pedido) {
+            use nvt_windows::Erro;
+            let compensacao = autorizar().map_err(|_| Box::new(Erro::Bloqueado));
+            if compensacao.is_ok() {
+                self.valores.insert(destino.clone(), antes.clone());
+                self.gravacoes.push(destino.clone());
+            }
+            return Err(io::Error::other(Erro::RefreshNaoConfirmado {
+                falha: Box::new(Erro::Releitura),
+                compensacao,
+            }));
+        }
         Ok(())
     }
 }
@@ -179,6 +193,8 @@ fn preparar(fonte: ProcessosFalsos) -> (Memoria, Agente<Ajustes, Servico>, Insta
         releituras: Cell::new(0),
         crash: None,
         divergencia: None,
+        #[cfg(windows)]
+        compensacao_interna: false,
     };
     let servico = Servico {
         persistencia: Memoria(dados.clone()),
@@ -399,12 +415,18 @@ fn restauracao_msi_exige_lista_atual_e_portao() {
     a.passo(&p, agora, false).unwrap();
     a.portao = Portao::new(ProcessosFalsos::com_nomes(&["servico-extra.exe"]));
     responder(&mut a, [plano(2, 0, OperacaoUsuario::Aplicar, Vec::new())]);
-    assert_eq!(a.passo(&p, agora, true).unwrap(), Controle::Bloqueado);
+    assert!(matches!(
+        a.passo(&p, agora, true).unwrap(),
+        Controle::Bloqueado(motivo) if motivo.contains("jogo ou anticheat")
+    ));
     assert_eq!(a.armazem.gravacoes, [DVR]);
     a.portao = Portao::new(ProcessosFalsos::default());
     responder(&mut a, [plano(2, 0, OperacaoUsuario::Aplicar, Vec::new())]);
     assert_eq!(a.passo(&p, agora, true).unwrap(), Controle::Restaurado);
     assert_eq!(a.armazem.gravacoes, [DVR, DVR]);
+    let estado = p.carregar().unwrap();
+    assert!(estado.destinos.is_empty());
+    assert_eq!(estado.backups_msi[0].valor.valor, ValorUsuario::Dword(1));
 }
 
 fn taxa(hz: u32) -> RefreshRacional {
@@ -450,30 +472,43 @@ fn compensa_refresh_so_com_novo_portao_e_intencao_persistida() {
             Ok(Vec::new())
         }
     }
-    let (p, mut a, agora) = preparar(ProcessosFalsos::default());
-    a.portao = Portao::new(Sequencia(AtomicUsize::new(0)));
-    let destino = SettingUsuario::Refresh {
-        alvo: "monitor".into(),
-    };
-    a.armazem.valores.insert(destino.clone(), refresh(60));
-    a.armazem.divergencia = Some(refresh(120));
-    responder(&mut a, [aplicar_refresh(1)]);
-    a.passo(&p, agora, false).unwrap();
-    assert_eq!(a.armazem.valores[&destino], refresh(120));
-    assert_eq!(a.armazem.gravacoes.len(), 1);
-    assert!(
-        p.carregar().unwrap().destinos[0]
-            .intencao
-            .as_ref()
-            .unwrap()
-            .rollback
-            .is_some()
-    );
-    responder(&mut a, [aplicar_refresh(1), Resposta::Ok]);
-    a.passo(&p, agora + Duration::from_secs(5), false).unwrap();
-    assert_eq!(a.armazem.valores[&destino], refresh(60));
-    assert_eq!(a.armazem.gravacoes.len(), 2);
-    assert_eq!(ultimo_status(&a), StatusMudanca::Falhou);
+    #[cfg(windows)]
+    for compensacao_interna in [false, true] {
+        conferir(compensacao_interna);
+    }
+    #[cfg(not(windows))]
+    conferir(false);
+
+    fn conferir(_compensacao_interna: bool) {
+        let (p, mut a, agora) = preparar(ProcessosFalsos::default());
+        #[cfg(windows)]
+        {
+            a.armazem.compensacao_interna = _compensacao_interna;
+        }
+        a.portao = Portao::new(Sequencia(AtomicUsize::new(0)));
+        let destino = SettingUsuario::Refresh {
+            alvo: "monitor".into(),
+        };
+        a.armazem.valores.insert(destino.clone(), refresh(60));
+        a.armazem.divergencia = Some(refresh(120));
+        responder(&mut a, [aplicar_refresh(1)]);
+        a.passo(&p, agora, false).unwrap();
+        assert_eq!(a.armazem.valores[&destino], refresh(120));
+        assert_eq!(a.armazem.gravacoes.len(), 1);
+        assert!(
+            p.carregar().unwrap().destinos[0]
+                .intencao
+                .as_ref()
+                .unwrap()
+                .rollback
+                .is_some()
+        );
+        responder(&mut a, [aplicar_refresh(1), Resposta::Ok]);
+        a.passo(&p, agora + Duration::from_secs(5), false).unwrap();
+        assert_eq!(a.armazem.valores[&destino], refresh(60));
+        assert_eq!(a.armazem.gravacoes.len(), 2);
+        assert_eq!(ultimo_status(&a), StatusMudanca::Falhou);
+    }
 }
 
 #[test]

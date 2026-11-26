@@ -4491,9 +4491,11 @@ dependencies = [
  "nvt-detect",
  "nvt-engine",
  "nvt-ipc",
+ "nvt-windows",
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+ "winreg",
 ]
 
 [[package]]
@@ -4554,6 +4556,7 @@ dependencies = [
  "nvt-drs",
  "nvt-engine",
  "nvt-ipc",
+ "nvt-windows",
  "serde",
  "serde_json",
  "toml 1.2.3+spec-1.1.0",

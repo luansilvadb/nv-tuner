@@ -262,7 +262,7 @@ impl Coordenador {
             Requisicao::DefinirAceiteExperimental { regra, aceito } => {
                 self.definir_aceite(identidade, regra, *aceito)
             }
-            Requisicao::ReverterAjusteUsuario { destino } => req
+            Requisicao::ReverterAjusteUsuario { destino, .. } => req
                 .validar()
                 .and_then(|()| self.reverter(identidade, destino))
                 .map_err(invalida),
@@ -555,12 +555,6 @@ impl Coordenador {
             }
             Resposta::Plano(plano) => {
                 plano.sistema = self.resumo(identidade, s.filter(|_| presente));
-                let aceites = self.aceites_drs(Some(&identidade.sid));
-                for sugestao in &mut plano.sugestoes_driver {
-                    if aceites.contains(&sugestao.regra) {
-                        sugestao.estado = EstadoExperimental::Aceita;
-                    }
-                }
             }
             Resposta::Historico { entradas } => {
                 if let Some(dados) = self.dados.por_sid.get(&identidade.sid) {
@@ -622,6 +616,7 @@ impl Coordenador {
                     let meta = &self.metadados[&m.regra];
                     Mudanca {
                         camada: Camada::Usuario,
+                        alvo_tela: alvo(&destino).map(str::to_owned),
                         setting: nome(&destino).into(),
                         nome_legivel: m.descricao.clone(),
                         antes: valor_legivel(&m.atual),
@@ -657,6 +652,7 @@ impl Coordenador {
                             let destino = destino(setting, tela)?;
                             Some(Mudanca {
                                 camada: Camada::Usuario,
+                                alvo_tela: alvo(&destino).map(str::to_owned),
                                 setting: nome(&destino).into(),
                                 nome_legivel: nome(&destino).into(),
                                 antes: None,

@@ -80,6 +80,8 @@ pub enum Requisicao {
     },
     ReverterAjusteUsuario {
         destino: SettingUsuario,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        alvo_tela: Option<String>,
     },
 }
 
@@ -140,7 +142,15 @@ impl Requisicao {
                 }
                 Ok(())
             }
-            Self::ReverterAjusteUsuario { destino } => destino.validar(),
+            Self::ReverterAjusteUsuario { destino, alvo_tela } => {
+                destino.validar()?;
+                if let Some(alvo_tela) = alvo_tela
+                    && !matches!(destino, SettingUsuario::Refresh { alvo } if alvo == alvo_tela)
+                {
+                    return Err("alvo_tela incompatível com o destino".into());
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -808,6 +818,8 @@ pub struct PlanoPerfil {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mudanca {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alvo_tela: Option<String>,
     pub camada: Camada,
     pub experimental: EstadoExperimental,
     pub setting: String,
@@ -957,7 +969,14 @@ mod testes {
                 aceito: true,
             },
             Requisicao::ReverterAjusteUsuario {
+                alvo_tela: None,
                 destino: SettingUsuario::MouseAceleracao,
+            },
+            Requisicao::ReverterAjusteUsuario {
+                alvo_tela: Some("monitor-estavel".into()),
+                destino: SettingUsuario::Refresh {
+                    alvo: "monitor-estavel".into(),
+                },
             },
         ];
         for r in &v {
@@ -1202,6 +1221,7 @@ mod testes {
                     perfil: "global".into(),
                     nome_legivel: "Perfil global".into(),
                     mudancas: vec![Mudanca {
+                        alvo_tela: None,
                         camada: Camada::Driver,
                         experimental: EstadoExperimental::Estavel,
                         setting: "vsync".into(),
@@ -1639,8 +1659,15 @@ mod testes {
                 aceito: true,
             },
             Requisicao::ReverterAjusteUsuario {
+                alvo_tela: None,
                 destino: SettingUsuario::Refresh {
                     alvo: String::new(),
+                },
+            },
+            Requisicao::ReverterAjusteUsuario {
+                alvo_tela: Some("outro-monitor".into()),
+                destino: SettingUsuario::Refresh {
+                    alvo: "monitor-do-plano".into(),
                 },
             },
             Requisicao::AgenteRelatar {

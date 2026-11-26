@@ -407,7 +407,7 @@ fn mostrar(r: &Resposta, restaurar: bool, pelo_servico: bool) -> Result<(), Erro
         _ => {
             if restaurar {
                 println!(
-                    "Restauração concluída (ou nada a restaurar). Autonomia pausada até `apply --yes` ou “Aplicar agora”."
+                    "Restauração do driver concluída (ou nada a restaurar). A camada do usuário depende do agente. Autonomia pausada até `apply --yes` ou “Aplicar agora”."
                 );
             }
             Ok(())
@@ -450,8 +450,40 @@ pub fn gravar(dir: &Path, pipe: &str, tentar_ipc: bool, restaurar: bool) -> Exit
         }
     }
     sair((|| {
-        let api = NvApi::load()?;
-        let mut n = nucleo(&api, dir, false)?;
+        let mut estado = crate::nucleo::EstadoServico::carregar(Some(dir));
+        let api = match NvApi::load() {
+            Ok(api) => api,
+            Err(e) => {
+                let resposta =
+                    crate::laco::tratar_sem_driver(req, &mut estado, dir, &e.to_string());
+                return mostrar(&resposta, restaurar, false);
+            }
+        };
+        let mut n = match nucleo(&api, dir, false) {
+            Ok(n) => n,
+            Err(e)
+                if e.downcast_ref::<nvt_engine::ErroEngine>().is_some_and(|e| {
+                    matches!(
+                        e,
+                        nvt_engine::ErroEngine::Drs(_) | nvt_engine::ErroEngine::SemGpu
+                    )
+                }) =>
+            {
+                let resposta =
+                    crate::laco::tratar_sem_driver(req, &mut estado, dir, &e.to_string());
+                return mostrar(&resposta, restaurar, false);
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(console) = crate::laco::identidade_console() {
+            let usuario = crate::usuario::Coordenador::abrir(
+                crate::usuario::ArquivoUsuarios(dir.to_path_buf()),
+                n.engine().regras(),
+                None,
+                estado.geracao_restauracao,
+            )?;
+            n.definir_aceites_drs(usuario.aceites_drs(Some(&console.sid)));
+        }
         gravar_local(&mut n, restaurar, Instant::now())
     })())
 }
@@ -465,20 +497,13 @@ pub(crate) fn gravar_local<S: DriverStore>(
 ) -> Result<(), Erro> {
     // Também na restauração: os exes detectados entram no portão.
     n.varrer(agora);
-    // Sem o serviço não há quem execute a ação pendente: com jogo aberto,
-    // recusa antes de mudar qualquer coisa (inclusive a autonomia e a
-    // restauração pendente).
-    if let Err(a) = n.engine().pode_gravar() {
-        return Err(format!(
-            "{}: nada foi gravado; feche os jogos e repita o comando",
-            motivo_adiamento(&a.processos, a.lista_indisponivel)
-        )
-        .into());
-    }
-    // Restauração deixada pendente pelo serviço antes de parar: o `apply`
-    // explícito do usuário a substitui (uma gravação só, a pedida). No próprio
-    // `restore-original` ela é a própria requisição.
-    if !restaurar && n.descartar_restauracao_pendente() {
+    // A CLI só substitui a restauração DRS anterior se puder aplicar agora.
+    // A geração de usuário continua valendo para os agentes no próximo logon.
+    if !restaurar
+        && n.servico().restauracao_pendente_desde_unix.is_some()
+        && n.engine().pode_gravar().is_ok()
+        && n.descartar_restauracao_pendente()
+    {
         println!("restauração pendente descartada: você pediu para aplicar");
     }
     let req = if restaurar {

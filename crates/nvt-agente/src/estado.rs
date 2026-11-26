@@ -17,6 +17,15 @@ pub struct Estado {
     pub(crate) geracao_vista: u64,
     pub(crate) sessoes: BTreeMap<u32, Sessao>,
     pub(crate) destinos: Vec<Destino>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) backups_msi: Vec<Backup>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Backup {
+    pub destino: SettingUsuario,
+    pub sessao: Option<u32>,
+    pub valor: ValorLido,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

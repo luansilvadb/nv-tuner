@@ -396,7 +396,7 @@ fn laco_atende_ipc_pelo_pipe_e_para() {
         laco::laco_principal(
             &mut laco::Atendimento {
                 nucleo: &mut n,
-                usuario: None,
+                integracao: &mut laco::Integracao::default(),
             },
             &rx,
         );
@@ -1236,6 +1236,54 @@ fn deriva_com_jogo_aberto_e_lida_e_o_tratamento_fica_pendente() {
 }
 
 #[test]
+fn retirada_de_aceite_drs_usa_portao_e_reverte_apos_reinicio() {
+    use nvt_drs::{FonteFalsa, VrrBruto};
+    const REGRA: &str = "sincronismo-gsync-limite";
+    const ID_LIMITE: u32 = 0x1083_5002;
+    let (d, dir, s, agora) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let p = Processos::default();
+    d.definir_exibicao(FonteFalsa::monitor(
+        7,
+        240_000,
+        Some(VrrBruto {
+            possivel: true,
+            ativo: true,
+        }),
+    ));
+    {
+        let mut n = nucleo_com_processos(&d, &dir, &s, &p, agora);
+        n.iniciar(agora);
+        assert_eq!(
+            n.tratar(
+                Requisicao::DefinirPreferencias {
+                    sincronismo: nvt_ipc::Sincronismo::GSync,
+                    qualidade: nvt_ipc::Qualidade::Equilibrado,
+                    limite_fps: None,
+                },
+                agora
+            ),
+            Resposta::Ok
+        );
+        let Resposta::Plano(plano) = n.tratar(Requisicao::ObterPlano, agora) else {
+            panic!("plano esperado");
+        };
+        assert!(plano.sugestoes_driver.iter().any(|s| s.regra == REGRA));
+        n.definir_aceites_drs([REGRA.into()].into());
+        n.ciclo(agora, "console com aceite");
+        assert_eq!(d.valor(&ProfileRef::Base, ID_LIMITE), Some(224));
+    }
+
+    p.abrir(EXE_WARDOGS);
+    let mut n = nucleo_com_processos(&d, &dir, &s, &p, agora);
+    n.iniciar(agora);
+    assert_eq!(d.valor(&ProfileRef::Base, ID_LIMITE), Some(224));
+    assert!(n.pendente().is_some());
+    p.fechar_todos();
+    n.tick(agora + Duration::from_secs(60));
+    assert_eq!(d.valor(&ProfileRef::Base, ID_LIMITE), None);
+}
+
+#[test]
 fn estado_leva_refresh_vrr_real_e_aviso_do_plano() {
     use nvt_drs::{FonteFalsa, VrrBruto};
     let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
@@ -1381,9 +1429,11 @@ fn restauracao_pendente_sobrevive_ao_reinicio_do_servico() {
         p.abrir(EXE_WARDOGS);
         let r = n.tratar(Requisicao::RestaurarOriginal, t0 + seg(1));
         assert!(matches!(r, Resposta::Restauracao { adiada: Some(_) }));
+        assert!(crate::relatorio::gravar_local(&mut n, true, t0 + seg(2)).is_err());
     }
     let salvo = EstadoServico::carregar(Some(&dir.0));
     assert!(salvo.restauracao_pendente_desde_unix.is_some());
+    assert_eq!(salvo.geracao_restauracao, 1);
     assert!(salvo.autonomia_pausada);
 
     // Reinício com o jogo ainda aberto: a restauração volta a ser a pendência
@@ -1408,6 +1458,7 @@ fn restauracao_pendente_sobrevive_ao_reinicio_do_servico() {
     assert_eq!(escritas(&d).1, antes.1 + 1);
     let salvo = EstadoServico::carregar(Some(&dir.0));
     assert_eq!(salvo.restauracao_pendente_desde_unix, None);
+    assert_eq!(salvo.geracao_restauracao, 1);
     assert!(salvo.autonomia_pausada);
     drop(n);
 
@@ -1415,6 +1466,43 @@ fn restauracao_pendente_sobrevive_ao_reinicio_do_servico() {
     let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0 + seg(90));
     n.iniciar(t0 + seg(90));
     assert!(n.pendente().is_none());
+}
+
+#[test]
+fn sem_driver_persiste_restauracao_e_aplicacao_para_o_proximo_logon() {
+    use crate::laco::tratar_sem_driver;
+    use crate::nucleo::EstadoServico;
+
+    let dir = DirTemp::novo();
+    let mut estado = EstadoServico::default();
+    let mut pedir = |req| {
+        assert!(matches!(
+            tratar_sem_driver(req, &mut estado, &dir.0, "sem NVIDIA"),
+            Resposta::Erro {
+                codigo: CodigoErro::DriverIndisponivel,
+                ..
+            }
+        ));
+    };
+    pedir(Requisicao::RestaurarOriginal);
+    pedir(Requisicao::RestaurarOriginal);
+    let salvo = EstadoServico::carregar(Some(&dir.0));
+    assert_eq!(salvo.geracao_restauracao, 1);
+    assert!(salvo.autonomia_pausada);
+    assert!(salvo.restauracao_pendente_desde_unix.is_some());
+
+    pedir(Requisicao::AplicarAgora);
+    let salvo = EstadoServico::carregar(Some(&dir.0));
+    assert!(!salvo.autonomia_pausada);
+    assert_eq!(salvo.geracao_restauracao, 1);
+    assert!(salvo.restauracao_pendente_desde_unix.is_some());
+
+    let (d, s, agora) = (driver(), sinal(), Instant::now());
+    let mut n = nucleo(&d, &dir, cfg(false), &s, agora);
+    n.iniciar(agora);
+    assert!(n.pendente().is_none());
+    assert_eq!(n.servico().geracao_restauracao, 1);
+    assert!(n.autonomia_ativa());
 }
 
 /// Restauração persistida e serviço reiniciado com o jogo já fechado: roda

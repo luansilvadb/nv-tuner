@@ -348,6 +348,7 @@ fn retirada_e_reversao_usam_original_e_preservam_trava() {
         c.tratar(
             &a,
             &Requisicao::ReverterAjusteUsuario {
+                alvo_tela: None,
                 destino: SettingUsuario::GameDvrCapturaHistorica
             },
             agora,

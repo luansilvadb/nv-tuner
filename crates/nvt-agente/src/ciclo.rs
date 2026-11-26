@@ -12,7 +12,7 @@ use nvt_ipc::{
     TarefaUsuario,
 };
 
-use crate::estado::{Destino, Intencao, Operacao, Trabalho};
+use crate::estado::{Backup, Destino, Intencao, Operacao, Trabalho};
 use crate::valores::{atingiu, iguais, mouse, mudanca, valido, valores};
 use crate::{EscritaUsuario, Estado, LeituraUsuario, Persistencia, ValorLido};
 
@@ -30,7 +30,7 @@ pub enum Controle {
     Continuar,
     Encerrar,
     Restaurado,
-    Bloqueado,
+    Bloqueado(String),
 }
 
 pub struct Agente<A, T> {
@@ -132,6 +132,9 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
         let tela = exec.agente.armazem.tela();
         exec.recuperar_escopo_tela(&tela)?;
         exec.recuperar()?;
+        if restaurar && !exec.estado.destinos.iter().any(|d| exec.acessivel(d)) {
+            return Ok(Controle::Restaurado);
+        }
         if agora >= exec.agente.proxima_deriva {
             exec.deriva()?;
             exec.agente.proxima_deriva = agora + Duration::from_secs(600);
@@ -171,9 +174,14 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
                 fatos: fatos.clone(),
                 ultima_tarefa,
                 geracao_restaurada,
+            })
+            .map_err(|erro| {
+                io::Error::other(format!("lista atual do serviço indisponível: {erro}"))
             })?;
         let plano = match resposta {
-            Resposta::Encerrar if restaurar => return Ok(Controle::Bloqueado),
+            Resposta::Encerrar if restaurar => {
+                return Ok(Controle::Bloqueado("serviço em encerramento".into()));
+            }
             Resposta::Encerrar => return Ok(Controle::Encerrar),
             Resposta::PlanoAgente(plano) => plano,
             _ => return Err(erro("consulta sem plano atual do serviço")),
@@ -194,11 +202,16 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
                 .any(|d| exec.acessivel(d) && d.geracao_snapshot < plano.geracao_restauracao);
         if restaurar {
             let resultados = exec.restaurar_snapshot(None, None)?;
-            return Ok(if resultados.values().all(confirmado) {
-                Controle::Restaurado
-            } else {
-                Controle::Bloqueado
-            });
+            return Ok(resultados.values().find(|r| !confirmado(r)).map_or(
+                Controle::Restaurado,
+                |r| {
+                    Controle::Bloqueado(format!(
+                        "{:?}: {}",
+                        r.destino,
+                        r.detalhe.as_deref().unwrap_or("restauração pendente")
+                    ))
+                },
+            ));
         }
 
         if exec.enviar_pendente(tarefa.as_ref())? == Controle::Encerrar {
@@ -449,6 +462,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
         destino: &SettingUsuario,
         atual: &ValorLido,
         pedido: &ValorLido,
+        restauracao: bool,
     ) -> Result<io::Result<()>, &'static str> {
         let extras: Vec<_> = self
             .vigiados
@@ -457,17 +471,17 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             .iter()
             .map(String::as_str)
             .collect();
-        let mut licenca = None;
+        let mut autorizado = false;
         let mut bloqueio = None;
         let portao = &self.agente.portao;
         let base = &self.agente.base;
         let mut autorizar = || {
-            if licenca.is_some() || bloqueio.is_some() {
-                return Err(erro("autorização já consultada para esta escrita"));
+            if let Some(motivo) = bloqueio {
+                return Err(erro(motivo));
             }
             match portao.verificar(base, &extras) {
-                Ok(l) => {
-                    licenca = Some(l);
+                Ok(_) => {
+                    autorizado = true;
                     Ok(())
                 }
                 Err(a) => {
@@ -481,18 +495,18 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
                 }
             }
         };
-        let escrita = self
-            .agente
-            .armazem
-            .escrever(destino, atual, pedido, &mut autorizar);
-        match bloqueio {
-            Some(motivo) => Err(motivo),
-            None => Ok(escrita.and_then(|()| {
-                licenca
-                    .map(|_| ())
-                    .ok_or_else(|| erro("fachada não consultou o portão"))
-            })),
+        let escrita =
+            self.agente
+                .armazem
+                .escrever(destino, atual, pedido, restauracao, &mut autorizar);
+        if !autorizado && let Some(motivo) = bloqueio {
+            return Err(motivo);
         }
+        Ok(escrita.and_then(|()| {
+            autorizado
+                .then_some(())
+                .ok_or_else(|| erro("fachada não consultou o portão"))
+        }))
     }
 
     fn iniciar(&mut self, tarefa: &ReferenciaTarefa) -> io::Result<()> {
@@ -731,17 +745,19 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             tarefa: tarefa.cloned(),
         });
         self.salvar()?;
-        let escrita = match self.escrever_autorizado(destino, &atual, &pedido) {
-            Ok(escrita) => escrita,
-            Err(motivo) => {
-                self.estado.destinos[i].intencao = None;
-                if indice.is_none() {
-                    self.estado.destinos.remove(i);
+        let escrita =
+            match self.escrever_autorizado(destino, &atual, &pedido, operacao != Operacao::Aplicar)
+            {
+                Ok(escrita) => escrita,
+                Err(motivo) => {
+                    self.estado.destinos[i].intencao = None;
+                    if indice.is_none() {
+                        self.estado.destinos.remove(i);
+                    }
+                    self.salvar()?;
+                    return Ok(resultado(destino, Pendente, Some(motivo)));
                 }
-                self.salvar()?;
-                return Ok(resultado(destino, Pendente, Some(motivo)));
-            }
-        };
+            };
         let Ok(lido) = self.ler(destino) else {
             return Ok(resultado(
                 destino,
@@ -755,13 +771,29 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
         if iguais(&lido, &atual) {
             return self.finalizar(i, Falhou, Some("releitura encontrou o valor anterior"));
         }
-        if escrita.is_ok() && matches!(destino, SettingUsuario::Refresh { .. }) {
+        #[cfg(windows)]
+        let compensacao_falhou = escrita
+            .as_ref()
+            .err()
+            .is_some_and(crate::windows::refresh_divergente);
+        #[cfg(not(windows))]
+        let compensacao_falhou = false;
+        if matches!(destino, SettingUsuario::Refresh { .. })
+            && (escrita.is_ok() || compensacao_falhou)
+        {
             self.estado.destinos[i]
                 .intencao
                 .as_mut()
                 .expect("intenção persistida")
                 .rollback = Some(lido);
             self.salvar()?;
+            if compensacao_falhou {
+                return Ok(resultado(
+                    destino,
+                    Pendente,
+                    Some("refresh divergente; compensação pendente"),
+                ));
+            }
             return self.compensar(i);
         }
         self.finalizar(
@@ -789,7 +821,17 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
 
     fn concluir(&mut self, i: usize, operacao: Operacao, anterior: &ValorLido, atual: &ValorLido) {
         if operacao.snapshot() {
-            self.estado.destinos.remove(i);
+            let d = self.estado.destinos.remove(i);
+            if operacao == Operacao::SnapshotManual {
+                let backup = Backup {
+                    destino: d.destino,
+                    sessao: d.sessao,
+                    valor: d.snapshot,
+                };
+                if !self.estado.backups_msi.contains(&backup) {
+                    self.estado.backups_msi.push(backup);
+                }
+            }
             return;
         }
         let d = &mut self.estado.destinos[i];
@@ -896,7 +938,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
         }
         let destino = destino.clone();
         let anterior = intent.anterior.clone();
-        if let Err(motivo) = self.escrever_autorizado(&destino, &atual, &anterior) {
+        if let Err(motivo) = self.escrever_autorizado(&destino, &atual, &anterior, true) {
             return Ok(resultado(&destino, Pendente, Some(motivo)));
         }
         if self.ler(&destino).is_ok_and(|v| iguais(&v, &anterior)) {

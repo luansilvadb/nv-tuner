@@ -23,6 +23,7 @@
 //! O tempo é sempre passado por quem chama (`agora`), para os testes
 //! controlarem o relógio.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -156,9 +157,47 @@ pub struct EstadoServico {
     /// quando o serviço reinicia. Ausente nos arquivos antigos.
     #[serde(default)]
     pub restauracao_pendente_desde_unix: Option<u64>,
+    #[serde(default)]
+    pub geracao_restauracao: u64,
 }
 
 impl EstadoServico {
+    pub(crate) fn pedir_restauracao(&mut self, dir: Option<&Path>) -> std::io::Result<()> {
+        if self.restauracao_pendente_desde_unix.is_some() && self.autonomia_pausada {
+            return Ok(());
+        }
+        let mut novo = self.clone();
+        if !novo.autonomia_pausada || novo.geracao_restauracao == 0 {
+            novo.geracao_restauracao = novo
+                .geracao_restauracao
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("limite de gerações de restauração"))?;
+        }
+        let agora = agora_unix();
+        novo.autonomia_pausada = true;
+        novo.pausada_em_unix = Some(agora);
+        novo.restauracao_pendente_desde_unix = Some(agora);
+        self.persistir(novo, dir)
+    }
+
+    pub(crate) fn retomar_autonomia(&mut self, dir: Option<&Path>) -> std::io::Result<()> {
+        if !self.autonomia_pausada {
+            return Ok(());
+        }
+        let mut novo = self.clone();
+        novo.autonomia_pausada = false;
+        novo.pausada_em_unix = None;
+        self.persistir(novo, dir)
+    }
+
+    fn persistir(&mut self, novo: Self, dir: Option<&Path>) -> std::io::Result<()> {
+        if let Some(dir) = dir {
+            novo.salvar(dir)?;
+        }
+        *self = novo;
+        Ok(())
+    }
+
     /// Carrega de `dir` (ausente ou inválido = padrão).
     pub fn carregar(dir: Option<&Path>) -> Self {
         let Some(dir) = dir else {
@@ -233,6 +272,8 @@ pub fn iso_para_unix(s: &str) -> u64 {
 /// Lógica do serviço sobre um [`DriverStore`].
 pub struct Nucleo<'a, S: DriverStore> {
     engine: Engine<S>,
+    regras_drs: nvt_core::ConjuntoRegras,
+    aceites_drs: BTreeSet<String>,
     fabrica: Fabrica<'a, S>,
     varredor: Varredor<'a>,
     assinador: Assinador<'a>,
@@ -325,6 +366,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             });
         let proxima_reavaliacao = pendente.as_ref().map(|_| agora);
         Ok(Self {
+            regras_drs: engine.regras().clone(),
+            aceites_drs: BTreeSet::new(),
             engine,
             fabrica,
             varredor,
@@ -501,7 +544,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         self.proxima_reavaliacao = None;
         info!("portão livre: executando a ação pendente ({acao:?})");
         let r = match acao {
-            AcaoPendente::RestaurarOriginal => self.restaurar_original(agora).map(|_| ()),
+            AcaoPendente::RestaurarOriginal => self.executar_restauracao(agora).map(|_| ()),
             AcaoPendente::AplicarPlano | AcaoPendente::TratarDeriva => {
                 self.proxima_verificacao = agora + self.cfg.intervalo_verificacao;
                 self.ciclo_interno(agora, "jogo fechado (ação pendente)")
@@ -579,13 +622,24 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
 
     /// Relê o driver (sessão nova) e o estado em disco, que pode ter sido
     /// alterado por `nvt-service apply`/`restore-original` em outro processo.
+    pub(crate) fn definir_aceites_drs(&mut self, aceites: BTreeSet<String>) {
+        self.aceites_drs = aceites;
+    }
+
     fn renovar(&mut self) -> Resultado<()> {
         let store = (self.fabrica)()?;
         let armazem = match &self.dir {
             Some(d) => abrir_armazem(d, &self.cfg, &mut self.avisos_estado)?,
             None => self.engine.armazem().clone(),
         };
-        let regras = self.engine.regras().clone();
+        // O motor classifica e reverte o plano DRS v1. Habilitar as regras
+        // aceitas nesta cópia mantém essa classificação e a persistência do motor.
+        let mut regras = self.regras_drs.clone();
+        for regra in &mut regras.regras {
+            if self.aceites_drs.contains(&regra.id) {
+                regra.status = nvt_core::Status::Estavel;
+            }
+        }
         self.engine = Engine::com_regras(store, armazem, regras).com_portao(self.portao.clone());
         if self.dir.is_some() {
             self.servico = EstadoServico::carregar(self.dir.as_deref());
@@ -704,7 +758,22 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         motivo: &str,
         tratar: bool,
     ) -> Resultado<()> {
-        let deriva = self.engine.verificar_deriva()?;
+        let mut deriva = self.engine.verificar_deriva()?;
+        // Um reset não deve reaplicar uma experimental cujo aceite deixou de
+        // valer. Alterações manuais continuam no tratamento normal de deriva.
+        if tratar && matches!(deriva.classe, ClasseDeriva::ResetEmMassa(_)) {
+            deriva.divergencias.retain(|d| {
+                !d.voltou_ao_padrao
+                    || d.esperado.origem.regra().is_none_or(|id| {
+                        !self
+                            .regras_drs
+                            .regras
+                            .iter()
+                            .any(|r| r.id == id && r.status == nvt_core::Status::Experimental)
+                            || self.aceites_drs.contains(id)
+                    })
+            });
+        }
         if deriva.classe == ClasseDeriva::Nenhuma {
             self.erros_deriva.clear();
             return Ok(());
@@ -738,9 +807,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         Ok(())
     }
 
-    /// Planeja e aplica (só estáveis: o plano do avaliador não inclui as
-    /// experimentais). O snapshot original é capturado pelo motor antes da
-    /// primeira gravação.
+    /// Planeja e aplica. O motor captura o snapshot original antes da primeira gravação.
     fn aplicar_plano(&mut self, agora: Instant) -> Resultado<(Diff, Aplicacao)> {
         let diff = self.planejar()?;
         if diff.vazio() {
@@ -830,7 +897,19 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
 
     /// Planeja e guarda os jogos ignorados (registrando no log quando mudam).
     fn planejar(&mut self) -> Resultado<Diff> {
-        let diff = self.engine.planejar(&self.jogos)?;
+        let mut diff = self.engine.planejar(&self.jogos)?;
+        let fatos = diff
+            .jogos
+            .iter()
+            .map(|j| j.fatos.clone())
+            .collect::<Vec<_>>();
+        diff.plano = nvt_core::avaliar_com_aceites(
+            &diff.capacidades,
+            &fatos,
+            &self.engine.estado().preferencias_efetivas(),
+            &self.regras_drs,
+            &self.aceites_drs,
+        );
         let ignorados: Vec<nvt_ipc::JogoIgnorado> = diff
             .ignorados
             .iter()
@@ -1103,14 +1182,10 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             self.renovar()?;
             return self.plano_adiado();
         }
-        if self.servico.autonomia_pausada {
-            info!("autonomia reativada por pedido do usuário (aplicar agora)");
-            self.servico.autonomia_pausada = false;
-            self.servico.pausada_em_unix = None;
-            self.salvar_servico();
-        }
+        self.servico
+            .retomar_autonomia(self.dir.as_deref())
+            .map_err(|e| ErroEngine::Io(e.to_string()))?;
         self.renovar()?;
-        self.servico.autonomia_pausada = false;
         match self.tratar_e_aplicar(agora, "aplicar agora")? {
             Some((diff, ap)) => {
                 self.alertas.clear();
@@ -1122,13 +1197,30 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
     }
 
     fn restaurar_original(&mut self, agora: Instant) -> Resultado<Resposta> {
+        self.servico
+            .pedir_restauracao(self.dir.as_deref())
+            .map_err(|e| ErroEngine::Io(e.to_string()))?;
+        if !self.restauracao_pendente() {
+            self.pendente = Some(Pendente {
+                acao: AcaoPendente::RestaurarOriginal,
+                adiamento: Adiamento {
+                    processos: Vec::new(),
+                    desde_unix: self
+                        .servico
+                        .restauracao_pendente_desde_unix
+                        .unwrap_or_else(agora_unix),
+                    lista_indisponivel: false,
+                },
+                tentativas: 0,
+                ultimo_erro: None,
+            });
+            self.proxima_reavaliacao = Some(agora + self.cfg.intervalo_adiamento);
+        }
+        self.executar_restauracao(agora)
+    }
+
+    fn executar_restauracao(&mut self, agora: Instant) -> Resultado<Resposta> {
         self.renovar()?;
-        // Pausa antes de restaurar: se algo falhar no meio, o próximo ciclo
-        // não reaplica por cima. Com jogo aberto, a pausa vale já (nada é
-        // aplicado por cima da restauração pendente).
-        self.servico.autonomia_pausada = true;
-        self.servico.pausada_em_unix = Some(agora_unix());
-        self.salvar_servico();
         let restaurado = match self.engine.restaurar(true) {
             Err(ErroEngine::Adiada(a)) => {
                 self.adiar(AcaoPendente::RestaurarOriginal, a, agora);
@@ -1138,6 +1230,11 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             }
             r => r?,
         };
+        let mut concluido = self.servico.clone();
+        concluido.restauracao_pendente_desde_unix = None;
+        self.servico
+            .persistir(concluido, self.dir.as_deref())
+            .map_err(|e| ErroEngine::Io(e.to_string()))?;
         self.concluir_pendente(AcaoPendente::RestaurarOriginal);
         self.erros_pendente.clear();
         match restaurado {
@@ -1413,17 +1510,27 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                 mudancas: vec![m],
             }),
         };
-        let mudanca = |c: &nvt_core::SettingChange, antes: Option<u32>, status| {
+        let mudanca = |alvo: &Alvo, c: &nvt_core::SettingChange, antes: Option<u32>, status| {
             let def = cat.get(&c.setting);
             let regra = c.origem.regra();
+            let aceita = diff.plano.codigo_explicacao(alvo, &c.setting).is_some();
             Mudanca {
+                alvo_tela: None,
                 camada: nvt_ipc::Camada::Driver,
-                experimental: Default::default(),
+                experimental: if aceita {
+                    nvt_ipc::EstadoExperimental::Aceita
+                } else {
+                    nvt_ipc::EstadoExperimental::Estavel
+                },
                 setting: c.setting.clone(),
                 nome_legivel: def.map_or_else(|| c.setting.clone(), nomes::nome_setting),
                 antes: nomes::valor(def, antes),
                 depois: nomes::valor(def, Some(c.valor)),
-                motivo: c.explicacao.clone(),
+                motivo: if aceita {
+                    format!("{} (experimental aceita por você)", c.explicacao)
+                } else {
+                    c.explicacao.clone()
+                },
                 regra: match &c.origem {
                     Origem::Regra { id } => id.clone(),
                     Origem::Preferencia { preferencia, regra } => regra
@@ -1449,14 +1556,19 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             push(
                 &m.alvo,
                 perfil_ipc(&m.perfil),
-                mudanca(&m.mudanca, m.mudanca.valor_anterior, status),
+                mudanca(&m.alvo, &m.mudanca, m.mudanca.valor_anterior, status),
             );
         }
         for m in &diff.conformes {
             push(
                 &m.alvo,
                 perfil_ipc(&m.perfil),
-                mudanca(&m.mudanca, Some(m.mudanca.valor), StatusMudanca::JaNoValor),
+                mudanca(
+                    &m.alvo,
+                    &m.mudanca,
+                    Some(m.mudanca.valor),
+                    StatusMudanca::JaNoValor,
+                ),
             );
         }
         for r in &diff.plano.respeitadas {
@@ -1467,7 +1579,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             push(
                 &r.alvo,
                 perfil,
-                mudanca(&r.mudanca, None, StatusMudanca::Travada),
+                mudanca(&r.alvo, &r.mudanca, None, StatusMudanca::Travada),
             );
         }
         let reversoes = diff
@@ -1505,7 +1617,13 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             .collect();
         Plano {
             sistema: Default::default(),
-            sugestoes_driver: Vec::new(),
+            sugestoes_driver: self
+                .regras_drs
+                .regras
+                .iter()
+                .filter(|regra| diff.plano.estado_experimental.contains_key(&regra.id))
+                .map(sugestao_drs)
+                .collect(),
             gerado_unix: agora_unix(),
             perfis,
             reversoes,
@@ -1648,6 +1766,20 @@ pub fn motivo_reversao(origem: &Origem, acao: nvt_ipc::AcaoReversao) -> String {
 }
 
 /// Nome do perfil no protocolo (`"global"` para o perfil base).
+pub(crate) fn sugestao_drs(regra: &nvt_core::Rule) -> nvt_ipc::SugestaoExperimental {
+    nvt_ipc::SugestaoExperimental {
+        regra: regra.id.clone(),
+        descricao: regra.descricao.clone(),
+        camada: nvt_ipc::Camada::Driver,
+        impacto_visual: match regra.impacto_visual {
+            ImpactoRegra::Nenhum => nvt_ipc::ImpactoVisual::Nenhum,
+            ImpactoRegra::Leve => nvt_ipc::ImpactoVisual::Baixo,
+            ImpactoRegra::Forte => nvt_ipc::ImpactoVisual::Alto,
+        },
+        estado: nvt_ipc::EstadoExperimental::Aceitavel,
+    }
+}
+
 pub fn perfil_ipc(r: &ProfileRef) -> String {
     match r {
         ProfileRef::Base => PERFIL_GLOBAL.to_owned(),

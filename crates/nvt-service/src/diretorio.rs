@@ -198,7 +198,7 @@ fn info(f: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
     Ok(i)
 }
 
-fn sid_texto(sid: PSID) -> String {
+pub(crate) fn sid_texto(sid: PSID) -> String {
     let mut s: windows_sys::core::PWSTR = null_mut();
     // SAFETY: `sid` válido; `s` recebe memória LocalAlloc, liberada abaixo.
     if unsafe { ConvertSidToStringSidW(sid, &mut s) } == 0 || s.is_null() {

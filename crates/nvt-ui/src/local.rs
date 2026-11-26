@@ -664,7 +664,6 @@ fn montar_dados<S: DriverStore>(
     Dados {
         estado: Some(estado),
         sistema: Default::default(),
-        alvo_tela: None,
         sugestoes_driver,
         grupos,
         respeitadas,

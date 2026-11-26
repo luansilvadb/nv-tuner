@@ -849,7 +849,7 @@ impl Janela {
         let tema = cx.theme().clone();
         let mut ajustes = v_flex().gap_2();
         for (i, mudanca) in self.ui.dados.sistema.mudancas.iter().enumerate() {
-            let destino = destino_usuario(&mudanca.setting, self.ui.dados.alvo_tela.as_deref());
+            let destino = destino_usuario(&mudanca.setting, mudanca.alvo_tela.as_deref());
             let pode = self.ui.pode_escrever() && destino.is_some();
             ajustes = ajustes.child(
                 h_flex()

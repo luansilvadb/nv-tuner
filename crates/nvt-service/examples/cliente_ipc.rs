@@ -1,11 +1,12 @@
 //! Cliente de teste do IPC: conecta num pipe (padrão `\\.\pipe\nv-tuner`) e
-//! envia uma requisição somente leitura, imprimindo a resposta em JSON.
+//! imprime a resposta do serviço em JSON.
 //!
 //! ```text
 //! cargo run -p nvt-service --example cliente_ipc -- nvt-teste estado
 //! ```
 //!
-//! Requisições: `estado` (padrão), `plano`, `historico`. Só aceita servidor
+//! Requisições: `estado` (padrão), `plano`, `historico`, `aceitar <regra>`,
+//! `retirar <regra>`. Só aceita servidor
 //! cujo dono seja SYSTEM ou Administradores (como a UI), exceto com
 //! `--sem-verificar-dono`.
 
@@ -35,8 +36,20 @@ fn main() -> ExitCode {
         "estado" => Requisicao::ObterEstado,
         "plano" => Requisicao::ObterPlano,
         "historico" => Requisicao::ListarHistorico { limite: 20 },
+        acao @ ("aceitar" | "retirar") => {
+            let Some(regra) = pos.get(2) else {
+                eprintln!("Informe o ID da regra.");
+                return ExitCode::from(2);
+            };
+            Requisicao::DefinirAceiteExperimental {
+                regra: regra.to_string(),
+                aceito: acao == "aceitar",
+            }
+        }
         outra => {
-            eprintln!("requisição desconhecida: {outra} (use estado, plano ou historico)");
+            eprintln!(
+                "requisição desconhecida: {outra} (use estado, plano, historico, aceitar ou retirar)"
+            );
             return ExitCode::from(2);
         }
     };
@@ -52,7 +65,11 @@ fn main() -> ExitCode {
                 "{}",
                 serde_json::to_string_pretty(&resp).unwrap_or_else(|e| e.to_string())
             );
-            ExitCode::SUCCESS
+            if matches!(resp, nvt_ipc::Resposta::Erro { .. }) {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => {
             eprintln!("Erro: {e}");

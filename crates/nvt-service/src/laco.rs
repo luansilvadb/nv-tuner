@@ -25,9 +25,9 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -38,7 +38,7 @@ use nvt_ipc::{CodigoErro, Requisicao, Resposta};
 use tracing::{error, info, warn};
 
 use crate::diretorio::{self, Situacao};
-use crate::nucleo::{Config, Nucleo};
+use crate::nucleo::{Config, EstadoServico, Nucleo, agora_unix, sugestao_drs};
 use crate::usuario::{ArquivoUsuarios, Coordenador};
 use crate::vigia;
 
@@ -223,7 +223,7 @@ pub trait Atendente {
 
 pub(crate) struct Atendimento<'a, 'b, S: DriverStore> {
     pub nucleo: &'a mut Nucleo<'b, S>,
-    pub usuario: Option<&'a mut Coordenador>,
+    pub integracao: &'a mut Integracao,
 }
 
 impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
@@ -233,24 +233,29 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
         req: Requisicao,
         agora: Instant,
     ) -> Resposta {
-        let Some(usuario) = self.usuario.as_deref_mut() else {
-            return self.nucleo.tratar(req, agora);
-        };
-        if matches!(req, Requisicao::AgenteConsultar { .. }) {
+        if let Some(usuario) = &mut self.integracao.usuario
+            && matches!(req, Requisicao::AgenteConsultar { .. })
+        {
             usuario.atualizar_processos(self.nucleo.processos_vigiados());
         }
-        if let Some(resposta) =
-            usuario.tratar(&identidade, &req, agora, crate::nucleo::agora_unix())
-        {
-            return resposta;
-        }
-        let limite = match req {
-            Requisicao::ListarHistorico { limite } => limite as usize,
-            _ => 0,
-        };
-        let mut resposta = self.nucleo.tratar(req, agora);
-        usuario.projetar(&identidade, &mut resposta, limite, agora);
-        resposta
+        let estado = self.nucleo.servico().clone();
+        self.integracao
+            .tratar(identidade, req, agora, &estado, |req| {
+                let plano = matches!(req, Requisicao::ObterPlano);
+                let mut resposta = self.nucleo.tratar(req, agora);
+                if plano
+                    && matches!(
+                        resposta,
+                        Resposta::Erro {
+                            codigo: CodigoErro::DriverIndisponivel,
+                            ..
+                        }
+                    )
+                {
+                    resposta = plano_sem_driver();
+                }
+                (resposta, self.nucleo.servico().clone())
+            })
     }
 
     fn notificar_mudanca_drs(&mut self, agora: Instant) {
@@ -258,6 +263,12 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
     }
 
     fn tick(&mut self, agora: Instant) {
+        if self.integracao.atualizar_console(false) {
+            self.nucleo
+                .definir_aceites_drs(self.integracao.aceites_drs.clone());
+            self.nucleo
+                .ciclo(agora, "sessão de console ou aceite experimental");
+        }
         self.nucleo.tick(agora);
     }
 }
@@ -316,13 +327,47 @@ fn esperar_com_erro(rx: &Receiver<Evento>, d: Duration, codigo: CodigoErro, moti
     true
 }
 
-fn esperar_sem_driver(rx: &Receiver<Evento>, d: Duration, motivo: &str) -> bool {
-    esperar_com_erro(
-        rx,
-        d,
-        CodigoErro::DriverIndisponivel,
-        &format!("driver NVIDIA indisponível: {motivo}"),
-    )
+fn esperar_sem_driver(
+    integracao: &mut Integracao,
+    op: &Opcoes,
+    rx: &Receiver<Evento>,
+    d: Duration,
+    motivo: &str,
+) -> bool {
+    let fim = Instant::now() + d;
+    let mut estado = EstadoServico::carregar(Some(&op.estado_dir));
+    while Instant::now() < fim {
+        match rx.recv_timeout(PASSO) {
+            Ok(Evento::Ipc(chamado)) => {
+                chamado.atender(|identidade, req| {
+                    protegido("requisição sem driver", || {
+                        let anterior = estado.clone();
+                        integracao.tratar(identidade, req, Instant::now(), &anterior, |req| {
+                            let resposta = if op.config.somente_leitura
+                                && matches!(
+                                    req,
+                                    Requisicao::AplicarAgora | Requisicao::RestaurarOriginal
+                                ) {
+                                Resposta::erro(
+                                    CodigoErro::Interno,
+                                    "serviço em modo somente leitura",
+                                )
+                            } else {
+                                tratar_sem_driver(req, &mut estado, &op.estado_dir, motivo)
+                            };
+                            (resposta, estado.clone())
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        Resposta::erro(CodigoErro::Interno, "falha interna do serviço")
+                    })
+                });
+            }
+            Ok(Evento::MudancaDrs) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(Evento::Parar) | Err(RecvTimeoutError::Disconnected) => return false,
+        }
+    }
+    true
 }
 
 /// Executa o serviço contra o driver real até [`Evento::Parar`].
@@ -348,7 +393,10 @@ pub fn executar(
     );
 
     if esperar_diretorio_seguro(op, &rx) {
-        executar_com_driver(op, &rx);
+        let mut integracao = Integracao::abrir(op);
+        let diagnosticos = iniciar_diagnosticos(integracao.diagnosticos.clone());
+        executar_com_driver(op, &rx, &mut integracao);
+        drop(diagnosticos);
     }
 
     parada.parar();
@@ -407,30 +455,13 @@ fn esperar_diretorio_seguro(op: &Opcoes, rx: &Receiver<Evento>) -> bool {
     }
 }
 
-fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
-    let mut usuario =
-        if !op.config.somente_leitura && diretorio::verificar(&op.estado_dir).is_empty() {
-            let abrir = || {
-                let drs = nvt_core::ConjuntoRegras::embutido()?;
-                Coordenador::abrir(
-                    ArquivoUsuarios(op.estado_dir.clone()),
-                    &drs,
-                    build_windows(),
-                    0,
-                )
-            };
-            abrir()
-                .map_err(|e| error!("coordenador de usuário indisponível: {e}"))
-                .ok()
-        } else {
-            None
-        };
+fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>, integracao: &mut Integracao) {
     let api = loop {
         match NvApi::load() {
             Ok(a) => break a,
             Err(e) => {
                 warn!("NVAPI indisponível: {e}; nova tentativa em 60 s");
-                if !esperar_sem_driver(rx, RETENTATIVA_DRIVER, &e.to_string()) {
+                if !esperar_sem_driver(integracao, op, rx, RETENTATIVA_DRIVER, &e.to_string()) {
                     return;
                 }
             }
@@ -440,7 +471,7 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
         let mut nucleo = loop {
             let drs_dir = op.vigiar.clone();
             let r = protegido("início do motor", || {
-                Nucleo::novo(
+                let nucleo = Nucleo::novo(
                     Box::new(|| Ok(DrsReal::abrir(&api)?)),
                     Box::new(|| {
                         let (jogos, avisos) = jogos_da_maquina();
@@ -453,21 +484,24 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
                     Some(op.estado_dir.clone()),
                     op.config,
                     Instant::now(),
-                )
+                )?;
+                nucleo.engine().capacidades()?;
+                Ok::<_, nvt_engine::ErroEngine>(nucleo)
             });
             match r {
                 Some(Ok(n)) => break n,
                 Some(Err(e)) => {
                     error!("falha ao iniciar o motor: {e}; nova tentativa em 60 s");
-                    if !esperar_sem_driver(rx, RETENTATIVA_DRIVER, &e.to_string()) {
+                    if !esperar_sem_driver(integracao, op, rx, RETENTATIVA_DRIVER, &e.to_string()) {
                         return;
                     }
                 }
                 None => {
-                    if !esperar_com_erro(
+                    if !esperar_sem_driver(
+                        integracao,
+                        op,
                         rx,
                         PAUSA_APOS_PANICO,
-                        CodigoErro::Interno,
                         "falha interna do serviço; reiniciando o motor",
                     ) {
                         return;
@@ -475,11 +509,13 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
                 }
             }
         };
+        integracao.atualizar_console(true);
+        nucleo.definir_aceites_drs(integracao.aceites_drs.clone());
         let fim = match protegido("início do ciclo", || nucleo.iniciar(Instant::now())) {
             Some(()) => laco_principal(
                 &mut Atendimento {
                     nucleo: &mut nucleo,
-                    usuario: usuario.as_mut(),
+                    integracao,
                 },
                 rx,
             ),
@@ -490,10 +526,11 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
             Fim::Parar => return,
             Fim::Panico => {
                 error!("núcleo descartado após pânico; recriando a partir do disco");
-                if !esperar_com_erro(
+                if !esperar_sem_driver(
+                    integracao,
+                    op,
                     rx,
                     PAUSA_APOS_PANICO,
-                    CodigoErro::Interno,
                     "falha interna do serviço; reiniciando o motor",
                 ) {
                     return;
@@ -501,6 +538,262 @@ fn executar_com_driver(op: &Opcoes, rx: &Receiver<Evento>) {
             }
         }
     }
+}
+
+#[derive(Default)]
+pub(crate) struct Integracao {
+    pub(crate) usuario: Option<Coordenador>,
+    diagnosticos: Arc<Mutex<Vec<nvt_ipc::Diagnostico>>>,
+    regras_drs: Option<nvt_core::ConjuntoRegras>,
+    console: Option<IdentidadeCliente>,
+    aceites_drs: std::collections::BTreeSet<String>,
+}
+
+impl Integracao {
+    fn abrir(op: &Opcoes) -> Self {
+        let mut integracao = Self::default();
+        if op.config.somente_leitura || !diretorio::verificar(&op.estado_dir).is_empty() {
+            return integracao;
+        }
+        let estado = EstadoServico::carregar(Some(&op.estado_dir));
+        let abrir = || {
+            let drs = nvt_core::ConjuntoRegras::embutido()?;
+            let base = nvt_core::BaseJogos::embutida()?;
+            let mut usuario = Coordenador::abrir(
+                ArquivoUsuarios(op.estado_dir.clone()),
+                &drs,
+                build_windows(),
+                estado.geracao_restauracao,
+            )?;
+            usuario.atualizar_restauracao(estado.geracao_restauracao, estado.autonomia_pausada);
+            usuario.atualizar_processos(
+                nvt_engine::Portao::do_sistema()
+                    .vigiados(&base, &[])
+                    .into_iter()
+                    .collect(),
+            );
+            Ok::<_, Box<dyn std::error::Error>>((drs, usuario))
+        };
+        match abrir() {
+            Ok((drs, usuario)) => {
+                integracao.regras_drs = Some(drs);
+                integracao.usuario = Some(usuario);
+            }
+            Err(e) => error!("coordenador de usuário indisponível: {e}"),
+        }
+        integracao
+    }
+
+    fn atualizar_console(&mut self, forcar: bool) -> bool {
+        let Some(usuario) = &self.usuario else {
+            return false;
+        };
+        let console = identidade_console();
+        let aceites = usuario.aceites_drs(console.as_ref().map(|c| c.sid.as_str()));
+        let mudou = self.console != console || self.aceites_drs != aceites;
+        self.console = console;
+        self.aceites_drs = aceites;
+        forcar || mudou
+    }
+
+    fn tratar(
+        &mut self,
+        identidade: IdentidadeCliente,
+        req: Requisicao,
+        agora: Instant,
+        estado: &EstadoServico,
+        driver: impl FnOnce(Requisicao) -> (Resposta, EstadoServico),
+    ) -> Resposta {
+        let limite = match req {
+            Requisicao::ListarHistorico { limite } => limite as usize,
+            _ => 0,
+        };
+        if let Some(usuario) = &mut self.usuario {
+            usuario.atualizar_restauracao(estado.geracao_restauracao, estado.autonomia_pausada);
+            if let Some(resposta) = usuario.tratar(&identidade, &req, agora, agora_unix()) {
+                return resposta;
+            }
+        }
+        let (mut resposta, estado) = driver(req);
+        if let Resposta::Estado(estado) = &mut resposta {
+            estado.diagnosticos = self
+                .diagnosticos
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+        }
+        if let Some(usuario) = &mut self.usuario {
+            usuario.atualizar_restauracao(estado.geracao_restauracao, estado.autonomia_pausada);
+            usuario.projetar(&identidade, &mut resposta, limite, agora);
+            if let Resposta::Plano(plano) = &mut resposta
+                && let Some(regras) = &self.regras_drs
+            {
+                let aceites = usuario.aceites_drs(Some(&identidade.sid));
+                let console = self.console.as_ref() == Some(&identidade);
+                plano.sugestoes_driver.retain(|s| {
+                    s.estado == nvt_ipc::EstadoExperimental::Aceitavel || aceites.contains(&s.regra)
+                });
+                for regra in regras
+                    .regras
+                    .iter()
+                    .filter(|r| r.status == nvt_core::Status::Experimental)
+                {
+                    let aceita = aceites.contains(&regra.id);
+                    let existente = plano
+                        .sugestoes_driver
+                        .iter_mut()
+                        .find(|s| s.regra == regra.id);
+                    let sugestao = match existente {
+                        Some(sugestao) => sugestao,
+                        None if aceita => {
+                            plano.sugestoes_driver.push(sugestao_drs(regra));
+                            plano
+                                .sugestoes_driver
+                                .last_mut()
+                                .expect("sugestão inserida")
+                        }
+                        None => continue,
+                    };
+                    if aceita {
+                        sugestao.estado = nvt_ipc::EstadoExperimental::Aceita;
+                        if !console || !self.aceites_drs.contains(&regra.id) {
+                            sugestao
+                                .descricao
+                                .push_str(" (aceite inativo nesta sessão)");
+                        }
+                    }
+                    sugestao
+                        .descricao
+                        .push_str(" DRS compartilhado entre usuários.");
+                }
+            }
+        }
+        resposta
+    }
+}
+
+fn iniciar_diagnosticos(cache: Arc<Mutex<Vec<nvt_ipc::Diagnostico>>>) -> Option<Sender<()>> {
+    use nvt_windows::diagnosticos::{DiagnosticosWindows, diagnosticos_maquina};
+
+    let (tx, rx) = mpsc::channel();
+    thread::Builder::new()
+        .name("nvt-diagnosticos".into())
+        .spawn(move || {
+            loop {
+                let itens = diagnosticos_maquina(&DiagnosticosWindows);
+                *cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = itens;
+                if rx.recv_timeout(Duration::from_secs(600)) != Err(RecvTimeoutError::Timeout) {
+                    break;
+                }
+            }
+        })
+        .map_err(|e| error!("diagnósticos de máquina indisponíveis: {e}"))
+        .ok()?;
+    Some(tx)
+}
+
+pub(crate) fn identidade_console() -> Option<IdentidadeCliente> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::RemoteDesktop::{
+        WTSGetActiveConsoleSessionId, WTSQueryUserToken,
+    };
+
+    // SAFETY: as APIs consultam a sessão do Windows e recebem saídas graváveis.
+    let sessao = unsafe { WTSGetActiveConsoleSessionId() };
+    if sessao == u32::MAX || sessao == 0 {
+        return None;
+    }
+    let mut token = std::ptr::null_mut();
+    if unsafe { WTSQueryUserToken(sessao, &mut token) } == 0 {
+        return None;
+    }
+    let mut buffer = [0usize; 32];
+    let mut tamanho = 0;
+    // SAFETY: buffer alinhado e suficiente para TOKEN_USER e o SID anexado.
+    let lido = unsafe {
+        let lido = GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            size_of_val(&buffer) as u32,
+            &mut tamanho,
+        );
+        CloseHandle(token);
+        lido
+    };
+    if lido == 0 || unsafe { WTSGetActiveConsoleSessionId() } != sessao {
+        return None;
+    }
+    // SAFETY: TokenUser preencheu o buffer e o ponteiro referencia o SID nele.
+    let sid =
+        crate::diretorio::sid_texto(unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid });
+    sid.starts_with("S-")
+        .then_some(IdentidadeCliente { sid, sessao })
+}
+
+pub(crate) fn tratar_sem_driver(
+    req: Requisicao,
+    estado: &mut EstadoServico,
+    dir: &std::path::Path,
+    motivo: &str,
+) -> Resposta {
+    let sem_driver = || {
+        Resposta::erro(
+            CodigoErro::DriverIndisponivel,
+            format!("driver NVIDIA indisponível: {motivo}"),
+        )
+    };
+    let falha = |e: std::io::Error| Resposta::erro(CodigoErro::Interno, e.to_string());
+    match req {
+        Requisicao::ObterEstado => Resposta::Estado(nvt_ipc::Estado {
+            agente: Default::default(),
+            diagnosticos: Vec::new(),
+            versao_servico: env!("CARGO_PKG_VERSION").into(),
+            driver: None,
+            gpu: None,
+            preferencias: crate::nucleo::prefs_ipc(&nvt_core::Preferences::default()),
+            jogos: 0,
+            ultima_aplicacao: estado.ultima_aplicacao.map(|u| nvt_ipc::Aplicacao {
+                quando_unix: u.quando_unix,
+                mudancas: u.mudancas,
+                falhas: u.falhas,
+            }),
+            alertas_deriva: Vec::new(),
+            avisos: Vec::new(),
+            adiamento: None,
+        }),
+        Requisicao::ObterPlano => plano_sem_driver(),
+        Requisicao::ListarHistorico { .. } => Resposta::Historico {
+            entradas: Vec::new(),
+        },
+        Requisicao::RestaurarOriginal => estado.pedir_restauracao(Some(dir)).map_or_else(falha, |()| {
+            Resposta::erro(CodigoErro::DriverIndisponivel, format!(
+                "Restauração solicitada. O driver fica pendente enquanto a NVIDIA estiver indisponível: {motivo}"
+            ))
+        }),
+        Requisicao::AplicarAgora => estado.retomar_autonomia(Some(dir)).map_or_else(falha, |()| {
+            Resposta::erro(CodigoErro::DriverIndisponivel, format!(
+                "Ajustes de usuário reativados. Driver NVIDIA indisponível: {motivo}"
+            ))
+        }),
+        _ => sem_driver(),
+    }
+}
+
+fn plano_sem_driver() -> Resposta {
+    Resposta::Plano(nvt_ipc::Plano {
+        sistema: Default::default(),
+        sugestoes_driver: Vec::new(),
+        gerado_unix: agora_unix(),
+        perfis: Vec::new(),
+        reversoes: Vec::new(),
+        ignorados: Vec::new(),
+        jogos: Vec::new(),
+        adiada: None,
+    })
 }
 
 fn build_windows() -> Option<u32> {
@@ -518,6 +811,143 @@ fn build_windows() -> Option<u32> {
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn pipe_sem_driver_vincula_agente_e_ui_e_retorna_diagnosticos() {
+        use nvt_ipc::pipe::{Cliente, ConfigCliente};
+
+        #[derive(Default)]
+        struct Memoria(std::cell::RefCell<crate::usuario::DadosUsuarios>);
+
+        impl crate::usuario::Armazenamento for Memoria {
+            fn carregar(&self) -> std::io::Result<crate::usuario::DadosUsuarios> {
+                Ok(self.0.borrow().clone())
+            }
+
+            fn salvar(&self, dados: &crate::usuario::DadosUsuarios) -> std::io::Result<()> {
+                self.0.replace(dados.clone());
+                Ok(())
+            }
+        }
+
+        let pipe = format!(r"\\.\pipe\nvt-servico-sem-driver-{}", std::process::id());
+        let (tx, rx) = mpsc::channel();
+        let (parada, ipc) = iniciar_ipc(&pipe, tx.clone()).unwrap();
+        let op = Opcoes {
+            pipe: pipe.clone(),
+            estado_dir: std::env::temp_dir().join(format!("nvt-sem-driver-{}", std::process::id())),
+            vigiar: None,
+            config: Config::default(),
+        };
+        let motor = thread::spawn(move || {
+            let regras = nvt_core::ConjuntoRegras::embutido().unwrap();
+            let mut integracao = Integracao {
+                usuario: Some(
+                    Coordenador::abrir(Memoria::default(), &regras, Some(22631), 0).unwrap(),
+                ),
+                regras_drs: Some(regras),
+                ..Integracao::default()
+            };
+            integracao
+                .diagnosticos
+                .lock()
+                .unwrap()
+                .push(nvt_ipc::Diagnostico {
+                    codigo: "hags".into(),
+                    estado: nvt_ipc::EstadoDiagnostico::Indisponivel,
+                });
+            esperar_sem_driver(&mut integracao, &op, &rx, Duration::from_secs(15), "teste")
+        });
+        let cliente = |req: &Requisicao| {
+            Cliente::conectar(
+                &pipe,
+                &ConfigCliente {
+                    exigir_dono_privilegiado: false,
+                    timeout_conexao: Duration::from_secs(2),
+                    timeout_leitura: Duration::from_secs(2),
+                    ..ConfigCliente::default()
+                },
+            )
+            .unwrap()
+            .requisitar(req)
+            .unwrap()
+        };
+        let consulta = Requisicao::AgenteConsultar {
+            fatos: nvt_ipc::FatosUsuario {
+                tela: nvt_ipc::Fato::Desconhecido,
+                mouse: nvt_ipc::Fato::Desconhecido,
+                swap_effect_upgrade: nvt_ipc::Fato::Desconhecido,
+                captura_historica: nvt_ipc::Fato::Conhecido(1),
+                diagnosticos: vec![nvt_ipc::Diagnostico {
+                    codigo: "drr".into(),
+                    estado: nvt_ipc::EstadoDiagnostico::Indisponivel,
+                }],
+            },
+            ultima_tarefa: None,
+            geracao_restaurada: 0,
+        };
+        assert_eq!(
+            cliente(&Requisicao::DefinirAceiteExperimental {
+                regra: "windows-captura-historica-off".into(),
+                aceito: true,
+            }),
+            Resposta::Ok
+        );
+        let Resposta::PlanoAgente(primeiro) = cliente(&consulta) else {
+            panic!("plano do agente esperado");
+        };
+        assert!(primeiro.tarefa.is_some());
+        // A segunda sessão entra pela fila com a identidade já autenticada,
+        // pois o teste roda dentro de uma única sessão Windows.
+        thread::scope(|escopo| {
+            let consulta = consulta.clone();
+            let outro = escopo.spawn(|| {
+                encaminhar(
+                    &tx,
+                    identidade_teste(),
+                    consulta,
+                    Duration::from_secs(2),
+                    Duration::from_secs(3),
+                )
+            });
+            let Resposta::Estado(estado) = cliente(&Requisicao::ObterEstado) else {
+                panic!("estado esperado");
+            };
+            assert!(estado.gpu.is_none());
+            assert!(estado.agente.presente);
+            assert_eq!(
+                estado
+                    .diagnosticos
+                    .iter()
+                    .map(|d| d.codigo.as_str())
+                    .collect::<Vec<_>>(),
+                ["hags", "drr"]
+            );
+            let Resposta::PlanoAgente(outro) = outro.join().unwrap() else {
+                panic!("plano da outra sessão esperado");
+            };
+            assert!(outro.tarefa.is_none());
+        });
+        let Resposta::Plano(plano) = cliente(&Requisicao::ObterPlano) else {
+            panic!("plano da UI esperado");
+        };
+        assert_eq!(plano.sistema.mudancas.len(), 1);
+        assert_eq!(
+            cliente(&Requisicao::DefinirAceiteExperimental {
+                regra: "windows-captura-historica-off".into(),
+                aceito: false,
+            }),
+            Resposta::Ok
+        );
+        let Resposta::PlanoAgente(retirado) = cliente(&consulta) else {
+            panic!("plano do agente esperado");
+        };
+        assert!(retirado.tarefa.is_none());
+        tx.send(Evento::Parar).unwrap();
+        assert!(!motor.join().unwrap());
+        parada.parar();
+        ipc.join().unwrap();
+    }
 
     fn identidade_teste() -> IdentidadeCliente {
         IdentidadeCliente {

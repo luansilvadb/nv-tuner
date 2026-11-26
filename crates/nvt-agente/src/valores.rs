@@ -26,13 +26,13 @@ pub trait LeituraUsuario {
 
 pub trait EscritaUsuario {
     /// Revalida o valor anterior e preserva os demais tokens no DX. A fachada
-    /// chama `autorizar` imediatamente antes da única escrita física e propaga
-    /// a recusa. A compensação cabe ao ciclo do agente.
+    /// chama `autorizar` antes de cada escrita física, inclusive compensação.
     fn escrever(
         &mut self,
         destino: &SettingUsuario,
         anterior: &ValorLido,
         pedido: &ValorLido,
+        restauracao: bool,
         autorizar: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<()>;
 }

@@ -21,20 +21,6 @@ const ATUALIZACAO: Duration = Duration::from_secs(15);
 /// Entradas do histórico pedidas ao serviço.
 const HISTORICO: u32 = 200;
 
-// O plano identifica a taxa da tela primária pela setting simbólica.
-// A requisição de reversão também precisa do caminho estável do monitor.
-fn alvo_tela_da_sessao() -> Option<String> {
-    #[cfg(windows)]
-    {
-        use nvt_detect::tela::{TelaDoSistema, ler_tela_primaria};
-        ler_tela_primaria(&TelaDoSistema)
-            .ok()
-            .map(|t| t.caminho_monitor)
-    }
-    #[cfg(not(windows))]
-    None
-}
-
 /// Lado da UI dos canais.
 pub struct Canal {
     pub comandos: Sender<Comando>,
@@ -147,14 +133,7 @@ impl Trabalhador {
             Resposta::Historico { entradas } => entradas,
             _ => Vec::new(),
         };
-        let alvo_tela = sistema
-            .mudancas
-            .iter()
-            .any(|m| m.setting == "tela_refresh")
-            .then(alvo_tela_da_sessao)
-            .flatten();
         Ok(Dados {
-            alvo_tela,
             estado,
             sistema,
             sugestoes_driver,
@@ -245,19 +224,14 @@ impl Trabalhador {
                 }
             }
             Comando::ReverterAjusteUsuario { destino } => Requisicao::ReverterAjusteUsuario {
+                alvo_tela: match destino {
+                    nvt_ipc::SettingUsuario::Refresh { alvo } => Some(alvo.clone()),
+                    _ => None,
+                },
                 destino: destino.clone(),
             },
             Comando::Atualizar => unreachable!("tratado acima"),
         };
-        if matches!(
-            &req,
-            Requisicao::ReverterAjusteUsuario { destino: nvt_ipc::SettingUsuario::Refresh { alvo } }
-                if alvo_tela_da_sessao().as_deref() != Some(alvo.as_str())
-        ) {
-            self.atualizar(false);
-            self.concluir(c, Err(textos::DESTINO_REVERTER_INDISPONIVEL.into()));
-            return;
-        }
         if let Err(e) = req.validar() {
             self.concluir(c, Err(e));
             return;

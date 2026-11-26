@@ -56,7 +56,7 @@ jobs:
         run: dotnet tool restore
 
       - name: Compilar (release)
-        run: cargo build --release -p nvt-service -p nvt-ui
+        run: cargo build --release -p nvt-service -p nvt-ui -p nvt-agente
 
       - name: Gerar MSI (inclui validação ICE)
         shell: pwsh

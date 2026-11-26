@@ -151,7 +151,6 @@ pub struct Dados {
     pub estado: Option<Estado>,
     pub sistema: ResumoSistema,
     pub sugestoes_driver: Vec<SugestaoExperimental>,
-    pub alvo_tela: Option<String>,
     pub grupos: Vec<GrupoMudancas>,
     pub respeitadas: Vec<Respeitada>,
     pub historico: Vec<EntradaHistorico>,
@@ -656,6 +655,7 @@ mod testes {
 
     fn mudanca(setting: &str, status: StatusMudanca) -> Mudanca {
         Mudanca {
+            alvo_tela: None,
             camada: Camada::Driver,
             experimental: EstadoExperimental::Estavel,
             setting: setting.into(),

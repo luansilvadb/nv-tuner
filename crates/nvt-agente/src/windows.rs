@@ -1,7 +1,7 @@
 //! Transporte IPC e persistência do agente no Windows.
 use std::{
     collections::BTreeSet,
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     os::windows::{
@@ -9,13 +9,11 @@ use std::{
         fs::{MetadataExt, OpenOptionsExt},
     },
     path::{Component, Path, PathBuf},
-    thread,
     time::{Duration, Instant},
 };
 
-use nvt_detect::tela::{TelaDoSistema, ler_tela_primaria};
 use nvt_engine::Portao;
-use nvt_ipc::{Fato, FatoTela, RefreshRacional, Requisicao, Resposta, SettingUsuario};
+use nvt_ipc::{Requisicao, Resposta};
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION, GetLastError, HANDLE,
@@ -33,9 +31,14 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::{
-    Agente, Controle, EscritaUsuario, Estado, LeituraUsuario, Persistencia, Transporte, ValorLido,
-};
+use crate::{Agente, Controle, Estado, Persistencia, Transporte};
+
+mod ajustes;
+mod janela;
+mod perfil_interativo;
+
+use ajustes::Ajustes;
+pub(crate) use ajustes::refresh_divergente;
 
 pub struct Pipe;
 
@@ -90,12 +93,6 @@ fn sessao_atual() -> io::Result<u32> {
     // Consulta apenas o ID da própria sessão, sem abrir processos.
     if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut sessao) } == 0 {
         return Err(io::Error::last_os_error());
-    }
-    if sessao == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "sessão não interativa",
-        ));
     }
     Ok(sessao)
 }
@@ -200,6 +197,15 @@ impl Perfil {
             _trava: trava,
         })
     }
+
+    fn registrar_bloqueio(&self, motivo: &str) -> io::Result<()> {
+        let mut arquivo = opcoes_arquivo()
+            .append(true)
+            .create(true)
+            .open(self.caminho.join("restauracao-msi.log"))?;
+        verificar(&arquivo, false)?;
+        writeln!(arquivo, "Restauração do usuário bloqueada: {motivo}")
+    }
 }
 
 struct EstadoLocal<'a> {
@@ -272,12 +278,22 @@ fn ocupado(e: &io::Error) -> bool {
     e.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32)
 }
 
-/// Entrada Windows para L3, com a fachada interativa fornecida pelo chamador.
-pub fn executar(
-    armazem: impl LeituraUsuario + EscritaUsuario,
-    restaurar: bool,
-) -> io::Result<Controle> {
+pub fn executar(restaurar: bool) -> io::Result<Controle> {
     let sessao = sessao_atual()?;
+    if sessao == 0 || (restaurar && !perfil_interativo::conta_da_sessao(sessao)) {
+        return Ok(Controle::Encerrar);
+    }
+    let local = perfil_interativo::local_app_data();
+    let Some(local) = local.filter(|p| p.is_dir()) else {
+        return if restaurar {
+            Ok(Controle::Encerrar)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "perfil interativo indisponível",
+            ))
+        };
+    };
     let _instancia = if restaurar {
         // O MSI coordena com a instância já ativa pela mesma trava de perfil.
         None
@@ -287,13 +303,38 @@ pub fn executar(
         };
         Some(instancia)
     };
-    let local: OsString = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA indisponível"))?;
-    let perfil = Perfil::abrir(Path::new(&local))?;
-    let mut agente = Agente::novo(armazem, Pipe, Portao::do_sistema(), sessao)?;
+    let _janela = if restaurar {
+        None
+    } else {
+        Some(janela::Janela::criar()?)
+    };
+    let perfil = Perfil::abrir(&local)?;
+    let controle = executar_ciclo(&perfil, sessao, restaurar);
+    if restaurar {
+        let motivo = match &controle {
+            Ok(Controle::Bloqueado(motivo)) => Some(motivo.clone()),
+            Err(erro) => Some(erro.to_string()),
+            _ => None,
+        };
+        if let Some(motivo) = motivo {
+            perfil.registrar_bloqueio(&motivo).map_err(|erro| {
+                io::Error::other(format!(
+                    "{motivo} (falha ao registrar o bloqueio no perfil: {erro})"
+                ))
+            })?;
+        }
+    }
+    controle
+}
+
+fn executar_ciclo(perfil: &Perfil, sessao: u32, restaurar: bool) -> io::Result<Controle> {
+    let mut agente = Agente::novo(Ajustes::novo()?, Pipe, Portao::do_sistema(), sessao)?;
     let limite_trava = Instant::now() + Duration::from_secs(15);
     let mut proxima_lista_sessoes = Instant::now();
     loop {
+        if janela::encerrando() {
+            return Ok(Controle::Encerrar);
+        }
         let agora = Instant::now();
         if agora >= proxima_lista_sessoes {
             agente.definir_sessoes_existentes(sessoes_existentes());
@@ -306,70 +347,14 @@ pub fn executar(
                 resposta => return resposta,
             },
             Err(e) if ocupado(&e) && (!restaurar || agora < limite_trava) => {}
+            Err(e) if ocupado(&e) => {
+                return Ok(Controle::Bloqueado(
+                    "trava do perfil em uso pelo agente".into(),
+                ));
+            }
             Err(e) => return Err(e),
         }
-        thread::sleep(Duration::from_secs(2));
-    }
-}
-
-pub fn ler_tela() -> Fato<FatoTela> {
-    ler_tela_primaria(&TelaDoSistema).map_or(Fato::Desconhecido, |tela| {
-        Fato::Conhecido(FatoTela {
-            alvo: tela.caminho_monitor,
-            atual: RefreshRacional {
-                numerador: tela.refresh_atual.numerador,
-                denominador: tela.refresh_atual.denominador.get(),
-            },
-            maximo: RefreshRacional {
-                numerador: tela.refresh_max_hz,
-                denominador: 1,
-            },
-        })
-    })
-}
-
-/// Fachada provisória do L2. A detecção de tela é disponível; os destinos
-/// interativos serão fornecidos pela fachada do Windows na integração.
-pub struct SomenteTela;
-
-impl LeituraUsuario for SomenteTela {
-    fn ler(&self, destino: &SettingUsuario) -> io::Result<ValorLido> {
-        if let SettingUsuario::Refresh { alvo } = destino {
-            if let Fato::Conhecido(tela) = ler_tela() {
-                if tela.alvo == *alvo {
-                    return Ok(ValorLido {
-                        valor: nvt_core::usuario::ValorUsuario::Refresh(crate::valores::taxa(
-                            tela.atual,
-                        )),
-                        registro_dx_presente: false,
-                        outros_tokens_dx: false,
-                    });
-                }
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "fachada interativa indisponível",
-        ))
-    }
-
-    fn tela(&self) -> Fato<FatoTela> {
-        ler_tela()
-    }
-}
-
-impl EscritaUsuario for SomenteTela {
-    fn escrever(
-        &mut self,
-        _: &SettingUsuario,
-        _: &ValorLido,
-        _: &ValorLido,
-        _: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "fachada interativa indisponível",
-        ))
+        janela::esperar()?;
     }
 }
 

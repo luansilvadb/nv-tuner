@@ -75,12 +75,12 @@ if (-not $Dotnet -or -not (Test-Path $Dotnet)) {
 
 # 1. Compilação release.
 if (-not $SemCompilar) {
-    Write-Host '==> cargo build --release -p nvt-service -p nvt-ui'
+    Write-Host '==> cargo build --release -p nvt-service -p nvt-ui -p nvt-agente'
     Push-Location $Raiz
-    try { Invoke-Nativo 'cargo' @('build', '--release', '-p', 'nvt-service', '-p', 'nvt-ui') }
+    try { Invoke-Nativo 'cargo' @('build', '--release', '-p', 'nvt-service', '-p', 'nvt-ui', '-p', 'nvt-agente') }
     finally { Pop-Location }
 }
-foreach ($exe in 'nvt-service.exe', 'nvt-ui.exe') {
+foreach ($exe in 'nvt-service.exe', 'nvt-ui.exe', 'nvt-agente.exe') {
     if (-not (Test-Path (Join-Path $BinDir $exe))) { throw "Binário ausente: $BinDir\$exe" }
 }
 
