@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Theme;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::button::{ButtonVariant, ButtonVariants};
 use gpui_kit::component::chart::LineChart;
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, StyledExt, WindowExt};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, WindowExt};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -20,7 +20,7 @@ use nvt_ipc::{AmostraSegundo, PARTIDAS_MAX, Partida, Requisicao, Resposta, Resum
 use super::estrutura::{Janela, agora_unix, estado_vazio, explicacao, linha, superficie};
 use crate::demonstracao;
 use crate::servico::{self, FalhaInicio};
-use crate::tema;
+use crate::tema::{self, EstadoBotao as _};
 use crate::textos::partidas as tp;
 
 /// Altura do gráfico pequeno de FPS.
@@ -529,11 +529,11 @@ pub(super) fn grupo_metricas(_janela: &Janela, cx: &mut Context<Janela>) -> AnyE
         .when_some(mensagem, |v, m| v.child(explicacao_dinamica(m, &tema)))
         .child(
             h_flex().child(
-                Button::new("apagar-partidas")
+                tema::botao_base("apagar-partidas")
                     .danger()
                     .small()
                     .label(tp::BOTAO_APAGAR)
-                    .disabled(ausente || apagando)
+                    .indisponivel(ausente || apagando)
                     .loading(apagando)
                     .on_click(cx.listener(|_, _, window, cx| confirmar_apagar(window, cx))),
             ),

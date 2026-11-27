@@ -6,15 +6,18 @@
 
 use std::collections::BTreeSet;
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Theme;
+use gpui_kit::base::motion::{Presence, Spring, Transition, spring, transition};
+
+use super::movimento::{ripple_com_cor, seta_lateral};
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::sidebar::{
-    Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
-};
-use gpui_kit::component::{ActiveTheme, Icon, StyledExt, h_flex, v_flex};
+use gpui_kit::component::button::ButtonVariants;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -26,19 +29,20 @@ use crate::tema;
 use crate::textos as t;
 
 const NAV_INICIO: &str = "Início";
-const NAV_JOGOS: &str = "Jogos";
+const NAV_JOGOS: &str = "Jogos & Otimização";
 const NAV_AVANCADO: &str = "Avançado";
 #[cfg(feature = "medicao-partidas")]
 const NAV_PARTIDAS: &str = "Partidas";
 #[cfg(feature = "medicao-partidas")]
 const BUILD_DE_TESTE: &str = "Build de teste";
-const VERSAO: &str = concat!("versão ", env!("CARGO_PKG_VERSION"));
 
 /// Item da navegação lateral.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Secao {
     Inicio,
     Jogos,
+    // Implementação legada mantida fora das rotas públicas.
+    #[allow(dead_code)]
     Avancado,
     #[cfg(feature = "medicao-partidas")]
     Partidas,
@@ -49,16 +53,11 @@ impl Secao {
     pub fn visiveis() -> &'static [Secao] {
         #[cfg(not(feature = "medicao-partidas"))]
         {
-            &[Secao::Inicio, Secao::Jogos, Secao::Avancado]
+            &[Secao::Inicio, Secao::Jogos]
         }
         #[cfg(feature = "medicao-partidas")]
         {
-            &[
-                Secao::Inicio,
-                Secao::Jogos,
-                Secao::Partidas,
-                Secao::Avancado,
-            ]
+            &[Secao::Inicio, Secao::Jogos, Secao::Partidas]
         }
     }
 
@@ -102,16 +101,6 @@ impl Secao {
     }
 }
 
-/// Telas legadas agrupadas no Avançado (as demais têm seção própria).
-pub const TELAS_AVANCADO: [Tela; 6] = [
-    Tela::VisaoGeral,
-    Tela::Mudancas,
-    Tela::Windows,
-    Tela::Preferencias,
-    Tela::Historico,
-    Tela::Restaurar,
-];
-
 /// Onde a janela abre: seção da lateral e tela legada dentro dela.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Destino {
@@ -133,19 +122,13 @@ impl Destino {
         }
     }
 
-    /// Interpreta `--tela`: chaves das seções novas ou das telas legadas
-    /// (estas abrem na seção que as contém; `jogos` é a seção Jogos).
+    /// Interpreta `--tela` usando as seções disponíveis na navegação.
     pub fn de_chave(s: &str) -> Option<Destino> {
-        if let Some(secao) = Secao::visiveis().iter().copied().find(|x| x.chave() == s) {
-            return Some(Destino::de_secao(secao));
-        }
-        let tela = Tela::de_chave(s)?;
-        let secao = if TELAS_AVANCADO.contains(&tela) {
-            Secao::Avancado
-        } else {
-            Secao::Jogos
-        };
-        Some(Destino { secao, tela })
+        Secao::visiveis()
+            .iter()
+            .copied()
+            .find(|secao| secao.chave() == s)
+            .map(Destino::de_secao)
     }
 }
 
@@ -156,36 +139,194 @@ impl Janela {
         cx.notify();
     }
 
-    pub(super) fn barra_lateral(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let itens = Secao::visiveis().iter().map(|&secao| {
-            SidebarMenuItem::new(secao.titulo())
-                .icon(secao.icone())
-                .active(self.secao == secao)
-                .on_click(cx.listener(move |this, _, _, cx| this.ir_secao(secao, cx)))
-        });
-        let tema = cx.theme();
-        let marca = h_flex()
-            .gap(px(tema::ESP_3))
-            .items_center()
-            .py(px(tema::ESP_2))
-            .child(logo(tema::LOGO_LATERAL))
-            .child(
-                div()
-                    .text_size(px(tema::TAM_SUBTITULO))
+    fn largura_lateral_alvo(&self) -> f32 {
+        if self.lateral_recolhida {
+            tema::LARGURA_LATERAL_RECOLHIDA
+        } else {
+            tema::LARGURA_LATERAL
+        }
+    }
+
+    fn controle_lateral(
+        &self,
+        largura: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let recolhida = self.lateral_recolhida;
+        let abertura = abertura_lateral(largura);
+        let abertura_seta = spring(
+            "morph-seta-lateral",
+            if recolhida { 0_f32 } else { 1_f32 },
+            Spring::new(Duration::from_millis(440)).with_damping(0.54),
+            window,
+            cx,
+        );
+        let rotulo = if recolhida {
+            "Expandir menu"
+        } else {
+            "Recolher menu"
+        };
+        let margem_recolhida =
+            (tema::LARGURA_LATERAL_RECOLHIDA - tema::TAM_BOTAO_ICONE) / 2. - tema::ESP_3;
+        let deslocamento = px(margem_recolhida * (1. - abertura));
+        let cor = cx.theme().muted_foreground;
+        let controle = tema::botao_icone("recolher-menu", seta_lateral(abertura_seta, cor))
+            .ghost()
+            .text_color(cor)
+            .accessibility_label(rotulo)
+            .tooltip(rotulo)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.lateral_recolhida = !this.lateral_recolhida;
+                cx.notify();
+            }));
+        let cor_ripple = tema::cor(tema::COR_RIPPLE_MENU).opacity(0.18);
+        h_flex()
+            .w_full()
+            .flex_shrink_0()
+            .pl(deslocamento)
+            .child(ripple_com_cor(
+                "onda-recolher-menu",
+                true,
+                controle,
+                cor_ripple,
+                window,
+                cx,
+            ))
+    }
+
+    fn barra_lateral(
+        &self,
+        largura: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let tema = cx.theme().clone();
+        let recolhida = self.lateral_recolhida;
+        let abertura = abertura_lateral(largura);
+        let alvo = if recolhida { 0_f32 } else { 1_f32 };
+        let abertura_relogio = spring(
+            "altura-relogio-lateral",
+            alvo,
+            Spring::new(Duration::from_millis(510)).with_damping(0.92),
+            window,
+            cx,
+        )
+        .clamp(0., 1.);
+        let opacidade_texto = ((abertura - 0.2) / 0.8).clamp(0., 1.).powi(2);
+        // O recuo central desconta o preenchimento da barra e a borda do item.
+        let largura_recolhida = largura.min(px(tema::LARGURA_LATERAL_RECOLHIDA));
+        let recuo_central = (largura_recolhida - px(tema::ESP_3) * 2. - px(tema::ESP_6)) / 2.
+            - px(tema::LINHA_FINA);
+        let recuo_icone = recuo_central * (1. - abertura) + px(tema::ESP_4) * abertura;
+        let cor_ripple = tema::cor(tema::COR_RIPPLE_MENU).opacity(0.18);
+        let itens: Vec<_> = Secao::visiveis()
+            .iter()
+            .map(|&secao| {
+                let ativo = self.secao == secao;
+                let selecao = transition(
+                    SharedString::from(format!("selecao-lateral-{}", secao.chave())),
+                    if ativo { 1_f32 } else { 0_f32 },
+                    Transition::new(Duration::from_millis(160)),
+                    window,
+                    cx,
+                );
+                let item = h_flex()
+                    .w_full()
+                    .id(secao.chave())
+                    .aria_label(secao.titulo())
+                    .when(recolhida, |v| {
+                        v.tooltip(move |window, cx| Tooltip::new(secao.titulo()).build(window, cx))
+                    })
+                    .h(px(tema::ALTURA_ITEM_MENU))
+                    .gap(px(tema::ESP_4))
+                    .pl(recuo_icone)
+                    .pr(px(tema::ESP_4))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(transparent_black())
+                    .rounded_full()
+                    .focusable()
+                    .tab_stop(true)
+                    .focus_visible(|v| v.border_color(tema::cor(tema::BORDA_FOCO_MENU)))
+                    .cursor_pointer()
                     .font_semibold()
-                    .child(crate::textos::TITULO_JANELA),
-            );
-        let versao = div()
-            .text_size(px(tema::TAM_LEGENDA))
-            .text_color(tema.muted_foreground)
-            .child(VERSAO);
-        #[cfg(feature = "medicao-partidas")]
-        let versao = versao.child(format!(" · {BUILD_DE_TESTE}"));
-        Sidebar::new("navegacao")
-            .w(px(tema::LARGURA_LATERAL))
-            .header(SidebarHeader::new().child(marca))
-            .child(SidebarGroup::new("").child(SidebarMenu::new().children(itens)))
-            .footer(SidebarFooter::new().child(versao))
+                    .text_color(tema.muted_foreground)
+                    .bg(tema::cor(tema::FUNDO_ITEM_MENU_ATIVO).opacity(selecao))
+                    .when(ativo, |v| {
+                        v.text_color(tema::cor(tema::TEXTO_ITEM_MENU_ATIVO))
+                    })
+                    .hover(|v| {
+                        v.bg(if ativo {
+                            tema::cor(tema::FUNDO_ITEM_MENU_ATIVO_HOVER)
+                        } else {
+                            tema.list_hover
+                        })
+                    })
+                    .active(|v| v.bg(tema::cor(tema::FUNDO_ITEM_MENU_PRESSIONADO)))
+                    .child(
+                        Icon::new(secao.icone())
+                            .size(px(tema::ESP_6))
+                            .flex_shrink_0(),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
+                            .opacity(opacidade_texto)
+                            .child(secao.titulo()),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.ir_secao(secao, cx)));
+                ripple_com_cor(secao.chave(), true, item, cor_ripple, window, cx).w_full()
+            })
+            .collect();
+        let controle = self.controle_lateral(largura, window, cx);
+        v_flex()
+            .w(largura)
+            .overflow_hidden()
+            .h_full()
+            .flex_shrink_0()
+            .px(px(tema::ESP_3))
+            .pt(px(tema::ESP_3))
+            .gap(px(tema::ESP_2))
+            .child(controle)
+            .child(
+                v_flex()
+                    .w_full()
+                    .child(
+                        div()
+                            .relative()
+                            .overflow_hidden()
+                            .h(px(
+                                (tema::ALTURA_RELOGIO_LATERAL + tema::ESP_2) * abertura_relogio
+                            ))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left((largura - px(tema::LARGURA_LATERAL)) / 2.)
+                                    .w(px(tema::LARGURA_LATERAL - 2. * tema::ESP_3))
+                                    .opacity(opacidade_texto * abertura_relogio)
+                                    .child(relogio_lateral(&tema)),
+                            ),
+                    )
+                    .child(v_flex().w_full().gap(px(tema::ESP_2)).children(itens)),
+            )
+            .children({
+                #[cfg(feature = "medicao-partidas")]
+                {
+                    (abertura > 0.).then(|| {
+                        div()
+                            .px(px(tema::ESP_2))
+                            .text_color(tema.muted_foreground)
+                            .opacity(opacidade_texto)
+                            .child(BUILD_DE_TESTE)
+                    })
+                }
+                #[cfg(not(feature = "medicao-partidas"))]
+                {
+                    None::<Div>
+                }
+            })
     }
 
     /// Fatos do estado atual (veredito e linha de estado).
@@ -222,6 +363,44 @@ impl Janela {
         })
     }
 
+    fn barra_superior(&self, tema: &Theme) -> Div {
+        let descricao = match self.secao {
+            Secao::Inicio => Some("Painel de desempenho e drivers"),
+            Secao::Jogos => Some("Biblioteca e preferências rápidas"),
+            _ => None,
+        };
+        h_flex()
+            .w_full()
+            .h(px(tema::ALTURA_BARRA))
+            .flex_shrink_0()
+            .justify_between()
+            .gap(px(tema::ESP_3))
+            .px(px(tema::ESP_8))
+            .text_size(px(tema::TAM_LEGENDA))
+            .child(
+                h_flex()
+                    .gap(px(tema::ESP_3))
+                    .child(div().font_semibold().child(self.secao.titulo()))
+                    .when_some(descricao, |v, descricao| {
+                        v.child(
+                            div()
+                                .border_l_1()
+                                .border_color(tema.border)
+                                .pl(px(tema::ESP_3))
+                                .text_color(tema.muted_foreground)
+                                .child(descricao),
+                        )
+                    }),
+            )
+            .when(crate::demonstracao::ativo().is_some(), |v| {
+                v.child(
+                    div()
+                        .text_color(tema.muted_foreground)
+                        .child("Demonstração"),
+                )
+            })
+    }
+
     /// Título da página (28 px) e, no Avançado, a frase que o apresenta.
     pub(super) fn titulo_pagina(&self, tema: &Theme) -> impl IntoElement {
         let titulo = self.secao.titulo();
@@ -244,10 +423,15 @@ impl Janela {
     }
 
     /// Conteúdo da seção ativa.
-    pub(super) fn conteudo_secao(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn conteudo_secao(
+        &self,
+        largura: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match self.secao {
-            Secao::Inicio => super::inicio::render(self, cx),
-            Secao::Jogos => super::jogos::render(self, cx),
+            Secao::Inicio => super::inicio::render(self, largura, cx),
+            Secao::Jogos => super::jogos::render(self, largura, window, cx),
             Secao::Avancado => super::avancado::render(self, window, cx),
             #[cfg(feature = "medicao-partidas")]
             Secao::Partidas => super::partidas::render(self, cx),
@@ -259,6 +443,12 @@ impl Janela {
 // Janela
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, PartialEq, Eq)]
+struct MensagemFlutuante {
+    tipo: Option<TipoMensagem>,
+    texto: SharedString,
+}
+
 /// Janela principal. Só lê [`EstadoUi`] e envia [`Comando`]s para a thread
 /// de comunicação; a thread da janela nunca bloqueia em E/S.
 pub struct Janela {
@@ -266,6 +456,8 @@ pub struct Janela {
     /// Item ativo da navegação lateral.
     pub(super) secao: Secao,
     comandos: Sender<Comando>,
+    lateral_recolhida: bool,
+    fechar_mensagem: Option<Task<()>>,
     /// Perfis dos jogos com a linha expandida na tela Jogos.
     pub(super) expandidos: BTreeSet<String>,
 }
@@ -282,17 +474,25 @@ impl Janela {
         super::jogos::abrir_inicial(cx, expandidos.first().cloned());
         // Consome os eventos da thread de comunicação sem bloquear a janela.
         cx.spawn(async move |this, cx| {
+            let mut minuto = agora_unix() / 60;
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await;
                 let lote: Vec<Evento> = eventos.try_iter().collect();
-                if lote.is_empty() {
+                let minuto_atual = agora_unix() / 60;
+                if lote.is_empty() && minuto == minuto_atual {
                     continue;
                 }
+                minuto = minuto_atual;
                 let vivo = this.update(cx, |j, cx| {
+                    let houve_resultado =
+                        lote.iter().any(|e| matches!(e, Evento::Concluido { .. }));
                     for e in lote {
                         j.ui.aplicar(e);
+                    }
+                    if houve_resultado {
+                        j.agendar_fechamento_mensagem(cx);
                     }
                     cx.notify();
                 });
@@ -306,6 +506,8 @@ impl Janela {
             ui: EstadoUi::new(destino.tela),
             secao: destino.secao,
             comandos: canal.comandos,
+            lateral_recolhida: false,
+            fechar_mensagem: None,
             expandidos: expandidos.into_iter().collect(),
         }
     }
@@ -319,10 +521,179 @@ impl Janela {
         cx.notify();
     }
 
+    fn agendar_fechamento_mensagem(&mut self, cx: &mut Context<Self>) {
+        self.fechar_mensagem = self.ui.mensagem_visivel().map(|(tipo, _)| {
+            let duracao = match tipo {
+                TipoMensagem::Sucesso => Duration::from_secs(3),
+                TipoMensagem::Adiada | TipoMensagem::Erro => Duration::from_secs(6),
+            };
+            cx.spawn(async move |janela, cx| {
+                cx.background_executor().timer(duracao).await;
+                let _ = janela.update(cx, |janela, cx| {
+                    janela.ui.mensagem = None;
+                    cx.notify();
+                });
+            })
+        });
+    }
+
+    fn mensagem_flutuante(
+        &self,
+        tema: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let atual = if let Some(comando) = &self.ui.ocupado {
+            Some(MensagemFlutuante {
+                tipo: None,
+                texto: if *comando == Comando::Reescanear {
+                    "Procurando jogos…"
+                } else {
+                    t::EM_ANDAMENTO
+                }
+                .into(),
+            })
+        } else {
+            self.ui
+                .mensagem_visivel()
+                .map(|(tipo, texto)| MensagemFlutuante {
+                    tipo: Some(*tipo),
+                    texto: texto.clone().into(),
+                })
+        };
+        let presenca = Presence::new("presenca-mensagem", atual.is_some())
+            .transition(Transition::new(Duration::from_millis(230)))
+            .sample(window, cx);
+        let memoria = window.use_keyed_state("ultima-mensagem", cx, |_, _| {
+            None::<(MensagemFlutuante, Instant)>
+        });
+        let agora = cx.background_executor().now();
+        if let Some(atual) = atual
+            && memoria
+                .read(cx)
+                .as_ref()
+                .is_none_or(|(salva, _)| *salva != atual)
+        {
+            memoria.update(cx, |salva, _| *salva = Some((atual, agora)));
+        }
+        if !presenca.should_render() {
+            if memoria.read(cx).is_some() {
+                memoria.update(cx, |salva, _| *salva = None);
+            }
+            return None;
+        }
+        let (mensagem, inicio) = memoria.read(cx).clone()?;
+        let duracao_conteudo = Duration::from_millis(180);
+        let mistura = if cx.reduce_motion() {
+            1.
+        } else {
+            (agora.saturating_duration_since(inicio).as_secs_f32() / duracao_conteudo.as_secs_f32())
+                .min(1.)
+        };
+        if mistura < 1. {
+            window.request_animation_frame();
+        }
+
+        let texto = mensagem.texto.lines().collect::<Vec<_>>().join(" ");
+        let texto: SharedString = if mensagem.tipo == Some(TipoMensagem::Adiada) {
+            format!("{} · {texto}", t::titulo_adiamento(&texto)).into()
+        } else {
+            texto.into()
+        };
+        let largura_texto = window
+            .text_system()
+            .shape_line(
+                texto.clone(),
+                px(tema::TAM_CORPO),
+                &[TextRun {
+                    len: texto.len(),
+                    font: font(tema.font_family.clone()),
+                    ..Default::default()
+                }],
+                None,
+            )
+            .width;
+        let largura_maxima = (window.viewport_size().width - px(tema::ESP_4) * 2.)
+            .max(Pixels::ZERO)
+            .min(px(tema::LARGURA_TEXTO));
+        let largura = transition(
+            "largura-mensagem",
+            (largura_texto
+                + px(tema::ESP_1
+                    + tema::ESP_4
+                    + tema::ESP_2
+                    + 2. * (tema::ESP_3 + tema::LINHA_FINA)))
+            .min(largura_maxima),
+            Transition::new(Duration::from_millis(220)),
+            window,
+            cx,
+        )
+        .min(largura_maxima);
+
+        let icone = if let Some(tipo) = mensagem.tipo {
+            let (icone, cor) = match tipo {
+                TipoMensagem::Sucesso => (IconName::CircleCheck, tema.success),
+                TipoMensagem::Adiada => (IconName::Info, tema.info),
+                TipoMensagem::Erro => (IconName::CircleX, tema.danger),
+            };
+            Icon::new(icone)
+                .size(px(tema::ESP_4))
+                .text_color(cor)
+                .into_any_element()
+        } else {
+            Spinner::new()
+                .with_size(px(tema::ESP_4))
+                .color(tema.info)
+                .into_any_element()
+        };
+        let progresso = presenca.progress;
+        Some(
+            h_flex()
+                .absolute()
+                .top(px(tema::ESP_2) * progresso)
+                .left_0()
+                .right_0()
+                .justify_center()
+                .px(px(tema::ESP_4))
+                .opacity(progresso)
+                .child(
+                    h_flex()
+                        .id("mensagem-flutuante")
+                        .role(if mensagem.tipo == Some(TipoMensagem::Erro) {
+                            accesskit::Role::Alert
+                        } else {
+                            accesskit::Role::Status
+                        })
+                        .w(largura)
+                        .gap(px(tema::ESP_2))
+                        .px(px(tema::ESP_3))
+                        .py(px(tema::ESP_2))
+                        .rounded(px(tema::RAIO_CARTAO + tema::ESP_1 * (1. - progresso)))
+                        .border_1()
+                        .border_color(tema::cor(tema::BORDA_SUAVE))
+                        .bg(tema.popover)
+                        .shadow_md()
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .opacity(0.35 + 0.65 * mistura)
+                                .child(icone),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .truncate()
+                                .opacity(0.35 + 0.65 * mistura)
+                                .child(texto),
+                        ),
+                ),
+        )
+    }
+
     /// Avisos que a linha de estado e o veredito não cobrem. "Não está
-    /// ativo" e "jogo aberto" ficam só na linha de estado (ou no veredito);
-    /// a versão incompatível, com as duas versões, só no Avançado.
-    fn avisos(&self, cx: &mut Context<Self>) -> Option<Div> {
+    /// ativo" e "jogo aberto" ficam só na linha de estado (ou no veredito).
+    fn avisos(&self) -> Option<Div> {
         let mut v = v_flex().gap(px(tema::ESP_2));
         let mut algum = false;
         if self.ui.atualizado {
@@ -332,12 +703,7 @@ impl Janela {
                     .title(t::ATUALIZADO_REABRA_TITULO),
             );
         }
-        if let Some(m) = self
-            .ui
-            .incompativel
-            .as_ref()
-            .filter(|_| self.secao == Secao::Avancado)
-        {
+        if let Some(m) = &self.ui.incompativel {
             algum = true;
             v = v.child(
                 Alert::error("versao-incompativel", m.clone()).title(t::INCOMPATIVEL_TITULO),
@@ -346,29 +712,6 @@ impl Janela {
         if let Some(e) = &self.ui.erro_local {
             algum = true;
             v = v.child(Alert::error("erro-local", e.clone()));
-        }
-        if let Some((tipo, texto)) = self.ui.mensagem_visivel() {
-            let a = match tipo {
-                TipoMensagem::Sucesso => Alert::success("mensagem", texto.clone()),
-                TipoMensagem::Adiada => {
-                    Alert::info("mensagem", texto.clone()).title(t::titulo_adiamento(texto))
-                }
-                TipoMensagem::Erro => Alert::error("mensagem", texto.clone()),
-            };
-            algum = true;
-            v = v.child(a.on_close(cx.listener(|this, _, _, cx| {
-                this.ui.mensagem = None;
-                cx.notify();
-            })));
-        }
-        if self.ui.ocupado.is_some() {
-            algum = true;
-            v = v.child(
-                div()
-                    .text_size(px(tema::TAM_CORPO))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(t::EM_ANDAMENTO),
-            );
         }
         algum.then_some(v)
     }
@@ -389,42 +732,102 @@ impl Render for Janela {
         if self.secao == Secao::Inicio && super::inicio::boas_vindas_pendente(cx) {
             return base()
                 .flex()
-                .items_center()
-                .justify_center()
-                .child(super::boas_vindas::render(self, cx))
+                .flex_col()
+                .child(TitleBar::new().h(px(tema::ALTURA_BARRA)))
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(super::boas_vindas::render(self, cx)),
+                )
                 .into_any_element();
         }
+        let largura_lateral = spring(
+            "largura-lateral",
+            px(self.largura_lateral_alvo()),
+            Spring::new(Duration::from_millis(470))
+                .with_damping(0.7)
+                .with_epsilon(0.35),
+            window,
+            cx,
+        );
+        let raio_painel = px(tema::RAIO_AREA_CONTEUDO);
+        let largura_conteudo = window.viewport_size().width
+            - largura_lateral
+            - px(tema::ESP_8 + tema::LINHA_FINA) * 2.;
         base()
+            .bg(tema.sidebar)
+            .relative()
             .flex()
             .flex_row()
-            .child(self.barra_lateral(cx))
+            .items_stretch()
+            .child(self.barra_lateral(largura_lateral, window, cx))
             .child(
                 v_flex()
                     .flex_1()
-                    .h_full()
-                    .child(self.linha_estado(cx))
+                    .min_w_0()
+                    .min_h_0()
                     .child(
-                        div()
-                            .id("conteudo")
+                        TitleBar::new()
+                            .h(px(tema::ALTURA_BARRA))
+                            .rounded_tl(Pixels::ZERO)
+                            .rounded_tr(Pixels::ZERO)
+                            .border_color(transparent_black())
+                            .bg(tema.sidebar)
+                            .child(self.barra_superior(&tema)),
+                    )
+                    .child(
+                        v_flex()
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
+                            .min_w_0()
+                            .rounded_tl(raio_painel)
+                            .border_1()
+                            .border_color(tema::cor(tema::BORDA_SUAVE).opacity(0.75))
+                            .bg(tema::cor(tema::FUNDO_AREA_CONTEUDO))
+                            .child(self.linha_estado(cx))
                             .child(
-                                v_flex()
-                                    .px(px(tema::ESP_8))
-                                    .py(px(tema::ESP_6))
-                                    .gap(px(tema::ESP_6))
-                                    .child(self.titulo_pagina(&tema))
-                                    .when(self.ui.restauracao_usuario_pendente(), |v| {
-                                        v.child(explicacao(t::RESTAURACAO_USUARIO_PENDENTE, &tema))
-                                    })
-                                    .children(self.avisos(cx))
-                                    .child(self.conteudo_secao(window, cx)),
+                                div()
+                                    .id("conteudo")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .child(
+                                        v_flex()
+                                            .px(px(tema::ESP_8))
+                                            .py(px(tema::ESP_6))
+                                            .gap(px(tema::ESP_6))
+                                            .when(
+                                                !matches!(self.secao, Secao::Inicio | Secao::Jogos),
+                                                |v| v.child(self.titulo_pagina(&tema)),
+                                            )
+                                            .when(self.ui.restauracao_usuario_pendente(), |v| {
+                                                v.child(explicacao(
+                                                    t::RESTAURACAO_USUARIO_PENDENTE,
+                                                    &tema,
+                                                ))
+                                            })
+                                            .children(self.avisos())
+                                            .child(self.conteudo_secao(
+                                                largura_conteudo,
+                                                window,
+                                                cx,
+                                            )),
+                                    ),
                             ),
                     ),
             )
+            .children(self.mensagem_flutuante(&tema, window, cx))
             .into_any_element()
     }
+}
+
+fn abertura_lateral(largura: Pixels) -> f32 {
+    ((f32::from(largura) - tema::LARGURA_LATERAL_RECOLHIDA)
+        / (tema::LARGURA_LATERAL - tema::LARGURA_LATERAL_RECOLHIDA))
+        .clamp(0., 1.)
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +840,7 @@ pub(super) fn superficie(tema: &Theme) -> Div {
         .w_full()
         .rounded(px(tema::RAIO_CARTAO))
         .border_1()
-        .border_color(tema.border)
+        .border_color(tema::cor(tema::BORDA_SUAVE))
         .bg(tema.group_box)
 }
 
@@ -522,6 +925,62 @@ pub(super) fn explicacao(texto: &'static str, tema: &Theme) -> Div {
         .child(texto)
 }
 
+fn relogio_lateral(tema: &Theme) -> Div {
+    let utc = agora_unix() as i64;
+    let local = utc + crate::fuso::deslocamento_local(utc);
+    let (ano, mes, dia, hora, minuto, _) = crate::modelo::civil(local);
+    let dias = [
+        "domingo",
+        "segunda-feira",
+        "terça-feira",
+        "quarta-feira",
+        "quinta-feira",
+        "sexta-feira",
+        "sábado",
+    ];
+    let meses = [
+        "janeiro",
+        "fevereiro",
+        "março",
+        "abril",
+        "maio",
+        "junho",
+        "julho",
+        "agosto",
+        "setembro",
+        "outubro",
+        "novembro",
+        "dezembro",
+    ];
+    let dia_semana = dias[(local.div_euclid(86_400) + 4).rem_euclid(7) as usize];
+    let mes = meses[(mes - 1) as usize];
+
+    v_flex()
+        .items_center()
+        .text_center()
+        .pt(px(tema::ESP_4))
+        .pb(px(tema::ESP_APOS_RELOGIO))
+        .child(
+            div()
+                .font_bold()
+                .text_size(px(tema::TAM_RELOGIO_LATERAL))
+                .child(format!("{hora:02}:{minuto:02}")),
+        )
+        .child(
+            div()
+                .font_semibold()
+                .text_size(px(tema::TAM_SUBTITULO))
+                .text_color(tema.muted_foreground)
+                .child(dia_semana),
+        )
+        .child(
+            div()
+                .mt(px(tema::ESP_1))
+                .text_color(tema.muted_foreground)
+                .child(format!("{dia} de {mes} de {ano}")),
+        )
+}
+
 /// Instante atual (Unix, segundos) para os tempos relativos da atualização.
 pub(super) fn agora_unix() -> u64 {
     std::time::SystemTime::now()
@@ -533,23 +992,20 @@ pub(super) fn agora_unix() -> u64 {
 mod testes {
     use std::collections::HashSet;
 
-    use super::{Destino, Secao, TELAS_AVANCADO, Tela};
+    use super::{Destino, Secao, Tela};
 
     #[cfg(not(feature = "medicao-partidas"))]
     #[test]
-    fn tres_itens_no_build_normal() {
-        assert_eq!(
-            Secao::visiveis(),
-            [Secao::Inicio, Secao::Jogos, Secao::Avancado]
-        );
+    fn dois_itens_no_build_normal() {
+        assert_eq!(Secao::visiveis(), [Secao::Inicio, Secao::Jogos]);
         let titulos: Vec<_> = Secao::visiveis().iter().map(|s| s.titulo()).collect();
-        assert_eq!(titulos, ["Início", "Jogos", "Avançado"]);
+        assert_eq!(titulos, ["Início", "Jogos & Otimização"]);
     }
 
     #[cfg(feature = "medicao-partidas")]
     #[test]
     fn partidas_no_build_de_teste() {
-        assert_eq!(Secao::visiveis().len(), 4);
+        assert_eq!(Secao::visiveis().len(), 3);
         assert!(Secao::visiveis().contains(&Secao::Partidas));
         assert_eq!(Secao::Partidas.titulo(), "Partidas");
     }
@@ -564,15 +1020,10 @@ mod testes {
     }
 
     #[test]
-    fn toda_tela_legada_alcancavel() {
-        for tela in Tela::TODAS {
-            let d = Destino::de_chave(tela.chave()).expect("chave legada");
-            assert_eq!(d.tela, tela);
-            assert!(Secao::visiveis().contains(&d.secao));
-            assert!(
-                TELAS_AVANCADO.contains(&tela) || d.secao.tela_inicial() == tela,
-                "{tela:?} sem caminho pela navegação"
-            );
+    fn rotas_do_avancado_ficam_indisponiveis() {
+        assert_eq!(Destino::de_chave("avancado"), None);
+        for tela in Tela::TODAS.into_iter().filter(|tela| *tela != Tela::Jogos) {
+            assert_eq!(Destino::de_chave(tela.chave()), None);
         }
     }
 
@@ -581,13 +1032,6 @@ mod testes {
         for &s in Secao::visiveis() {
             assert_eq!(Destino::de_chave(s.chave()), Some(Destino::de_secao(s)));
         }
-        assert_eq!(
-            Destino::de_chave("mudancas"),
-            Some(Destino {
-                secao: Secao::Avancado,
-                tela: Tela::Mudancas
-            })
-        );
         assert_eq!(Destino::de_chave("nada"), None);
         assert_eq!(Destino::default().secao, Secao::Inicio);
     }

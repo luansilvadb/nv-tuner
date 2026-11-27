@@ -6,6 +6,7 @@ mod boas_vindas;
 mod estrutura;
 mod inicio;
 mod jogos;
+mod movimento;
 #[cfg(feature = "medicao-partidas")]
 mod partidas;
 

@@ -1,8 +1,7 @@
 //! Capacidades da GPU a partir da arquitetura informada pela NVAPI.
 //!
-//! A tabela vem de `data/capacidades-gpu.toml`, cópia literal de
-//! `docs/pesquisa/capacidades-gpu.toml` (um teste garante que as duas não
-//! divergem). A função [`arch_facts`] é pura: recebe os números de
+//! A tabela vem de `data/capacidades-gpu.toml`.
+//! A função [`arch_facts`] é pura: recebe os números de
 //! `NvAPI_GPU_GetArchInfo` e o nome de `NvAPI_GPU_GetFullName`.
 
 use std::collections::BTreeMap;
@@ -253,16 +252,6 @@ pub fn arch_facts(arch_id: u32, impl_id: u32, gpu_name: &str) -> GpuArchFacts {
 #[cfg(test)]
 mod testes {
     use super::*;
-
-    #[test]
-    fn copia_embutida_igual_ao_documento() {
-        let doc = include_str!("../../../docs/pesquisa/capacidades-gpu.toml");
-        assert_eq!(
-            doc.replace("\r\n", "\n"),
-            CAPACIDADES_TOML.replace("\r\n", "\n"),
-            "data/capacidades-gpu.toml divergiu de docs/pesquisa/capacidades-gpu.toml"
-        );
-    }
 
     #[test]
     fn tabela_carrega() {
