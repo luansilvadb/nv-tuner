@@ -21,7 +21,8 @@ pub use painel::{
     linha_estado_visivel, status_jogo, veredito,
 };
 
-/// Telas da navegação lateral.
+/// Telas usadas pelo estado da interface, incluindo os painéis internos legados.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tela {
     VisaoGeral,
@@ -33,6 +34,7 @@ pub enum Tela {
     Restaurar,
 }
 
+#[cfg(test)]
 impl Tela {
     pub const TODAS: [Tela; 7] = [
         Tela::VisaoGeral,
@@ -44,7 +46,7 @@ impl Tela {
         Tela::Restaurar,
     ];
 
-    /// Identificador usado na linha de comando (`--tela`) e nas capturas.
+    /// Identificador legado usado nos testes de roteamento.
     pub fn chave(self) -> &'static str {
         match self {
             Tela::VisaoGeral => "visao-geral",

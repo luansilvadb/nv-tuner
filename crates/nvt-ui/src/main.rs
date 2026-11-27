@@ -7,9 +7,7 @@
 //! Opções:
 //!
 //! - `--pipe <nome>`: outro named pipe (testes); padrão `\\.\pipe\nv-tuner`.
-//! - `--tela <chave>`: seção inicial (`inicio`, `jogos`, `avancado`; `partidas`
-//!   no build de teste) ou tela legada (`visao-geral`, `mudancas`,
-//!   `windows`, `preferencias`, `historico`, `restaurar`, abertas no Avançado).
+//! - `--tela <chave>`: seção inicial (`inicio`, `jogos`; `partidas` no build de teste).
 //! - `--sair-apos <segundos>`: fecha sozinha (capturas automatizadas).
 //! - `--expandir <jogo>`: abre já expandida a linha do jogo com esse nome ou perfil
 //!   na tela Jogos (repetível; para capturas).
@@ -104,6 +102,7 @@ fn main() {
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     app.run(move |cx| {
         gpui_kit::init(cx);
+        gpui_kit::base::apply_system_reduce_motion(cx);
         // Textos internos do gpui-component (busca, diálogos) em português.
         gpui_kit::component::set_locale("pt-BR");
         tema::aplicar(cx);
@@ -119,9 +118,9 @@ fn main() {
                 } else {
                     textos::TITULO_JANELA.into()
                 }),
-                ..Default::default()
+                ..gpui_kit::component::TitleBar::title_bar_options()
             }),
-            ..Default::default()
+            ..gpui_kit::component::TitleBar::window_options()
         };
         let tela = opcoes.tela;
         let expandir = opcoes.expandir.clone();
@@ -175,7 +174,7 @@ mod testes {
             "--pipe",
             r"\\.\pipe\teste",
             "--tela",
-            "historico",
+            "jogos",
             "--sair-apos",
             "10",
             "--expandir",
@@ -185,7 +184,7 @@ mod testes {
         ]))
         .unwrap();
         assert_eq!(o.pipe, r"\\.\pipe\teste");
-        assert_eq!(o.tela.tela, Tela::Historico);
+        assert_eq!(o.tela.tela, Tela::Jogos);
         assert_eq!(o.sair_apos, Some(10));
         assert_eq!(o.expandir, ["WARDOGS", "League of Legends"]);
     }

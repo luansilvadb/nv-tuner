@@ -8,7 +8,7 @@
 //! ícone (14) e o botão primário, tudo centrado numa coluna estreita.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::*;
 
@@ -64,7 +64,7 @@ pub(super) fn render(_janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
         )
         .child(
             div().mt(px(tema::ESP_12)).child(
-                Button::new("comecar")
+                tema::botao_base("comecar")
                     .primary()
                     .large()
                     .h(px(tema::ALTURA_BOTAO_DESTAQUE))

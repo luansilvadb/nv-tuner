@@ -5,7 +5,8 @@
 //! contraste sem depender do GPUI; [`aplicar`] as copia para o tema global
 //! do gpui-component.
 
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::{Disableable, Sizable, Theme, ThemeMode};
 use gpui_kit::*;
 
 // ---------------------------------------------------------------------------
@@ -20,18 +21,20 @@ pub const DESTAQUE_ATIVO: u32 = 0x22AFD8;
 pub const TEXTO_SOBRE_DESTAQUE: u32 = 0x08161D;
 
 /// Fundo da área de conteúdo.
-pub const FUNDO: u32 = 0x14171C;
+pub const FUNDO: u32 = 0x0B0B0E;
 /// Fundo da navegação lateral (o quadrado escuro do logo).
-pub const LATERAL: u32 = 0x161A21;
+pub const LATERAL: u32 = 0x15171B;
 /// Cartões e grupos.
-pub const SUPERFICIE: u32 = 0x1C2129;
+pub const SUPERFICIE: u32 = 0x121318;
 /// Linha sob o cursor na lateral e em listas.
-pub const SUPERFICIE_HOVER: u32 = 0x242A34;
+pub const SUPERFICIE_HOVER: u32 = 0x202127;
 /// Borda (a moldura do logo).
-pub const BORDA: u32 = 0x2C3440;
+pub const BORDA: u32 = 0x282A34;
+pub const BORDA_SUAVE: u32 = 0x22242C;
+pub const BORDA_LATERAL: u32 = 0x1C1F26;
 
 pub const TEXTO: u32 = 0xE8ECF1;
-pub const TEXTO_SECUNDARIO: u32 = 0x9AA4B2;
+pub const TEXTO_SECUNDARIO: u32 = 0xA0A2AE;
 
 // ---------------------------------------------------------------------------
 // Fonte
@@ -84,9 +87,10 @@ pub const ESP_12: f32 = 48.;
 
 pub const RAIO: f32 = 6.;
 /// Canto de todo cartão e lista (um só valor em todas as telas).
-pub const RAIO_CARTAO: f32 = 8.;
-/// Logo na lateral e nas boas-vindas.
-pub const LOGO_LATERAL: f32 = 28.;
+pub const RAIO_CARTAO: f32 = 12.;
+pub const RAIO_AREA_CONTEUDO: f32 = 18.;
+pub const FUNDO_AREA_CONTEUDO: u32 = 0x0E0F13;
+/// Logo nas boas-vindas.
 pub const LOGO_BOAS_VINDAS: f32 = 96.;
 /// Círculo do ícone do veredito e dos estados vazios.
 pub const ICONE_DESTAQUE: f32 = 56.;
@@ -104,9 +108,93 @@ pub const COLUNA_ROTULO: f32 = 160.;
 pub const COLUNA_CURTA: f32 = 96.;
 pub const COLUNA_VALOR: f32 = 124.;
 pub const COLUNA_LARGA: f32 = 300.;
-pub const LARGURA_LATERAL: f32 = 240.;
-pub const LARGURA_JANELA: f32 = 1200.;
-pub const ALTURA_JANELA: f32 = 800.;
+pub const ALTURA_BARRA: f32 = 36.;
+pub const LARGURA_MENU_FILTROS: f32 = 268.;
+pub const RAIO_MENU_FILTROS: f32 = 18.;
+pub const FUNDO_MENU_FILTROS: u32 = 0x1B1D27;
+pub const ALTURA_BUSCA: f32 = 40.;
+const ALTURA_BOTAO_MATERIAL: f32 = 40.;
+pub const TAM_BOTAO_ICONE: f32 = ALTURA_BOTAO_MATERIAL;
+const ALTURA_BOTAO_COMPACTO: f32 = 32.;
+const ESP_BOTAO_MATERIAL: f32 = 24.;
+pub const TAM_VALOR_PAINEL: f32 = 24.;
+pub const TAM_PONTO_STATUS: f32 = 6.;
+pub const TAM_CAPA_JOGO: f32 = 44.;
+pub const ALTURA_CARTAO_PAINEL: f32 = 136.;
+pub const ALTURA_PAINEL: f32 = 106.;
+pub const RAIO_PAINEL: f32 = 12.;
+pub const RAIO_CARTAO_PAINEL: f32 = 20.;
+pub const ESP_GRADE: f32 = 14.;
+pub const LINHA_FINA: f32 = 1.;
+pub const ALTURA_ITEM_MENU: f32 = 56.;
+pub const FUNDO_ITEM_MENU_ATIVO: u32 = 0x364553;
+pub const FUNDO_ITEM_MENU_ATIVO_HOVER: u32 = 0x415261;
+pub const FUNDO_ITEM_MENU_PRESSIONADO: u32 = 0x3A4C5E;
+pub const BORDA_FOCO_MENU: u32 = 0x7893AA;
+pub const COR_RIPPLE_MENU: u32 = 0x7998B5;
+pub const TEXTO_ITEM_MENU_ATIVO: u32 = 0xE4EFFA;
+pub const LARGURA_GRADE_TRES: f32 = 830.;
+pub const LARGURA_GRADE_DOIS: f32 = 540.;
+pub const VERDE_PAINEL: u32 = 0x54D5AA;
+pub const FUNDO_PAINEL: u32 = 0x161825;
+pub const FUNDO_CONTROLE: u32 = 0x171922;
+pub const BORDA_BUSCA: u32 = 0x2F313D;
+pub const BORDA_FOCO: u32 = 0x817FD1;
+pub const FUNDO_ICONE: u32 = 0x1D2031;
+pub const TEXTO_ICONE: u32 = 0xA9ABFF;
+pub const ACAO_VIOLETA: u32 = 0x595BC5;
+
+pub const LARGURA_LATERAL: f32 = 268.;
+pub const LARGURA_LATERAL_RECOLHIDA: f32 = 80.;
+pub const TAM_RELOGIO_LATERAL: f32 = 46.;
+pub const ALTURA_RELOGIO_LATERAL: f32 = 168.;
+pub const ESP_APOS_RELOGIO: f32 = 48.;
+pub const LARGURA_JANELA: f32 = 1280.;
+pub const ALTURA_JANELA: f32 = 900.;
+
+pub fn botao_base(id: impl Into<ElementId>) -> Button {
+    Button::new(id).cursor_pointer()
+}
+
+pub trait EstadoBotao {
+    fn indisponivel(self, indisponivel: bool) -> Self;
+}
+
+impl EstadoBotao for Button {
+    fn indisponivel(self, indisponivel: bool) -> Self {
+        let botao = self.disabled(indisponivel);
+        if indisponivel {
+            botao.cursor_default()
+        } else {
+            botao
+        }
+    }
+}
+
+/// Botão de ação com a geometria do Material Design 3.
+pub fn botao(id: impl Into<ElementId>) -> Button {
+    botao_base(id)
+        .h(px(ALTURA_BOTAO_MATERIAL))
+        .px(px(ESP_BOTAO_MATERIAL))
+        .rounded(px(ALTURA_BOTAO_MATERIAL / 2.))
+}
+
+/// Botão de ícone do Material Design 3 com área circular e glifo central.
+pub fn botao_icone(id: impl Into<ElementId>, icone: impl IntoElement) -> Button {
+    botao_base(id)
+        .size(px(TAM_BOTAO_ICONE))
+        .px(px(0.))
+        .rounded(px(ALTURA_BOTAO_MATERIAL / 2.))
+        .child(icone)
+}
+
+/// Variante para ações auxiliares em grupos compactos.
+pub fn botao_compacto(id: impl Into<ElementId>) -> Button {
+    botao_base(id)
+        .small()
+        .h(px(ALTURA_BOTAO_COMPACTO))
+        .rounded(px(ALTURA_BOTAO_COMPACTO / 2.))
+}
 
 /// Cor GPUI a partir de 0xRRGGBB.
 pub fn cor(c: u32) -> Hsla {
@@ -133,15 +221,18 @@ pub fn aplicar(cx: &mut App) {
         t.primary_active = cor(DESTAQUE_ATIVO);
         t.primary_foreground = cor(TEXTO_SOBRE_DESTAQUE);
         // O botão primário do gpui-component lê os campos próprios.
-        t.button_primary = cor(DESTAQUE);
-        t.button_primary_hover = cor(DESTAQUE_HOVER);
-        t.button_primary_active = cor(DESTAQUE_ATIVO);
-        t.button_primary_foreground = cor(TEXTO_SOBRE_DESTAQUE);
+        t.button_primary = cor(ACAO_VIOLETA);
+        t.button_primary_hover = cor(0x6264CD);
+        t.button_primary_active = cor(0x5052B6);
+        t.button_primary_foreground = cor(0xFFFFFF);
         t.ring = cor(DESTAQUE);
+        t.switch_thumb = cor(TEXTO);
         t.link = cor(DESTAQUE);
         t.sidebar = cor(LATERAL);
+        t.title_bar = cor(FUNDO);
+        t.title_bar_border = cor(BORDA_SUAVE);
         t.sidebar_foreground = cor(TEXTO);
-        t.sidebar_border = cor(BORDA);
+        t.sidebar_border = cor(BORDA_LATERAL);
         t.sidebar_accent = cor(SUPERFICIE_HOVER);
         t.sidebar_accent_foreground = cor(TEXTO);
         t.sidebar_primary = cor(DESTAQUE);

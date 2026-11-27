@@ -9,6 +9,19 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
+## [0.3.2] - 2026-11-27
+
+*Busca e filtros na biblioteca de jogos*
+
+### Adicionado
+
+- A tela **Jogos** permite buscar jogos instalados pelo nome e filtrar por plataforma, status e API gráfica.
+
+### Alterado
+
+- O **Início**, a navegação lateral e a tela **Jogos** receberam ajustes de layout e animações.
+- O painel de desempenho do **Início** indica quando não há medições disponíveis. O modo de demonstração exibe valores fictícios.
+
 ## [0.3.1] - 2026-11-26
 
 *Serviço pronto no boot e diagnóstico correto*
@@ -129,7 +142,8 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - **Interface em GPUI** com 6 telas em português e restauração do estado original.
 - Instalador MSI.
 
-[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.1...HEAD
+[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.1.0...v0.2.0

@@ -6,10 +6,8 @@
 //! mexer na janela legada.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
-use gpui_kit::component::{
-    ActiveTheme, Disableable, Sizable, StyledExt, WindowExt, h_flex, v_flex,
-};
+use gpui_kit::component::button::{ButtonVariant, ButtonVariants};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -22,7 +20,7 @@ use crate::modelo::{
     Conexao, Fatos, MotivoIndisponivel, StatusJogo, Veredito, status_jogo, veredito,
 };
 use crate::servico::{self, AcaoInicio, FalhaInicio, RespostaInicio};
-use crate::tema;
+use crate::tema::{self, EstadoBotao as _};
 use crate::textos::inicio as t;
 use crate::textos::jogos as tj;
 use crate::textos::saude::{self as ts, SecaoSaude};
@@ -248,11 +246,11 @@ pub(super) fn botao_abrir(
         .gap(px(tema::ESP_1))
         .items_start()
         .child(
-            Button::new(id)
+            tema::botao_base(id)
                 .outline()
                 .small()
                 .label(rotulo)
-                .disabled(bloqueio.is_some())
+                .indisponivel(bloqueio.is_some())
                 .on_click(cx.listener(|this, _, _, cx| clicar_abrir(this, cx))),
         )
         .when_some(aviso, |c, a| {
@@ -494,8 +492,205 @@ pub(super) fn cor_tom(t: TomVeredito, tema: &component::Theme) -> Hsla {
     }
 }
 
-/// Conteúdo da seção Início (as boas-vindas são desenhadas pela estrutura).
-pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
+pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>) -> AnyElement {
+    let tema = cx.theme();
+    let gpu = janela
+        .ui
+        .dados
+        .estado
+        .as_ref()
+        .and_then(|estado| estado.gpu.as_ref());
+    let cenario = demonstracao::ativo();
+    let simulacao = cenario.is_some() && gpu.is_some();
+    let v = veredito(&janela.fatos(), janela.ui.saude().as_ref());
+    let texto = t::veredito(&v);
+    let descricao = if cenario == Some(demonstracao::Cenario::Otimizado) {
+        "Todos os subsistemas calibrados e otimizados para máxima estabilidade competitiva.".into()
+    } else {
+        texto.frase
+    };
+    let nome = gpu.map_or(texto.titulo.as_str(), |gpu| gpu.nome.as_str());
+    let colunas = if largura >= px(tema::LARGURA_GRADE_TRES) {
+        3
+    } else if largura >= px(tema::LARGURA_GRADE_DOIS) {
+        2
+    } else {
+        1
+    };
+
+    let cartoes = [
+        (
+            "LATÊNCIA DO SISTEMA",
+            "2.4 ms",
+            "−0.8 ms",
+            "Reflex + Boost",
+            "PC + Display",
+            IconName::Gauge,
+            true,
+        ),
+        (
+            "FRAMETIMES & JITTER",
+            "4.1 ms",
+            "±0.18 ms",
+            "Jitter",
+            "< 0.2 ms",
+            IconName::ChartLine,
+            false,
+        ),
+        (
+            "LATÊNCIA DO PERIFÉRICO",
+            "0.8 ms",
+            "1000 Hz",
+            "Taxa de Polling",
+            "USB Direct Interrupt",
+            IconName::Mouse,
+            false,
+        ),
+        (
+            "FILA DE RENDERIZAÇÃO",
+            "0 frames",
+            "",
+            "Ultra Low Latency",
+            "Buffer Prerender: OFF",
+            IconName::Layers,
+            true,
+        ),
+        (
+            "DWM BYPASS LATENCY",
+            "0.0 ms",
+            "Direct Flip MPO",
+            "Composição de Janela",
+            "Flip Model (Bypassed)",
+            IconName::Zap,
+            true,
+        ),
+    ];
+
+    v_flex()
+        .w_full()
+        .gap(px(tema::ESP_6))
+        .child(
+            superficie(tema)
+                .rounded(px(tema::RAIO_PAINEL))
+                .bg(linear_gradient(
+                    110.,
+                    linear_color_stop(tema.group_box, 0.),
+                    linear_color_stop(tema::cor(tema::FUNDO_PAINEL), 1.),
+                ))
+                .min_h(px(tema::ALTURA_PAINEL))
+                .justify_center()
+                .p(px(tema::ESP_6))
+                .gap(px(tema::ESP_1))
+                .child(
+                    div()
+                        .font_semibold()
+                        .text_size(px(tema::TAM_VALOR_PAINEL))
+                        .child(nome.to_owned()),
+                )
+                .child(div().text_color(tema.muted_foreground).child(descricao)),
+        )
+        .child(
+            div()
+                .grid()
+                .grid_cols(colunas)
+                .gap(px(tema::ESP_GRADE))
+                .children(
+                    cartoes.map(|(titulo, valor, detalhe, rotulo, rodape, icone, verde)| {
+                        let destaque = if verde {
+                            tema::cor(tema::VERDE_PAINEL)
+                        } else {
+                            tema::cor(tema::TEXTO_ICONE)
+                        };
+                        superficie(tema)
+                            .rounded(px(tema::RAIO_CARTAO_PAINEL))
+                            .border_color(tema::cor(tema::BORDA_SUAVE).opacity(0.55))
+                            .min_h(px(tema::ALTURA_CARTAO_PAINEL))
+                            .min_w_0()
+                            .p(px(tema::ESP_4))
+                            .gap(px(tema::ESP_2))
+                            .justify_between()
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .gap(px(tema::ESP_2))
+                                    .child(
+                                        div()
+                                            .font_family("Consolas")
+                                            .text_size(px(tema::TAM_LEGENDA))
+                                            .text_color(tema.muted_foreground)
+                                            .child(titulo),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .size(px(tema::ESP_6))
+                                            .flex_shrink_0()
+                                            .justify_center()
+                                            .rounded(px(tema::RAIO))
+                                            .bg(tema::cor(tema::FUNDO_ICONE))
+                                            .child(
+                                                Icon::new(icone)
+                                                    .size(px(tema::TAM_CORPO))
+                                                    .text_color(destaque),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .items_baseline()
+                                    .flex_wrap()
+                                    .gap(px(tema::ESP_2))
+                                    .font_family("Consolas")
+                                    .child(
+                                        div()
+                                            .font_semibold()
+                                            .text_size(px(tema::TAM_VALOR_PAINEL))
+                                            .child(if simulacao { valor } else { "—" }),
+                                    )
+                                    .when(simulacao && !detalhe.is_empty(), |v| {
+                                        v.child(
+                                            div()
+                                                .text_size(px(tema::TAM_LEGENDA))
+                                                .text_color(if icone == IconName::ChartLine {
+                                                    tema.muted_foreground
+                                                } else {
+                                                    tema::cor(tema::VERDE_PAINEL)
+                                                })
+                                                .child(detalhe),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .flex_wrap()
+                                    .gap(px(tema::ESP_1))
+                                    .border_t_1()
+                                    .border_color(tema::cor(tema::BORDA_SUAVE).opacity(0.65))
+                                    .pt(px(tema::ESP_2))
+                                    .text_size(px(tema::TAM_LEGENDA))
+                                    .child(div().text_color(tema.muted_foreground).child(rotulo))
+                                    .child(
+                                        div()
+                                            .font_family("Consolas")
+                                            .text_color(if simulacao {
+                                                tema.foreground
+                                            } else {
+                                                tema.muted_foreground
+                                            })
+                                            .child(if simulacao {
+                                                rodape
+                                            } else {
+                                                "Sem medição"
+                                            }),
+                                    ),
+                            )
+                    }),
+                ),
+        )
+        .into_any_element()
+}
+
+pub(super) fn recomendacoes(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
     let estado = cx.global::<EstadoInicio>().clone();
     let fatos = janela.fatos();
     // Saúde do PC: cache da thread de comunicação (`ObterSaude`); sem
@@ -521,24 +716,24 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
             }
         };
         acoes = acoes.child(
-            Button::new("aplicar-recomendadas")
+            tema::botao_base("aplicar-recomendadas")
                 .primary()
                 .large()
                 .h(px(tema::ALTURA_BOTAO))
                 .label(t::BOTAO_APLICAR_RECOMENDADAS)
-                .disabled(desabilitado || ocupado.is_some())
+                .indisponivel(desabilitado || ocupado.is_some())
                 .loading(ocupado == Some(AcaoInicio::AplicarRecomendadas))
                 .on_click(cx.listener(|_, _, _, cx| executar(AcaoInicio::AplicarRecomendadas, cx))),
         );
     }
     if b.voltar {
         acoes = acoes.child(
-            Button::new("voltar-a-ajustar")
+            tema::botao_base("voltar-a-ajustar")
                 .primary()
                 .large()
                 .h(px(tema::ALTURA_BOTAO))
                 .label(t::BOTAO_VOLTAR_A_AJUSTAR)
-                .disabled(ocupado.is_some())
+                .indisponivel(ocupado.is_some())
                 .loading(ocupado == Some(AcaoInicio::VoltarAAjustar))
                 .on_click(cx.listener(|_, _, _, cx| executar(AcaoInicio::VoltarAAjustar, cx))),
         );
@@ -547,12 +742,12 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
     // de atenção aparece só na confirmação.
     let desfazer_el = b.desfazer.then(|| {
         h_flex().child(
-            Button::new("desfazer-tudo")
+            tema::botao_base("desfazer-tudo")
                 .ghost()
                 .small()
                 .text_color(tema.muted_foreground)
                 .label(t::LINK_DESFAZER_TUDO)
-                .disabled(ocupado.is_some())
+                .indisponivel(ocupado.is_some())
                 .loading(ocupado == Some(AcaoInicio::DesfazerTudo))
                 .on_click(cx.listener(|_, _, window, cx| abrir_confirmacao(window, cx))),
         )
@@ -643,7 +838,7 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                         .child(t::SECAO_JOGOS),
                 )
                 .child(
-                    Button::new("ver-todos-jogos")
+                    tema::botao_base("ver-todos-jogos")
                         .ghost()
                         .label(t::VER_TODOS)
                         .on_click(cx.listener(|this, _, _, cx| this.ir_secao(Secao::Jogos, cx))),
@@ -664,7 +859,7 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
 
     v_flex()
         .gap(px(tema::ESP_6))
-        .max_w(px(tema::LARGURA_CONTEUDO))
+        .w_full()
         .child(veredito_el)
         .when(!matches!(v, Veredito::Verificando), |c| c.child(jogos_el))
         .when(!matches!(v, Veredito::Verificando), |c| {

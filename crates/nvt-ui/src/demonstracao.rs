@@ -183,6 +183,7 @@ pub fn responder(c: Cenario, d: &mut Dados, cmd: Comando) -> Vec<Evento> {
     } else {
         if let Some(e) = d.estado.as_mut() {
             match &cmd {
+                Comando::DefinirPreferencias(prefs) => e.preferencias = prefs.clone(),
                 Comando::RestaurarOriginal => e.autonomia_pausada = true,
                 Comando::AplicarAgora => e.autonomia_pausada = false,
                 Comando::MarcarAtualizacaoVista { .. } => e.atualizacao.nao_vista = false,
@@ -311,6 +312,32 @@ fn jogo(
 }
 
 fn jogos(c: Cenario) -> Vec<Jogo> {
+    if c == Cenario::Otimizado {
+        return [
+            (
+                "League of Legends",
+                "Riot Games",
+                "dx11",
+                Some("league-of-legends"),
+            ),
+            ("Teamfight Tactics", "Riot Games", "vulkan", None),
+            ("WARDOGS", "Steam", "dx12", None),
+        ]
+        .into_iter()
+        .map(|(nome, launcher, api, competitivo)| {
+            jogo(
+                nome,
+                nome,
+                launcher,
+                api,
+                competitivo,
+                false,
+                &[],
+                vec![aplicada("demo-energia", "Perfil de desempenho aplicado")],
+            )
+        })
+        .collect();
+    }
     let mut cs2 = jogo(
         "Counter-Strike 2",
         "Counter-Strike 2",
@@ -482,14 +509,14 @@ fn estado(c: Cenario, jogos: u32) -> nvt_ipc::Estado {
             ramo: Some("r580_00".into()),
         }),
         gpu: Some(nvt_ipc::Gpu {
-            nome: "NVIDIA GeForce RTX 4070".into(),
-            arquitetura: "ada".into(),
-            vram_mb: 12_282,
+            nome: "NVIDIA GeForce RTX 2060 SUPER".into(),
+            arquitetura: "turing".into(),
+            vram_mb: 8_192,
             capacidades: Capacidades {
                 dlss: true,
-                geracao_quadros: true,
+                geracao_quadros: false,
                 reflex: true,
-                rebar: true,
+                rebar: false,
                 refresh_mhz: Some(165_000),
                 vrr: Vrr {
                     possivel: Some(true),
@@ -499,8 +526,12 @@ fn estado(c: Cenario, jogos: u32) -> nvt_ipc::Estado {
         }),
         preferencias: Preferencias {
             sincronismo: Sincronismo::GSync,
-            qualidade: Qualidade::Equilibrado,
-            limite_fps: Some(162),
+            qualidade: if c == Cenario::Otimizado {
+                Qualidade::Desempenho
+            } else {
+                Qualidade::Equilibrado
+            },
+            limite_fps: Some(if c == Cenario::Otimizado { 240 } else { 162 }),
         },
         jogos,
         ultima_aplicacao: Some(Aplicacao {
@@ -865,7 +896,10 @@ mod testes {
                 }
             };
             assert!(ok, "{c:?}: {v:?}");
-            assert_eq!(ui.dados.jogos.len(), 5);
+            assert_eq!(
+                ui.dados.jogos.len(),
+                if c == Cenario::Otimizado { 3 } else { 5 }
+            );
             assert_eq!(ui.conexao, conexao_local(c).unwrap_or(Conexao::Servico));
         }
         assert!(ui(Cenario::Atualizado).aviso_atualizado().is_some());
@@ -883,6 +917,7 @@ mod testes {
             Comando::AplicarAgora,
             Comando::RestaurarOriginal,
             Comando::Reescanear,
+            Comando::DefinirPreferencias(crate::modelo::preferencias_padrao()),
             Comando::MarcarAtualizacaoVista {
                 versao: VERSAO.into(),
             },
