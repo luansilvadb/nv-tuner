@@ -112,6 +112,14 @@ fn dir_rel(a: &Arquivo) -> &str {
 
 /// Lista candidatos em ordem de preferência (o primeiro é o exe principal provável).
 pub fn candidatos(listagem: &Listagem, exe_indicado: Option<&Path>) -> Vec<CandidatoExe> {
+    candidatos_com_chave(listagem, exe_indicado, crate::model::pasta_canonica)
+}
+
+pub(super) fn candidatos_com_chave(
+    listagem: &Listagem,
+    exe_indicado: Option<&Path>,
+    chave: impl Fn(&Path) -> String,
+) -> Vec<CandidatoExe> {
     let exes: Vec<&Arquivo> = listagem
         .arquivos
         .iter()
@@ -130,11 +138,8 @@ pub fn candidatos(listagem: &Listagem, exe_indicado: Option<&Path>) -> Vec<Candi
     };
 
     if let Some(ind) = exe_indicado {
-        let alvo = crate::model::pasta_canonica(ind);
-        if let Some(a) = exes
-            .iter()
-            .find(|a| crate::model::pasta_canonica(&a.caminho) == alvo)
-        {
+        let alvo = chave(ind);
+        if let Some(a) = exes.iter().find(|a| chave(&a.caminho) == alvo) {
             push(a, MotivoExe::Launcher, Confianca::Alta);
         }
     }

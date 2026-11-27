@@ -382,6 +382,35 @@ esses pontos em vez de “único lugar com `unsafe`”.
 | F1-14 | **IPC v4** (7.6), só com os campos que a fase 1 precisa; as variantes de camada Windows/Jogo ficam para a v5 (fase 2, §12) | testes de `nvt-ipc` (ida e volta serde, rejeição de v3) |
 | F1-15 | **Aviso de G-SYNC sem VRR.** Com `sincronismo = gsync` e `vrr.possivel = Some(false)`, o plano marca o aviso `GsyncSemVrr` e a UI orienta a escolher “sem sincronismo” (sem VRR, a combinação vira V-Sync comum, com fila). Com `possivel = true` e `ativo = false`, aviso `VrrDesligadoNoPainel` (“ative G-SYNC em Painel NVIDIA > Configurar G-SYNC”); o app não liga o VRR do monitor | teste do avaliador |
 
+O serviço e o modo local comparam os nomes dos processos com os executáveis
+conhecidos antes de enumerar a instalação. A enumeração usa metadados de
+diretório, resolve a raiz da instalação e seus ancestrais, e pula pontos de
+reanálise abaixo da raiz. Ao atingir 14 níveis ou ultrapassar 200.000 entradas,
+incluindo diretórios, uma segunda varredura coleta apenas nomes de executáveis,
+até 64 níveis (66 a partir da raiz externa do Xbox) e 2.000.000 de entradas.
+Esses tetos acomodam instalações profundas e limitam o
+trabalho mesmo em árvores com muitos diretórios. Se a segunda varredura
+terminar, a análise usa os arquivos da listagem limitada. Uma falha de
+enumeração ou um limite atingido na segunda varredura adia a análise.
+
+Antes de abrir qualquer candidato a manifesto Xbox, a detecção verifica os
+nomes de executáveis em toda a instalação, partindo da raiz externa. Antes
+de abrir qualquer manifesto ou PE, a detecção verifica o caminho desde a
+instalação, rejeita pontos de reanálise abaixo da raiz e renova
+a lista de processos. Uma correspondência de nome ou uma falha ao renovar a
+lista impede a abertura. O caminho de uma pasta verificada é mantido estável
+durante a abertura por handles de diretório compartilhados para leitura.
+
+A verificação usa os nomes encontrados na enumeração e os já conhecidos.
+Um novo exe que só aparece depois da enumeração pode ficar fora dessa
+comparação. Um exe criado e iniciado entre a última renovação da lista de
+processos e a abertura do arquivo não é detectado por essa checagem. A troca
+deliberada de junções ou links simbólicos ancestrais durante a varredura
+também fica fora da cobertura, pois a verificação e a abertura são operações
+distintas e o sistema de arquivos pode mudar entre elas.
+Eliminar a janela entre a renovação e a abertura exigiria coordenar com o
+lançamento do jogo, o que N1 impede.
+
 ### 7.2 Novos fatos de detecção
 
 | Fato | Tipo | Fonte | Desconhecido quando |

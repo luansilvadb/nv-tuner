@@ -71,27 +71,27 @@ pub fn varrer_dir(xbox_games: &Path) -> Vec<DetectedGame> {
         if !base.is_dir() {
             continue;
         }
-        let content = base.join("Content");
-        let (pasta, cfg) = [content.clone(), base.clone()]
-            .into_iter()
-            .find_map(|p| {
-                std::fs::read_to_string(p.join("MicrosoftGame.config"))
-                    .ok()
-                    .map(|s| (p, config(&s)))
-            })
-            .unwrap_or_else(|| (base.clone(), ConfigXbox::default()));
-        let nome = cfg
-            .nome
-            .clone()
-            .unwrap_or_else(|| e.file_name().to_string_lossy().to_string());
-        let mut j = DetectedGame::new(Launcher::Xbox, nome, &pasta);
-        j.app_id = cfg.identidade;
-        j.exe_indicado = cfg.exe.map(|x| pasta.join(x.replace('/', "\\")));
-        out.push(j);
+        out.push(DetectedGame::new(
+            Launcher::Xbox,
+            e.file_name().to_string_lossy(),
+            base,
+        ));
     }
     out
 }
 
+/// Aplica os metadados do manifesto à raiz verificada.
+pub(crate) fn jogo_do_config(jogo: &DetectedGame, pasta: PathBuf, xml: &str) -> DetectedGame {
+    let cfg = config(xml);
+    let mut metadados = jogo.clone();
+    if let Some(nome) = cfg.nome {
+        metadados.nome = nome;
+    }
+    metadados.app_id = cfg.identidade;
+    metadados.exe_indicado = cfg.exe.map(|x| pasta.join(x.replace('/', "\\")));
+    metadados.pasta = pasta;
+    metadados
+}
 /// Unidades com `XboxGames` na raiz.
 pub fn pastas_xbox() -> Vec<PathBuf> {
     (b'A'..=b'Z')

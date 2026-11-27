@@ -197,17 +197,19 @@ fn api_por_vizinhos(
 fn dll_nvidia<E>(
     listagem: &Listagem,
     nome: &str,
-    verificar: &mut impl FnMut() -> Result<(), E>,
+    ler: &mut impl FnMut(&std::path::Path) -> Result<Result<Vec<u8>, pe::ErroPe>, E>,
 ) -> Result<Option<DllNvidia>, E> {
     listagem
         .arquivos
         .iter()
         .filter(|a| a.nome == nome)
         .try_fold(None, |melhor, a| {
-            verificar()?;
             let dll = DllNvidia {
                 caminho: a.caminho.clone(),
-                versao: pe::versao(&a.caminho).ok().and_then(|v| v.versao),
+                versao: ler(&a.caminho)?
+                    .and_then(|bytes| pe::versao_de_bytes(&bytes))
+                    .ok()
+                    .and_then(|v| v.versao),
             };
             Ok(melhor.into_iter().chain([dll]).max_by(|x, y| {
                 pe::comparar_versoes(
@@ -220,13 +222,13 @@ fn dll_nvidia<E>(
 
 fn dlss<E>(
     listagem: &Listagem,
-    verificar: &mut impl FnMut() -> Result<(), E>,
+    ler: &mut impl FnMut(&std::path::Path) -> Result<Result<Vec<u8>, pe::ErroPe>, E>,
 ) -> Result<Fato<FatosDlss>, E> {
     let mut f = FatosDlss {
-        super_resolution: dll_nvidia(listagem, "nvngx_dlss.dll", verificar)?,
-        ray_reconstruction: dll_nvidia(listagem, "nvngx_dlssd.dll", verificar)?,
-        frame_generation: dll_nvidia(listagem, "nvngx_dlssg.dll", verificar)?,
-        deep_dvc: dll_nvidia(listagem, "nvngx_deepdvc.dll", verificar)?,
+        super_resolution: dll_nvidia(listagem, "nvngx_dlss.dll", ler)?,
+        ray_reconstruction: dll_nvidia(listagem, "nvngx_dlssd.dll", ler)?,
+        frame_generation: dll_nvidia(listagem, "nvngx_dlssg.dll", ler)?,
+        deep_dvc: dll_nvidia(listagem, "nvngx_deepdvc.dll", ler)?,
         ..Default::default()
     };
     for a in &listagem.arquivos {
@@ -241,8 +243,7 @@ fn dlss<E>(
         }
     }
     f.streamline_modulos.sort();
-    f.streamline_versao =
-        dll_nvidia(listagem, "sl.interposer.dll", verificar)?.and_then(|d| d.versao);
+    f.streamline_versao = dll_nvidia(listagem, "sl.interposer.dll", ler)?.and_then(|d| d.versao);
     let evid = match &f.super_resolution {
         Some(d) => format!(
             "nvngx_dlss.dll {}",
@@ -347,6 +348,9 @@ pub fn jogo_em_execucao<S: AsRef<str>, T: AsRef<str>>(
 /// Igual a [`analisar`], mas, se algum exe conhecido do jogo está em
 /// `em_execucao`, não abre nem lista nenhum arquivo da pasta (inclusive DLLs de
 /// anticheat) e devolve [`AnaliseJogo::EmExecucao`].
+///
+/// Esta API de diagnóstico não garante F1-09. O serviço e a interface usam
+/// [`analisar_com_lista_de_processos`].
 pub fn analisar_se_fechado<S: AsRef<str>, T: AsRef<str>>(
     jogo: &DetectedGame,
     servicos: &ServicosSistema,
@@ -376,31 +380,19 @@ pub fn analisar_com_lista_de_processos(
     exes_conhecidos: &[String],
     processos: &[crate::Processo],
     fonte: &(impl crate::FonteProcessos + ?Sized),
-    exigir_listagem_completa: bool,
-) -> Result<AnaliseJogo, AnaliseAdiada> {
+) -> Result<(AnaliseJogo, Option<DetectedGame>), AnaliseAdiada> {
     let nomes: Vec<_> = processos.iter().map(|p| p.nome.as_str()).collect();
     let exes = jogo_em_execucao(jogo, exes_conhecidos, &nomes);
     if !exes.is_empty() {
-        return Ok(AnaliseJogo::EmExecucao { exes });
+        return Ok((AnaliseJogo::EmExecucao { exes }, None));
     }
 
-    let listagem = if exigir_listagem_completa {
-        arquivos::listar_para_verificar_processos(jogo.pasta_instalacao())
-    } else {
-        arquivos::listar(jogo.pasta_instalacao())
-    };
-    let vigiados: HashSet<_> = exes_conhecidos_do_jogo(jogo, exes_conhecidos)
+    let raiz = jogo.pasta_instalacao();
+    let conhecidos: HashSet<_> = exes_conhecidos_do_jogo(jogo, exes_conhecidos)
         .into_iter()
         .map(|n| n.to_lowercase())
-        .chain(
-            listagem
-                .arquivos
-                .iter()
-                .filter(|a| a.nome.ends_with(".exe"))
-                .map(|a| a.nome.clone()),
-        )
         .collect();
-    let verificar = || {
+    let verificar = |vigiados: &HashSet<String>| {
         let lista = fonte
             .ler()
             .map_err(|e| Interrupcao::Adiada(AnaliseAdiada::ProcessosIndisponiveis(e)))?;
@@ -419,17 +411,153 @@ pub fn analisar_com_lista_de_processos(
     };
 
     let analisar = || {
-        verificar()?;
-        if exigir_listagem_completa && listagem.truncada {
-            return Err(Interrupcao::Adiada(AnaliseAdiada::ListagemIncompleta));
+        let xbox = jogo.launcher == crate::Launcher::Xbox;
+        let listar = || {
+            let (listagem, falhou) = arquivos::listar_limitado(raiz, raiz);
+            let mut vigiados = conhecidos.clone();
+            vigiados.extend(
+                listagem
+                    .arquivos
+                    .iter()
+                    .filter(|a| a.nome.ends_with(".exe"))
+                    .map(|a| a.nome.clone()),
+            );
+            if falhou || (listagem.truncada && !arquivos::coletar_exes(raiz, xbox, &mut vigiados)) {
+                return Err(listagem_incompleta());
+            }
+            Ok((listagem, vigiados))
+        };
+        let abrir = |caminho: &std::path::Path, vigiados: &HashSet<String>| {
+            let pai = caminho.parent().ok_or_else(listagem_incompleta)?;
+            let _guardas =
+                arquivos::proteger_diretorios(raiz, pai).map_err(|_| listagem_incompleta())?;
+            match std::fs::symlink_metadata(caminho) {
+                Ok(m) if arquivos::ponto_de_reanalise(&m) || !m.is_file() => {
+                    return Err(listagem_incompleta());
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(listagem_incompleta()),
+            }
+            verificar(vigiados)?;
+            let arquivo = match pe::abrir(caminho) {
+                Ok(a) => a,
+                Err(e) => return Ok(Err(e)),
+            };
+            let dados = arquivo.metadata().map_err(|_| listagem_incompleta())?;
+            if arquivos::ponto_de_reanalise(&dados) || !dados.is_file() {
+                return Err(listagem_incompleta());
+            }
+            Ok(Ok(arquivo))
+        };
+        let analisar_pasta =
+            |resolvido: &DetectedGame, listagem: &Listagem, vigiados: &HashSet<_>| {
+                analisar_listagem_verificada(
+                    resolvido,
+                    listagem,
+                    servicos,
+                    |caminho| chave_exe_verificado(resolvido.pasta_instalacao(), caminho),
+                    |caminho| {
+                        Ok(abrir(caminho, vigiados)?
+                            .map_err(|e| pe::ErroPe::Io(e.to_string()))
+                            .and_then(|arquivo| pe::ler_aberto(arquivo, caminho)))
+                    },
+                )
+                .map(|fatos| AnaliseJogo::Analisado(Box::new(fatos)))
+            };
+        if xbox {
+            // A guarda da instalação também cobre o caminho até a raiz Content.
+            let _guarda =
+                arquivos::proteger_diretorios(raiz, raiz).map_err(|_| listagem_incompleta())?;
+            let (listagem_raiz, mut vigiados) = listar()?;
+            for pasta in [raiz.join("Content"), raiz.to_path_buf()] {
+                let _guarda = match arquivos::proteger_diretorios(raiz, &pasta) {
+                    Ok(g) => g,
+                    Err(e)
+                        if pasta != raiz
+                            && matches!(
+                                e.kind(),
+                                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                            ) =>
+                    {
+                        continue;
+                    }
+                    Err(_) => return Err(listagem_incompleta()),
+                };
+                let content;
+                let listagem = if pasta == raiz {
+                    &listagem_raiz
+                } else {
+                    let (listagem, falhou) = arquivos::listar_limitado(raiz, &pasta);
+                    if falhou {
+                        return Err(listagem_incompleta());
+                    }
+                    vigiados.extend(
+                        listagem
+                            .arquivos
+                            .iter()
+                            .filter(|a| a.nome.ends_with(".exe"))
+                            .map(|a| a.nome.clone()),
+                    );
+                    content = listagem;
+                    &content
+                };
+                verificar(&vigiados)?;
+                let caminho = pasta.join("MicrosoftGame.config");
+                let metadados = abrir(&caminho, &vigiados)?
+                    .ok()
+                    .and_then(|arquivo| {
+                        #[cfg(feature = "instrumentar-aberturas-pe")]
+                        pe::registrar_abertura(&caminho);
+                        std::io::read_to_string(arquivo).ok()
+                    })
+                    .map(|xml| crate::launchers::xbox::jogo_do_config(jogo, pasta.clone(), &xml));
+                if metadados.is_none() && pasta != raiz {
+                    continue;
+                }
+                let resolvido = metadados.as_ref().unwrap_or(jogo);
+                vigiados.extend(
+                    exes_conhecidos_do_jogo(resolvido, &[] as &[String])
+                        .into_iter()
+                        .map(|nome| nome.to_lowercase()),
+                );
+                return Ok((analisar_pasta(resolvido, listagem, &vigiados)?, metadados));
+            }
+            unreachable!("a raiz da instalação sempre é verificada")
         }
-        analisar_listagem_verificada(jogo, &listagem, servicos, verificar)
+        let (listagem, vigiados) = listar()?;
+        verificar(&vigiados)?;
+        Ok((analisar_pasta(jogo, &listagem, &vigiados)?, None))
     };
     match analisar() {
-        Ok(t) => Ok(AnaliseJogo::Analisado(Box::new(t))),
-        Err(Interrupcao::EmExecucao(exes)) => Ok(AnaliseJogo::EmExecucao { exes }),
+        Ok(resultado) => Ok(resultado),
+        Err(Interrupcao::EmExecucao(exes)) => Ok((AnaliseJogo::EmExecucao { exes }, None)),
         Err(Interrupcao::Adiada(motivo)) => Err(motivo),
     }
+}
+
+/// Compara caminhos da listagem sem consultar o disco pelo caminho indicado.
+fn chave_exe_verificado(raiz: &std::path::Path, caminho: &std::path::Path) -> String {
+    let raiz = crate::model::chave_caminho(raiz);
+    let chave = crate::model::chave_caminho(caminho);
+    let prefixo = format!("{}\\", raiz.trim_end_matches('\\'));
+    let Some(relativo) = chave.strip_prefix(&prefixo) else {
+        return chave;
+    };
+    let mut partes = Vec::new();
+    for parte in relativo.split('\\') {
+        match parte {
+            "" | "." => {}
+            ".." if partes.pop().is_some() => {}
+            ".." => return chave,
+            _ => partes.push(parte),
+        }
+    }
+    prefixo + &partes.join("\\")
+}
+
+fn listagem_incompleta() -> Interrupcao {
+    Interrupcao::Adiada(AnaliseAdiada::ListagemIncompleta)
 }
 
 enum Interrupcao {
@@ -443,9 +571,13 @@ pub fn analisar_listagem(
     listagem: &Listagem,
     servicos: &ServicosSistema,
 ) -> GameTraits {
-    analisar_listagem_verificada(jogo, listagem, servicos, || {
-        Ok::<_, std::convert::Infallible>(())
-    })
+    analisar_listagem_verificada(
+        jogo,
+        listagem,
+        servicos,
+        crate::model::pasta_canonica,
+        |caminho| Ok::<_, std::convert::Infallible>(pe::ler_compartilhado(caminho)),
+    )
     .unwrap_or_else(|impossivel| match impossivel {})
 }
 
@@ -453,9 +585,10 @@ fn analisar_listagem_verificada<E>(
     jogo: &DetectedGame,
     listagem: &Listagem,
     servicos: &ServicosSistema,
-    mut verificar: impl FnMut() -> Result<(), E>,
+    chave: impl Fn(&std::path::Path) -> String,
+    mut ler: impl FnMut(&std::path::Path) -> Result<Result<Vec<u8>, pe::ErroPe>, E>,
 ) -> Result<GameTraits, E> {
-    let candidatos = exe::candidatos(listagem, jogo.exe_indicado.as_deref());
+    let candidatos = exe::candidatos_com_chave(listagem, jogo.exe_indicado.as_deref(), chave);
     let principal = candidatos.first();
 
     let mut imports = Vec::new();
@@ -470,8 +603,7 @@ fn analisar_listagem_verificada<E>(
                 .map(|(d, _)| d.to_string())
                 .unwrap_or_default();
         }
-        verificar()?;
-        match pe::imports(&c.caminho) {
+        match ler(&c.caminho)?.and_then(|bytes| pe::imports_de_bytes(&bytes)) {
             Ok(imp) => {
                 let sistema = imp.dlls.iter().any(|d| {
                     d == "kernel32.dll" || d == "ntdll.dll" || d.starts_with("api-ms-win-")
@@ -497,13 +629,13 @@ fn analisar_listagem_verificada<E>(
         api,
         imports,
         imports_ofuscados: ofuscados,
-        dlss: dlss(listagem, &mut verificar)?,
+        dlss: dlss(listagem, &mut ler)?,
         reflex: reflex(listagem),
         anticheats: anticheat::detectar_verificado(
             listagem,
             jogo.exige_vanguard,
             servicos,
-            &mut verificar,
+            &mut ler,
         )?,
         listagem_truncada: listagem.truncada,
     })
@@ -609,16 +741,22 @@ mod testes {
             ..Default::default()
         };
         assert!(reflex(&l).valor);
-        let d = dlss(&l, &mut || Ok::<_, ()>(())).unwrap().valor;
+        let d = dlss(&l, &mut |caminho| {
+            Ok::<_, ()>(pe::ler_compartilhado(caminho))
+        })
+        .unwrap()
+        .valor;
         assert!(d.presente());
         assert_eq!(d.streamline_modulos, vec!["interposer", "reflex"]);
         let vazio = Listagem::default();
         assert!(!reflex(&vazio).valor);
         assert!(
-            !dlss(&vazio, &mut || Ok::<_, ()>(()))
-                .unwrap()
-                .valor
-                .presente()
+            !dlss(&vazio, &mut |caminho| Ok::<_, ()>(pe::ler_compartilhado(
+                caminho
+            )))
+            .unwrap()
+            .valor
+            .presente()
         );
     }
 }

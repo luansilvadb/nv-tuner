@@ -101,6 +101,10 @@ impl DetectedGame {
 /// `/` por `\`, remove o prefixo `\\?\`, a barra final e diferenças de caixa.
 pub fn pasta_canonica(p: &Path) -> String {
     let base = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    chave_caminho(&base)
+}
+
+pub(crate) fn chave_caminho(base: &Path) -> String {
     let mut s = base.to_string_lossy().replace('/', "\\");
     if let Some(r) = s.strip_prefix(r"\\?\UNC\") {
         s = format!(r"\\{r}");

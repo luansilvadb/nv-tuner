@@ -3,7 +3,7 @@
 //! jogo e os fatos de cada jogo cruzados com a base curada
 //! (`regras/jogos.toml`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -219,6 +219,7 @@ pub struct DetectorJogos {
     base: BaseJogos,
     /// Última entrada de cada jogo, pela chave de [`chave_cache`].
     anteriores: BTreeMap<String, JogoEntrada>,
+    avisos_adiamento: BTreeSet<(String, MotivoAdiamento)>,
     /// Já houve varredura com a lista de processos lida. Antes dela (ex.:
     /// serviço recém-iniciado) a pasta de jogo de exe desconhecido não é lida.
     ja_varreu: bool,
@@ -248,6 +249,13 @@ fn adicionar_sem_repetir(lista: &mut Vec<String>, nome: &str) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MotivoAdiamento {
+    ExeDesconhecido,
+    ListagemIncompleta,
+    ProcessosIndisponiveis,
+}
+
 fn aviso_exe_desconhecido(j: &DetectedGame) -> String {
     format!(
         "{}: análise adiada (exe desconhecido com jogo possivelmente aberto)",
@@ -261,6 +269,7 @@ impl DetectorJogos {
         Self {
             base,
             anteriores: BTreeMap::new(),
+            avisos_adiamento: BTreeSet::new(),
             ja_varreu: false,
         }
     }
@@ -340,6 +349,14 @@ impl DetectorJogos {
                 adicionar_sem_repetir(&mut vigiados, &n.to_string_lossy());
             }
         }
+        let mut avisos_adiamento = BTreeSet::new();
+        let mut avisar_adiamento = |avisos: &mut Vec<String>, chave: &str, motivo, mensagem| {
+            let aviso = (chave.to_owned(), motivo);
+            let anterior = self.avisos_adiamento.contains(&aviso);
+            if avisos_adiamento.insert(aviso) && !anterior {
+                avisos.push(mensagem);
+            }
+        };
         let mut saida = Vec::new();
         let mut novos = BTreeMap::new();
         let mut adiadas = Vec::new();
@@ -373,9 +390,13 @@ impl DetectorJogos {
                 let (chave, exes) = &conhecidos[indice];
                 let exe_desconhecido = exes.is_empty() && exe_indicado(j).is_none();
                 let analise = match &lista {
-                    Some(ps) if !exe_desconhecido || le_desconhecidos => {
+                    Some(ps)
+                        if j.launcher == nvt_detect::Launcher::Xbox
+                            || !exe_desconhecido
+                            || le_desconhecidos =>
+                    {
                         Some(nvt_detect::facts::analisar_com_lista_de_processos(
-                            j, servicos, exes, ps, processos, local,
+                            j, servicos, exes, ps, processos,
                         ))
                     }
                     Some(_) if rodando.is_empty() && !self.ja_varreu => {
@@ -385,14 +406,14 @@ impl DetectorJogos {
                     _ => None,
                 };
                 let entrada = match analise {
-                    Some(Ok(AnaliseJogo::Analisado(t))) => {
-                        let Some(e) = jogo_de_traits(j, &t) else {
+                    Some(Ok((AnaliseJogo::Analisado(t), metadados))) => {
+                        let Some(e) = jogo_de_traits(metadados.as_ref().unwrap_or(j), &t) else {
                             avisos.push(format!("{}: exe principal não encontrado", j.nome));
                             continue;
                         };
                         e
                     }
-                    Some(Ok(AnaliseJogo::EmExecucao { exes: abertos })) => {
+                    Some(Ok((AnaliseJogo::EmExecucao { exes: abertos }, _))) => {
                         for exe in &abertos {
                             adicionar_sem_repetir(&mut encontrados, exe);
                         }
@@ -400,7 +421,12 @@ impl DetectorJogos {
                         if confirmados.is_empty() {
                             // Um nome descoberto no disco basta para bloquear a leitura.
                             // O snapshot não informa o caminho do processo.
-                            avisos.push(aviso_exe_desconhecido(j));
+                            avisar_adiamento(
+                                &mut avisos,
+                                chave,
+                                MotivoAdiamento::ExeDesconhecido,
+                                aviso_exe_desconhecido(j),
+                            );
                             let Some(entrada) = self.entrada_sem_leitura(j, chave, exes) else {
                                 continue;
                             };
@@ -410,15 +436,29 @@ impl DetectorJogos {
                         }
                     }
                     Some(Err(AnaliseAdiada::ListagemIncompleta)) => {
-                        avisos.push(format!(
-                            "{}: análise adiada (listagem de arquivos incompleta)",
-                            j.nome
-                        ));
-                        continue;
+                        avisar_adiamento(
+                            &mut avisos,
+                            chave,
+                            MotivoAdiamento::ListagemIncompleta,
+                            format!(
+                                "{}: análise adiada (listagem de arquivos incompleta)",
+                                j.nome
+                            ),
+                        );
+                        let Some(mut entrada) = self.anteriores.get(chave).cloned() else {
+                            continue;
+                        };
+                        entrada.em_execucao = false;
+                        entrada
                     }
                     Some(Err(AnaliseAdiada::ProcessosIndisponiveis(e))) => {
                         lista_processos_indisponivel = true;
-                        avisos.push(format!("{}: análise adiada ({e})", j.nome));
+                        avisar_adiamento(
+                            &mut avisos,
+                            chave,
+                            MotivoAdiamento::ProcessosIndisponiveis,
+                            format!("{}: análise adiada ({e})", j.nome),
+                        );
                         let Some(entrada) = self.entrada_sem_leitura(j, chave, exes) else {
                             continue;
                         };
@@ -426,7 +466,12 @@ impl DetectorJogos {
                     }
                     None => {
                         let Some(entrada) = self.entrada_sem_leitura(j, chave, exes) else {
-                            avisos.push(aviso_exe_desconhecido(j));
+                            avisar_adiamento(
+                                &mut avisos,
+                                chave,
+                                MotivoAdiamento::ExeDesconhecido,
+                                aviso_exe_desconhecido(j),
+                            );
                             continue;
                         };
                         entrada
@@ -453,9 +498,24 @@ impl DetectorJogos {
             pendentes = std::mem::take(&mut adiadas);
         }
         for &indice in &adiadas {
-            avisos.push(aviso_exe_desconhecido(&jogos[indice]));
+            avisar_adiamento(
+                &mut avisos,
+                &conhecidos[indice].0,
+                MotivoAdiamento::ExeDesconhecido,
+                aviso_exe_desconhecido(&jogos[indice]),
+            );
         }
+        self.avisos_adiamento = avisos_adiamento;
         self.anteriores = novos;
+        // O Xbox só descobre a pasta efetiva ao ler o manifesto protegido.
+        saida.sort_by_key(|(indice, _)| jogos[*indice].launcher.prioridade());
+        let mut pastas = BTreeSet::new();
+        saida.retain(|(_, entrada)| {
+            entrada
+                .pasta
+                .as_deref()
+                .is_none_or(|pasta| pastas.insert(nvt_detect::pasta_canonica(pasta)))
+        });
         saida.sort_by_key(|(indice, _)| *indice);
         ResultadoDeteccao {
             jogos: saida.into_iter().map(|(_, entrada)| entrada).collect(),
@@ -480,6 +540,11 @@ impl DetectorJogos {
         conhecidos: &[String],
     ) -> Option<JogoEntrada> {
         let mut e = match self.anteriores.get(chave) {
+            Some(a) if j.launcher == nvt_detect::Launcher::Xbox => {
+                let mut anterior = a.clone();
+                anterior.em_execucao = false;
+                return Some(anterior);
+            }
             Some(a) => a.clone(),
             None => {
                 let exe = exe_indicado(j).or_else(|| conhecidos.first().cloned())?;
@@ -530,6 +595,11 @@ impl DetectorJogos {
         abertos: &[String],
     ) -> JogoEntrada {
         let mut e = match self.anteriores.get(chave) {
+            Some(a) if j.launcher == nvt_detect::Launcher::Xbox => {
+                let mut anterior = a.clone();
+                anterior.em_execucao = true;
+                return anterior;
+            }
             Some(a) => a.clone(),
             None => {
                 // Prefere o exe indicado pelo launcher ou um executável da

@@ -15,6 +15,7 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ### Corrigido
 
+- A detecção passou a conferir os executáveis em execução antes de ler arquivos dos jogos, inclusive o manifesto do Xbox, e adia a análise quando essa verificação fica incompleta.
 - Ao ligar o PC, o **Início** mostra "Iniciando o nv-tuner…" enquanto o serviço sobe. Se o serviço não estiver instalado, aparece "O nv-tuner não está ativo neste PC", com o pedido para reinstalar. Se estiver instalado, mas não responder, aparece "O nv-tuner não está respondendo", com orientação para reiniciar o PC e, se o problema persistir, reinstalar o nv-tuner.
 - No modo só de informações, o nv-tuner termina a busca na primeira vez e mostra os jogos encontrados no **Início** e na tela **Jogos**, sem abrir arquivos de jogos em execução.
 

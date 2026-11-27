@@ -1,14 +1,15 @@
 //! Leitura de PE: imports (normais e delay-load) e VERSIONINFO.
 
 use std::fmt;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 
 use pelite::{PeFile, Wrap};
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE,
 };
 
 /// Tamanho máximo de arquivo lido para análise de PE (256 MiB).
@@ -61,6 +62,11 @@ pub fn recolher_aberturas() -> Vec<std::path::PathBuf> {
     ABERTURAS.with(|aberturas| aberturas.take())
 }
 
+#[cfg(feature = "instrumentar-aberturas-pe")]
+pub(crate) fn registrar_abertura(caminho: &Path) {
+    ABERTURAS.with(|aberturas| aberturas.borrow_mut().push(caminho.to_path_buf()));
+}
+
 /// Núcleo de [`ler_compartilhado`]; `durante` roda com o handle ainda aberto
 /// (usado nos testes de compartilhamento).
 fn ler_com_limite(
@@ -68,13 +74,34 @@ fn ler_com_limite(
     limite: u64,
     durante: impl FnOnce(&Path),
 ) -> Result<Vec<u8>, ErroPe> {
-    let arquivo = OpenOptions::new()
+    let arquivo = abrir(caminho).map_err(|e| ErroPe::Io(e.to_string()))?;
+    let dados = arquivo.metadata().map_err(|e| ErroPe::Io(e.to_string()))?;
+    if super::arquivos::ponto_de_reanalise(&dados) || !dados.is_file() {
+        return Err(ErroPe::Io("caminho de arquivo não verificado".into()));
+    }
+    ler_arquivo(arquivo, caminho, limite, durante)
+}
+
+pub(crate) fn abrir(caminho: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
         .open(caminho)
-        .map_err(|e| ErroPe::Io(e.to_string()))?;
+}
+
+pub(super) fn ler_aberto(arquivo: File, caminho: &Path) -> Result<Vec<u8>, ErroPe> {
+    ler_arquivo(arquivo, caminho, LIMITE_LEITURA, |_| {})
+}
+
+fn ler_arquivo(
+    arquivo: File,
+    caminho: &Path,
+    limite: u64,
+    durante: impl FnOnce(&Path),
+) -> Result<Vec<u8>, ErroPe> {
     #[cfg(feature = "instrumentar-aberturas-pe")]
-    ABERTURAS.with(|aberturas| aberturas.borrow_mut().push(caminho.to_path_buf()));
+    registrar_abertura(caminho);
     let tamanho = arquivo
         .metadata()
         .map_err(|e| ErroPe::Io(e.to_string()))?
@@ -182,8 +209,11 @@ fn tabela(pe: &PeFile<'_>, dir_idx: usize, out: &mut Imports) {
 
 /// Lê imports e delay-imports de um exe.
 pub fn imports(caminho: &Path) -> Result<Imports, ErroPe> {
-    let bytes = ler_compartilhado(caminho)?;
-    let pe = PeFile::from_bytes(&bytes).map_err(formato)?;
+    imports_de_bytes(&ler_compartilhado(caminho)?)
+}
+
+pub(super) fn imports_de_bytes(bytes: &[u8]) -> Result<Imports, ErroPe> {
+    let pe = PeFile::from_bytes(bytes).map_err(formato)?;
     let mut out = Imports::default();
     tabela(&pe, DIR_IMPORT, &mut out);
     tabela(&pe, DIR_DELAY_IMPORT, &mut out);
@@ -200,8 +230,11 @@ pub struct Versao {
 }
 
 pub fn versao(caminho: &Path) -> Result<Versao, ErroPe> {
-    let bytes = ler_compartilhado(caminho)?;
-    let pe = PeFile::from_bytes(&bytes).map_err(formato)?;
+    versao_de_bytes(&ler_compartilhado(caminho)?)
+}
+
+pub(super) fn versao_de_bytes(bytes: &[u8]) -> Result<Versao, ErroPe> {
+    let pe = PeFile::from_bytes(bytes).map_err(formato)?;
     let res = pe.resources().map_err(formato)?;
     let vi = res.version_info().map_err(formato)?;
     let mut v = Versao {

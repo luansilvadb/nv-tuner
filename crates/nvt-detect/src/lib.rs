@@ -39,15 +39,21 @@ pub fn varrer_bibliotecas() -> RelatorioVarredura {
 }
 
 /// Levanta os fatos de um jogo (lê a pasta e, para anticheat, os serviços).
+///
+/// Esta API de diagnóstico não garante F1-09. O serviço e a interface usam
+/// [`facts::analisar_com_lista_de_processos`].
 pub fn analisar_jogo(jogo: &DetectedGame, servicos: &ServicosSistema) -> GameTraits {
     facts::analisar(jogo, servicos)
 }
 
 /// Como [`analisar_jogo`], mas não abre nem lista nenhum arquivo da pasta do
-/// jogo se algum exe dele estiver em `em_execucao` (F1-09). `exes_conhecidos`
+/// jogo se algum exe conhecido dele estiver em `em_execucao`. `exes_conhecidos`
 /// são os exes já sabidos do jogo (ex.: o exe principal da varredura anterior),
 /// além do `exe_indicado` pelo launcher. Com [`AnaliseJogo::EmExecucao`], o
 /// chamador reaproveita os fatos anteriores.
+///
+/// Esta API de diagnóstico não garante F1-09. O serviço e a interface usam
+/// [`facts::analisar_com_lista_de_processos`].
 pub fn analisar_jogo_se_fechado<S: AsRef<str>, T: AsRef<str>>(
     jogo: &DetectedGame,
     servicos: &ServicosSistema,

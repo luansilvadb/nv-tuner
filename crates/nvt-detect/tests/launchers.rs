@@ -134,12 +134,6 @@ fn xbox_config() {
     let jogos = xbox::varrer_dir(&fixture("xbox"));
     assert_eq!(jogos.len(), 1);
     assert_eq!(jogos[0].launcher, Launcher::Xbox);
-    assert!(jogos[0].pasta.ends_with("Content"));
-    assert!(
-        jogos[0]
-            .exe_indicado
-            .as_ref()
-            .unwrap()
-            .ends_with("gamelaunchhelper.exe")
-    );
+    assert!(jogos[0].pasta.ends_with("JogoX"));
+    assert!(jogos[0].exe_indicado.is_none());
 }

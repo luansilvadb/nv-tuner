@@ -67,6 +67,96 @@ fn preparar_pasta(nome: &str) -> PathBuf {
 }
 
 #[test]
+fn servico_encontra_exe_ativo_fora_da_listagem_limitada() {
+    let dir = preparar_pasta("servico-truncado");
+    let limite = nvt_detect::facts::arquivos::PROFUNDIDADE_MAX;
+    let profunda = (0..=limite).fold(dir.clone(), |pasta, _| pasta.join("d"));
+    std::fs::create_dir_all(&profunda).unwrap();
+    std::fs::write(profunda.join("Ativo.exe"), b"MZ").unwrap();
+    let mut jogo = jogo_fora_da_base(&dir);
+    jogo.exe_indicado = Some(dir.join("Indie.exe"));
+
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &[jogo],
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&["Ativo.exe"]),
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(aberturas.is_empty(), "{aberturas:?}");
+    assert_eq!(resultado.processos_em_execucao, ["ativo.exe"]);
+    assert_eq!(resultado.jogos.len(), 1);
+    assert!(!resultado.jogos[0].em_execucao);
+    assert!(resultado.jogos[0].dlss.is_none());
+    assert!(
+        resultado
+            .avisos
+            .iter()
+            .any(|a| a.contains("análise adiada"))
+    );
+}
+
+fn preparar_xbox(raiz: &Path, content: bool) -> PathBuf {
+    let base = raiz.join("Pasta Xbox");
+    let pasta = if content { base.join("Content") } else { base };
+    std::fs::create_dir_all(&pasta).unwrap();
+    std::fs::write(pasta.join("Xbox.exe"), b"MZ").unwrap();
+    let config = pasta.join("MicrosoftGame.config");
+    std::fs::write(
+        &config,
+        r#"<Identity Name="Identidade.Xbox"/><ShellVisuals DefaultDisplayName="Jogo Xbox"/><Executable Name="Xbox.exe"/>"#,
+    )
+    .unwrap();
+    config
+}
+
+#[test]
+fn xbox_aberto_nao_le_config_nem_pe() {
+    let raiz = dir_teste("xbox-aberto");
+    preparar_xbox(&raiz, true);
+    let jogos = nvt_detect::launchers::xbox::varrer_dir(&raiz);
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &jogos,
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&["Xbox.exe"]),
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert!(aberturas.is_empty(), "{aberturas:?}");
+    assert!(resultado.jogos.is_empty());
+}
+
+#[test]
+fn xbox_fechado_le_config_e_reaproveita_fatos_ao_abrir() {
+    for content in [true, false] {
+        let raiz = dir_teste(if content { "xbox-content" } else { "xbox-raiz" });
+        let config = preparar_xbox(&raiz, content);
+        let jogos = nvt_detect::launchers::xbox::varrer_dir(&raiz);
+        let servicos = ServicosSistema::default();
+        let mut detector = DetectorJogos::embutido();
+        let fechado =
+            detector.detectar_jogos_local(&jogos, &[], &servicos, &ProcessosFalsos::default());
+        assert_eq!(fechado.jogos[0].nome, "Jogo Xbox");
+        assert_eq!(fechado.jogos[0].exe, "Xbox.exe");
+        assert_eq!(recolher_aberturas().first(), Some(&config));
+
+        let aberto = detector.detectar_jogos_local(
+            &jogos,
+            &[],
+            &servicos,
+            &ProcessosFalsos::com_nomes(&["Xbox.exe"]),
+        );
+        assert!(recolher_aberturas().is_empty());
+        assert!(aberto.jogos[0].em_execucao);
+        assert_eq!(aberto.jogos[0].nome, fechado.jogos[0].nome);
+        assert_eq!(aberto.jogos[0].exe, fechado.jogos[0].exe);
+        std::fs::remove_dir_all(raiz).unwrap();
+    }
+}
+
+#[test]
 fn lista_ilegivel_nao_le_nenhuma_pasta_e_reaproveita_fatos() {
     let dir = preparar_pasta("lista-ilegivel");
     let jogos = [jogo_fora_da_base(&dir)];
@@ -286,7 +376,7 @@ fn deteccao_aborta_quando_o_jogo_abre_antes_de_ler_conteudo() {
 }
 
 #[test]
-fn deteccao_local_omite_jogos_quando_listagem_truncada() {
+fn deteccao_local_omite_jogos_quando_varredura_de_nomes_trunca() {
     let com_exe = preparar_pasta("local-truncado-parcial");
     let sem_exe = preparar_pasta("local-truncado-sem-exe");
     std::fs::remove_file(sem_exe.join("Indie.exe")).unwrap();
@@ -296,6 +386,16 @@ fn deteccao_local_omite_jogos_quando_listagem_truncada() {
         std::fs::create_dir_all(profunda).unwrap();
     }
     let jogos = [jogo_fora_da_base(&com_exe), jogo_fora_da_base(&sem_exe)];
+    let mut detector = DetectorJogos::embutido();
+    let detectar = |detector: &mut DetectorJogos, fonte: &ProcessosFalsos| {
+        detector.detectar_jogos_local(&jogos, &[], &ServicosSistema::default(), fonte)
+    };
+    let fechados = ProcessosFalsos::com_nomes(&[]);
+    assert_eq!(detectar(&mut detector, &fechados).jogos.len(), 1);
+    assert!(!recolher_aberturas().is_empty());
+    for dir in [&com_exe, &sem_exe] {
+        std::fs::create_dir_all(dir.join(vec!["d"; 65].join("\\"))).unwrap();
+    }
     for fonte in [
         ProcessosFalsos::com_nomes(&[]),
         ProcessosFalsos::com_nomes(&["Indie.exe"]),
@@ -470,4 +570,318 @@ fn aceite_a7_os_14_jogos_da_base_sao_competitivos_com_orientacoes() {
         assert!(!c.config.grava(), "{id}: política não pode gravar");
     }
     let _ = std::fs::remove_dir_all(&raiz);
+}
+
+#[test]
+fn servico_analisa_jogo_fechado_com_pasta_profunda() {
+    let dir = preparar_pasta("servico-profundo-fechado");
+    std::fs::create_dir_all(dir.join(vec!["d"; 24].join("\\"))).unwrap();
+    let mut jogo = jogo_fora_da_base(&dir);
+    jogo.exe_indicado = Some(dir.join("Indie.exe"));
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &[jogo],
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&[]),
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(resultado.jogos.len(), 1);
+    assert_eq!(
+        aberturas,
+        [dir.join("Indie.exe"), dir.join("nvngx_dlss.dll")]
+    );
+}
+
+#[test]
+fn falha_de_enumeracao_adia_no_servico_e_no_modo_local() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let dir = preparar_pasta("enumeracao-ilegivel");
+    let subpasta = dir.join("ilegivel");
+    std::fs::create_dir(&subpasta).unwrap();
+    let exclusivo = std::fs::OpenOptions::new()
+        .access_mode(1) // FILE_LIST_DIRECTORY
+        .share_mode(0)
+        .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
+        .open(&subpasta)
+        .unwrap();
+    let mut jogo = jogo_fora_da_base(&dir);
+    jogo.exe_indicado = Some(dir.join("Indie.exe"));
+    let jogos = [jogo];
+    let servicos = ServicosSistema::default();
+    let fonte = ProcessosFalsos::com_nomes(&[]);
+    for r in [
+        DetectorJogos::embutido().detectar_jogos(&jogos, &[], &servicos, &fonte),
+        DetectorJogos::embutido().detectar_jogos_local(&jogos, &[], &servicos, &fonte),
+    ] {
+        assert!(r.jogos.is_empty(), "{:?}", r.jogos);
+        assert!(
+            r.avisos
+                .iter()
+                .any(|a| a.contains("listagem de arquivos incompleta"))
+        );
+        assert!(recolher_aberturas().is_empty());
+    }
+    drop(exclusivo);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn aviso_de_adiamento_so_reaparece_quando_o_motivo_volta() {
+    let dir = preparar_pasta("aviso-adiado");
+    let profunda = dir.join(vec!["d"; 65].join("\\"));
+    std::fs::create_dir_all(&profunda).unwrap();
+    let mut jogo = jogo_fora_da_base(&dir);
+    jogo.exe_indicado = Some(dir.join("Indie.exe"));
+    let jogos = [jogo];
+    let servicos = ServicosSistema::default();
+    let fonte = ProcessosFalsos::com_nomes(&[]);
+    let mut detector = DetectorJogos::embutido();
+    let avisos = |detector: &mut DetectorJogos| {
+        detector
+            .detectar_jogos(&jogos, &[], &servicos, &fonte)
+            .avisos
+    };
+    assert_eq!(avisos(&mut detector).len(), 1);
+    assert!(avisos(&mut detector).is_empty());
+    std::fs::remove_dir_all(dir.join("d")).unwrap();
+    assert!(avisos(&mut detector).is_empty());
+    std::fs::create_dir_all(profunda).unwrap();
+    assert_eq!(avisos(&mut detector).len(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn xbox_adia_content_em_juncao_sem_abrir_arquivos() {
+    let raiz = dir_teste("xbox-juncao");
+    let bibliotecas = raiz.join("XboxGames");
+    let base = bibliotecas.join("Pasta Xbox");
+    std::fs::create_dir_all(&base).unwrap();
+    let alvo = preparar_xbox(&raiz, false);
+    let juncao = base.join("Content");
+    let status = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(&juncao)
+        .arg(alvo.parent().unwrap())
+        .output();
+    if !status.as_ref().is_ok_and(|o| o.status.success()) {
+        eprintln!(
+            "Teste pulado: cmd /c mklink /J não conseguiu criar a junção Content: {status:?}"
+        );
+        std::fs::remove_dir_all(raiz).unwrap();
+        return;
+    }
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &nvt_detect::launchers::xbox::varrer_dir(&bibliotecas),
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&[]),
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir(juncao).unwrap();
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert!(aberturas.is_empty(), "{aberturas:?}");
+    assert!(resultado.jogos.is_empty());
+    assert!(
+        resultado
+            .avisos
+            .iter()
+            .any(|a| a.contains("listagem de arquivos incompleta"))
+    );
+}
+
+#[test]
+fn xbox_content_completo_independe_de_pasta_irma_profunda() {
+    let raiz = dir_teste("xbox-content-irma");
+    let config = preparar_xbox(&raiz, true);
+    std::fs::create_dir_all(raiz.join("Pasta Xbox").join(vec!["d"; 65].join("\\"))).unwrap();
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &nvt_detect::launchers::xbox::varrer_dir(&raiz),
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&[]),
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert_eq!(resultado.jogos.len(), 1);
+    assert_eq!(resultado.jogos[0].nome, "Jogo Xbox");
+    assert_eq!(aberturas.first(), Some(&config));
+}
+
+struct XboxAbreNaTentativa {
+    chamadas: Cell<usize>,
+    tentativa: usize,
+}
+
+impl FonteProcessos for XboxAbreNaTentativa {
+    fn processos(&self) -> Vec<Processo> {
+        let chamada = self.chamadas.get() + 1;
+        self.chamadas.set(chamada);
+        if chamada == self.tentativa {
+            vec![Processo::new("Xbox.exe", 1, 0)]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[test]
+fn xbox_renova_processos_imediatamente_antes_do_manifesto_content() {
+    let raiz = dir_teste("xbox-corrida-content");
+    preparar_xbox(&raiz, true);
+    std::fs::create_dir_all(raiz.join("Pasta Xbox").join(vec!["d"; 15].join("\\"))).unwrap();
+    let fonte = XboxAbreNaTentativa {
+        chamadas: Cell::new(0),
+        tentativa: 3,
+    };
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &nvt_detect::launchers::xbox::varrer_dir(&raiz),
+        &[],
+        &ServicosSistema::default(),
+        &fonte,
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert!(aberturas.is_empty(), "{aberturas:?}");
+    assert_eq!(resultado.processos_em_execucao, ["xbox.exe"]);
+    assert_eq!(fonte.chamadas.get(), 3);
+}
+
+#[test]
+fn xbox_renova_processos_imediatamente_antes_do_manifesto_fallback() {
+    let raiz = dir_teste("xbox-corrida-fallback");
+    preparar_xbox(&raiz, false);
+    std::fs::create_dir(raiz.join("Pasta Xbox").join("Content")).unwrap();
+    let fonte = XboxAbreNaTentativa {
+        chamadas: Cell::new(0),
+        tentativa: 5,
+    };
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &nvt_detect::launchers::xbox::varrer_dir(&raiz),
+        &[],
+        &ServicosSistema::default(),
+        &fonte,
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert!(aberturas.is_empty(), "{aberturas:?}");
+    assert_eq!(resultado.processos_em_execucao, ["xbox.exe"]);
+    assert_eq!(fonte.chamadas.get(), 5);
+}
+
+#[test]
+fn f109_raiz_em_juncao() {
+    let raiz = dir_teste("root-link");
+    let alvo = raiz.join("Real");
+    let link = raiz.join("RootLink");
+    std::fs::create_dir(&alvo).unwrap();
+    std::fs::write(alvo.join("Game.exe"), b"MZ").unwrap();
+    let mklink = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(&link)
+        .arg(&alvo)
+        .output()
+        .unwrap();
+    assert!(mklink.status.success(), "{mklink:?}");
+    let mut jogo = DetectedGame::new(Launcher::Steam, "RootLink", &link);
+    jogo.exe_indicado = Some(link.join("Game.exe"));
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &[jogo],
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&[]),
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir(link).unwrap();
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert_eq!(resultado.jogos.len(), 1, "{:?}", resultado.avisos);
+    assert_eq!(resultado.jogos[0].exe, "Game.exe");
+    assert_eq!(aberturas.len(), 1, "{aberturas:?}");
+}
+
+#[test]
+fn f109_epic_normaliza_exe_indicado() {
+    let raiz = dir_teste("epic-exe");
+    std::fs::create_dir(raiz.join("Epic")).unwrap();
+    for exe in ["First.exe", "Second.exe"] {
+        std::fs::write(raiz.join(exe), b"MZ").unwrap();
+    }
+    let mut jogo = DetectedGame::new(Launcher::Epic, "Epic", &raiz);
+    jogo.exe_indicado = Some(raiz.join(r"Epic\..\Second.exe"));
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &[jogo],
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&[]),
+    );
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert_eq!(resultado.jogos[0].exe, "Second.exe");
+}
+
+#[test]
+fn f109_xbox_deduplica_content() {
+    let raiz = dir_teste("xbox-dedup");
+    let bibliotecas = raiz.join("XboxGames");
+    let config = preparar_xbox(&bibliotecas, true);
+    let content = config.parent().unwrap();
+    let mut jogos = nvt_detect::launchers::xbox::varrer_dir(&bibliotecas);
+    let mut generico = DetectedGame::new(Launcher::Generico, "Generico", content);
+    generico.exe_indicado = Some(content.join("Xbox.exe"));
+    jogos.push(generico);
+    let jogos = nvt_detect::deduplicar(jogos);
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &jogos,
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&[]),
+    );
+    std::fs::remove_dir_all(raiz).unwrap();
+    let nomes: Vec<_> = resultado
+        .jogos
+        .iter()
+        .map(|j| (j.nome.as_str(), j.exe.as_str()))
+        .collect();
+    assert_eq!(nomes, [("Jogo Xbox", "Xbox.exe")]);
+}
+
+#[test]
+fn f109_xbox_nao_le_manifesto_com_exe_irmao_aberto() {
+    let raiz = dir_teste("xbox-irma-aberta");
+    let config = preparar_xbox(&raiz, true);
+    let base = config.parent().unwrap().parent().unwrap();
+    let outra = base.join("Other");
+    std::fs::create_dir(&outra).unwrap();
+    std::fs::write(outra.join("Other.exe"), b"MZ").unwrap();
+    std::fs::write(&config, r#"<Executable Name="..\Other\Other.exe"/>"#).unwrap();
+    std::fs::create_dir_all(base.join(vec!["d"; 15].join("\\"))).unwrap();
+    let resultado = DetectorJogos::embutido().detectar_jogos(
+        &nvt_detect::launchers::xbox::varrer_dir(&raiz),
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&["Other.exe"]),
+    );
+    let aberturas = recolher_aberturas();
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert!(aberturas.is_empty(), "{aberturas:?}");
+    assert!(resultado.jogos.is_empty());
+    assert_eq!(resultado.processos_em_execucao, ["other.exe"]);
+}
+
+#[test]
+fn f109_listagem_limita_total_de_diretorios() {
+    use nvt_detect::facts::arquivos::{ARQUIVOS_MAX, listar};
+
+    let raiz = dir_teste("teto-diretorios");
+    for grupo in 0..=ARQUIVOS_MAX / 1000 {
+        let pasta = raiz.join(grupo.to_string());
+        std::fs::create_dir(&pasta).unwrap();
+        for indice in 0..(ARQUIVOS_MAX - grupo * 1000).min(1000) {
+            std::fs::create_dir(pasta.join(indice.to_string())).unwrap();
+        }
+    }
+    let listagem = listar(&raiz);
+    std::fs::remove_dir_all(raiz).unwrap();
+    assert!(listagem.truncada);
+    assert_eq!(listagem.pastas.len(), ARQUIVOS_MAX);
 }
