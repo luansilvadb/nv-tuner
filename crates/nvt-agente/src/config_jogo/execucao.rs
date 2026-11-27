@@ -127,9 +127,11 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
 
     /// Há instância com snapshot anterior à geração `g`.
     pub(crate) fn geracao_jogo_pendente(&self, g: u64) -> bool {
-        self.estado.jogo.arquivos.iter().any(|a| {
-            a.geracao < g && (a.intencao.is_some() || a.chaves.iter().any(ChaveGerida::alterada))
-        })
+        self.estado
+            .jogo
+            .arquivos
+            .iter()
+            .any(|a| a.geracao < g && a.gerido())
     }
 
     /// Executa uma ação da tarefa de jogo (uma vez por destino).
@@ -659,13 +661,14 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
         } else {
             g.restaurar_inteiro && g.hash_depois.as_deref() == Some(hash_anterior.as_str())
         };
+        let hash_novo = sha256(&novos).hex();
         for r in &mut resultados {
             r.hash_antes = Some(hash_anterior.clone());
         }
         self.estado.jogo.arquivos[i].intencao = Some(IntencaoJogo {
             operacao: p.operacao,
             hash_anterior: hash_anterior.clone(),
-            hash_novo: sha256(&novos).hex(),
+            hash_novo: hash_novo.clone(),
             chaves_novas,
             restaurar_inteiro,
             resultados: resultados.clone(),
@@ -718,7 +721,6 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
         let gravado = amb
             .gravador
             .gravar(&inst.raiz, &inst.caminho, &novos, &lido.hash);
-        let hash_novo = sha256(&novos).hex();
         let rs = match gravado {
             Ok(h) => self.finalizar_jogo(i, Some(h.hex()), None)?,
             Err(e) => match arquivo::ler(&inst.raiz, &inst.caminho) {
@@ -849,8 +851,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
             Some(s) => s,
             None => {
                 let s = super::armazem::gerar_segredo()?;
-                self.estado.jogo.segredo_conta =
-                    Some(s.iter().map(|b| format!("{b:02x}")).collect());
+                self.estado.jogo.segredo_conta = Some(Hash(s).hex());
                 self.salvar()?;
                 s
             }

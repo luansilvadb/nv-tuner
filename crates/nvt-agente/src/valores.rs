@@ -1,9 +1,7 @@
 use std::io;
 
-use nvt_core::usuario::{RefreshRacional as Taxa, SettingUsuario as Destino, ValorUsuario};
-use nvt_ipc::{
-    AjusteUsuario, Diagnostico, Fato, FatoTela, MouseSpi, RefreshRacional, SettingUsuario,
-};
+use nvt_core::usuario::{SettingUsuario as Destino, ValorUsuario};
+use nvt_ipc::{AjusteUsuario, Diagnostico, Fato, FatoTela, MouseSpi, SettingUsuario};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,35 +70,15 @@ pub(crate) fn atingiu(atual: &ValorLido, pedido: &ValorLido) -> bool {
             && !pedido.registro_dx_presente)
 }
 
-pub(crate) fn taxa(t: RefreshRacional) -> Taxa {
-    Taxa {
-        numerador: t.numerador,
-        denominador: t.denominador,
-    }
-}
-
-pub(crate) fn taxa_ipc(t: Taxa) -> RefreshRacional {
-    RefreshRacional {
-        numerador: t.numerador,
-        denominador: t.denominador,
-    }
-}
+pub(crate) use nvt_windows::conversao::{spi_ipc as mouse, taxa_core as taxa, taxa_ipc};
 
 impl From<MouseSpi> for ValorLido {
     fn from(m: MouseSpi) -> Self {
         Self {
-            valor: ValorUsuario::Spi([m.limiar1, m.limiar2, m.aceleracao]),
+            valor: ValorUsuario::Spi(nvt_windows::conversao::spi_core(m)),
             registro_dx_presente: false,
             outros_tokens_dx: false,
         }
-    }
-}
-
-pub(crate) fn mouse([limiar1, limiar2, aceleracao]: [i32; 3]) -> MouseSpi {
-    MouseSpi {
-        limiar1,
-        limiar2,
-        aceleracao,
     }
 }
 

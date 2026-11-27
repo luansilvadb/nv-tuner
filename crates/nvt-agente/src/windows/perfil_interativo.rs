@@ -48,10 +48,7 @@ pub(super) fn conta_da_sessao(sessao: u32) -> bool {
     ) else {
         return false;
     };
-    let conta: Vec<_> = format!(r"{dominio}\{usuario}")
-        .encode_utf16()
-        .chain([0])
-        .collect();
+    let conta = super::wide(std::ffi::OsStr::new(&format!(r"{dominio}\{usuario}")));
     let mut sid_sessao = [0_u32; SECURITY_MAX_SID_SIZE as usize / size_of::<u32>()];
     let mut tamanho_sid = size_of_val(&sid_sessao) as u32;
     let mut dominio_resolvido = [0; 512];

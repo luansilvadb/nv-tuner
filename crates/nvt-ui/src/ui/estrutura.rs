@@ -4,7 +4,7 @@
 //! Também guarda a [`Janela`] (estado, envio de comandos e desenho comum) e
 //! as peças visuais compartilhadas pelas seções.
 
-use std::collections::BTreeSet;
+use std::cell::RefCell;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::modelo::{
-    Comando, EstadoUi, Evento, Fatos, Tela, TipoMensagem, linha_estado_visivel, veredito,
+    Comando, EstadoUi, Evento, Fatos, TipoMensagem, Veredito, linha_estado_visivel, veredito,
 };
 use crate::servico::Canal;
 use crate::tema;
@@ -30,20 +30,13 @@ use crate::textos as t;
 
 const NAV_INICIO: &str = "Início";
 const NAV_JOGOS: &str = "Jogos & Otimização";
-const NAV_AVANCADO: &str = "Avançado";
-#[cfg(feature = "medicao-partidas")]
-const NAV_PARTIDAS: &str = "Partidas";
-#[cfg(feature = "medicao-partidas")]
-const BUILD_DE_TESTE: &str = "Build de teste";
 
 /// Item da navegação lateral.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Secao {
+    #[default]
     Inicio,
     Jogos,
-    // Implementação legada mantida fora das rotas públicas.
-    #[allow(dead_code)]
-    Avancado,
     #[cfg(feature = "medicao-partidas")]
     Partidas,
 }
@@ -65,9 +58,8 @@ impl Secao {
         match self {
             Secao::Inicio => NAV_INICIO,
             Secao::Jogos => NAV_JOGOS,
-            Secao::Avancado => NAV_AVANCADO,
             #[cfg(feature = "medicao-partidas")]
-            Secao::Partidas => NAV_PARTIDAS,
+            Secao::Partidas => t::partidas::NAV,
         }
     }
 
@@ -75,7 +67,6 @@ impl Secao {
         match self {
             Secao::Inicio => IconName::House,
             Secao::Jogos => IconName::Gamepad2,
-            Secao::Avancado => IconName::SlidersHorizontal,
             #[cfg(feature = "medicao-partidas")]
             Secao::Partidas => IconName::ChartLine,
         }
@@ -86,49 +77,17 @@ impl Secao {
         match self {
             Secao::Inicio => "inicio",
             Secao::Jogos => "jogos",
-            Secao::Avancado => "avancado",
             #[cfg(feature = "medicao-partidas")]
             Secao::Partidas => "partidas",
         }
     }
 
-    /// Tela legada mostrada ao entrar na seção.
-    pub fn tela_inicial(self) -> Tela {
-        match self {
-            Secao::Jogos => Tela::Jogos,
-            _ => Tela::VisaoGeral,
-        }
-    }
-}
-
-/// Onde a janela abre: seção da lateral e tela legada dentro dela.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Destino {
-    pub secao: Secao,
-    pub tela: Tela,
-}
-
-impl Default for Destino {
-    fn default() -> Self {
-        Destino::de_secao(Secao::Inicio)
-    }
-}
-
-impl Destino {
-    pub fn de_secao(secao: Secao) -> Self {
-        Destino {
-            secao,
-            tela: secao.tela_inicial(),
-        }
-    }
-
     /// Interpreta `--tela` usando as seções disponíveis na navegação.
-    pub fn de_chave(s: &str) -> Option<Destino> {
+    pub fn de_chave(s: &str) -> Option<Secao> {
         Secao::visiveis()
             .iter()
             .copied()
             .find(|secao| secao.chave() == s)
-            .map(Destino::de_secao)
     }
 }
 
@@ -138,7 +97,6 @@ impl Janela {
             self.troca_secao = Some(Instant::now());
         }
         self.secao = secao;
-        self.ui.tela = secao.tela_inicial();
         cx.notify();
     }
 
@@ -320,7 +278,7 @@ impl Janela {
                                     .left((largura - px(tema::LARGURA_LATERAL)) / 2.)
                                     .w(px(tema::LARGURA_LATERAL - 2. * tema::ESP_3))
                                     .opacity(opacidade_texto * abertura_relogio)
-                                    .child(relogio_lateral(&tema)),
+                                    .child(self.relogio_lateral(&tema)),
                             ),
                     )
                     .child(v_flex().w_full().gap(px(tema::ESP_2)).children(itens)),
@@ -333,7 +291,7 @@ impl Janela {
                             .px(px(tema::ESP_2))
                             .text_color(tema.muted_foreground)
                             .opacity(opacidade_texto)
-                            .child(BUILD_DE_TESTE)
+                            .child(t::partidas::BUILD_DE_TESTE)
                     })
                 }
                 #[cfg(not(feature = "medicao-partidas"))]
@@ -343,17 +301,28 @@ impl Janela {
             })
     }
 
-    /// Fatos do estado atual (veredito e linha de estado).
-    pub(super) fn fatos(&self) -> Fatos {
-        Fatos::de_ui(&self.ui, self.ui.aviso_atualizado().is_some())
+    /// Fatos do estado atual (veredito e linha de estado), calculados uma
+    /// vez por desenho.
+    pub(super) fn fatos(&self) -> &Fatos {
+        &self.painel.0
+    }
+
+    /// Veredito do estado atual, calculado uma vez por desenho.
+    pub(super) fn veredito(&self) -> &Veredito {
+        &self.painel.1
+    }
+
+    fn atualizar_painel(&mut self) {
+        let fatos = Fatos::de_ui(&self.ui, self.ui.aviso_atualizado().is_some());
+        let v = veredito(&fatos, self.ui.saude().as_ref());
+        self.painel = (fatos, v);
     }
 
     /// Linha de estado única no topo do conteúdo (R-UI-05), só quando
     /// acrescenta algo ao que a tela já diz (no Início, ao veredito).
     pub(super) fn linha_estado(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let f = self.fatos();
-        let v = (self.secao == Secao::Inicio).then(|| veredito(&f, self.ui.saude().as_ref()));
-        let texto = linha_estado_visivel(&f, v.as_ref())
+        let v = (self.secao == Secao::Inicio).then(|| self.veredito());
+        let texto = linha_estado_visivel(self.fatos(), v)
             .filter(|l| !matches!(l, crate::modelo::LinhaEstado::AgenteAusente))
             .map(|l| t::estado::texto(&l));
         let tema = cx.theme();
@@ -383,7 +352,8 @@ impl Janela {
         let descricao = match self.secao {
             Secao::Inicio => Some("Painel de desempenho e drivers"),
             Secao::Jogos => Some("Biblioteca e preferências rápidas"),
-            _ => None,
+            #[cfg(feature = "medicao-partidas")]
+            Secao::Partidas => None,
         };
         h_flex()
             .w_full()
@@ -417,25 +387,14 @@ impl Janela {
             })
     }
 
-    /// Título da página (28 px) e, no Avançado, a frase que o apresenta.
-    pub(super) fn titulo_pagina(&self, tema: &Theme) -> impl IntoElement {
-        let titulo = self.secao.titulo();
-        v_flex()
-            .gap(px(tema::ESP_1))
-            .child(
-                div()
-                    .text_size(px(tema::TAM_TITULO_PAGINA))
-                    .font_semibold()
-                    .child(titulo),
-            )
-            .when(self.secao == Secao::Avancado, |v| {
-                v.child(
-                    div()
-                        .text_size(px(tema::TAM_CORPO))
-                        .text_color(tema.muted_foreground)
-                        .child(t::avancado::INTRODUCAO),
-                )
-            })
+    /// Título da página (28 px).
+    pub(super) fn titulo_pagina(&self) -> impl IntoElement {
+        v_flex().gap(px(tema::ESP_1)).child(
+            div()
+                .text_size(px(tema::TAM_TITULO_PAGINA))
+                .font_semibold()
+                .child(self.secao.titulo()),
+        )
     }
 
     /// Conteúdo da seção ativa.
@@ -448,7 +407,6 @@ impl Janela {
         match self.secao {
             Secao::Inicio => super::inicio::render(self, largura, cx),
             Secao::Jogos => super::jogos::render(self, largura, window, cx),
-            Secao::Avancado => super::avancado::render(self, window, cx),
             #[cfg(feature = "medicao-partidas")]
             Secao::Partidas => super::partidas::render(self, cx),
         }
@@ -474,18 +432,20 @@ pub struct Janela {
     comandos: Sender<Comando>,
     lateral_recolhida: bool,
     fechar_mensagem: Option<Task<()>>,
-    /// Perfis dos jogos com a linha expandida na tela Jogos.
-    pub(super) expandidos: BTreeSet<String>,
     /// Momento da última troca de seção (transição de entrada do conteúdo).
     troca_secao: Option<Instant>,
     /// Salvamento automático das preferências globais, adiado até o usuário
     /// parar de escolher (cada nova escolha reinicia a espera).
     salvar_preferencias: Option<Task<()>>,
+    /// Fatos e veredito do estado atual, refeitos no início de cada desenho.
+    painel: (Fatos, Veredito),
+    /// Texto do relógio lateral do último minuto desenhado.
+    relogio: RefCell<Option<(u64, Relogio)>>,
 }
 
 impl Janela {
     pub fn new(
-        destino: Destino,
+        secao: Secao,
         expandidos: Vec<String>,
         canal: Canal,
         cx: &mut Context<Self>,
@@ -495,13 +455,13 @@ impl Janela {
         super::jogos::abrir_inicial(cx, expandidos.first().cloned());
         // Consome os eventos da thread de comunicação sem bloquear a janela.
         cx.spawn(async move |this, cx| {
-            let mut minuto = agora_unix() / 60;
+            let mut minuto = crate::fuso::agora_unix() / 60;
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await;
                 let lote: Vec<Evento> = eventos.try_iter().collect();
-                let minuto_atual = agora_unix() / 60;
+                let minuto_atual = crate::fuso::agora_unix() / 60;
                 if lote.is_empty() && minuto == minuto_atual {
                     continue;
                 }
@@ -523,16 +483,19 @@ impl Janela {
             }
         })
         .detach();
-        Self {
-            ui: EstadoUi::new(destino.tela),
-            secao: destino.secao,
+        let mut janela = Self {
+            ui: EstadoUi::new(),
+            secao,
+            relogio: RefCell::new(None),
+            painel: (Fatos::default(), Veredito::Verificando),
             comandos: canal.comandos,
             lateral_recolhida: false,
             fechar_mensagem: None,
-            expandidos: expandidos.into_iter().collect(),
             troca_secao: None,
             salvar_preferencias: None,
-        }
+        };
+        janela.atualizar_painel();
+        janela
     }
 
     pub(super) fn enviar(&mut self, c: Comando, cx: &mut Context<Self>) {
@@ -773,6 +736,7 @@ impl Janela {
 
 impl Render for Janela {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.atualizar_painel();
         let tema = cx.theme().clone();
         let base = || {
             div()
@@ -871,7 +835,7 @@ impl Render for Janela {
                                             .gap(px(tema::ESP_6))
                                             .when(
                                                 !matches!(self.secao, Secao::Inicio | Secao::Jogos),
-                                                |v| v.child(self.titulo_pagina(&tema)),
+                                                |v| v.child(self.titulo_pagina()),
                                             )
                                             .children(self.avisos())
                                             .child(self.conteudo_secao(
@@ -917,19 +881,6 @@ pub(super) fn rotulo(texto: impl Into<SharedString>, tema: &Theme) -> Div {
         .font_medium()
         .text_color(tema.muted_foreground)
         .child(texto.into())
-}
-
-pub(super) fn cartao(titulo: &'static str, corpo: impl IntoElement, tema: &Theme) -> Div {
-    superficie(tema)
-        .gap(px(tema::ESP_3))
-        .p(px(tema::ESP_4))
-        .child(
-            div()
-                .text_size(px(tema::TAM_CORPO))
-                .font_semibold()
-                .child(titulo),
-        )
-        .child(corpo)
 }
 
 /// Ícone dentro de um círculo tingido com a cor do estado.
@@ -984,15 +935,7 @@ pub(super) fn logo(tamanho: f32) -> Img {
     img(imagem.clone()).size(px(tamanho)).flex_shrink_0()
 }
 
-pub(super) fn linha(rotulo: &'static str, valor: String, tema: &Theme) -> Div {
-    h_flex()
-        .gap(px(tema::ESP_4))
-        .justify_between()
-        .text_size(px(tema::TAM_CORPO))
-        .child(div().text_color(tema.muted_foreground).child(rotulo))
-        .child(div().text_right().child(valor))
-}
-
+#[cfg(feature = "medicao-partidas")]
 pub(super) fn explicacao(texto: &'static str, tema: &Theme) -> Div {
     div()
         .text_size(px(tema::TAM_CORPO))
@@ -1000,74 +943,73 @@ pub(super) fn explicacao(texto: &'static str, tema: &Theme) -> Div {
         .child(texto)
 }
 
-fn relogio_lateral(tema: &Theme) -> Div {
-    let utc = agora_unix() as i64;
-    let local = utc + crate::fuso::deslocamento_local(utc);
-    let (ano, mes, dia, hora, minuto, _) = crate::modelo::civil(local);
-    let dias = [
-        "domingo",
-        "segunda-feira",
-        "terça-feira",
-        "quarta-feira",
-        "quinta-feira",
-        "sexta-feira",
-        "sábado",
-    ];
-    let meses = [
-        "janeiro",
-        "fevereiro",
-        "março",
-        "abril",
-        "maio",
-        "junho",
-        "julho",
-        "agosto",
-        "setembro",
-        "outubro",
-        "novembro",
-        "dezembro",
-    ];
-    let dia_semana = dias[(local.div_euclid(86_400) + 4).rem_euclid(7) as usize];
-    let mes = meses[(mes - 1) as usize];
-
-    v_flex()
-        .items_center()
-        .text_center()
-        .pt(px(tema::ESP_4))
-        .pb(px(tema::ESP_APOS_RELOGIO))
-        .child(
-            div()
-                .font_bold()
-                .text_size(px(tema::TAM_RELOGIO_LATERAL))
-                .child(format!("{hora:02}:{minuto:02}")),
-        )
-        .child(
-            div()
-                .font_semibold()
-                .text_size(px(tema::TAM_SUBTITULO))
-                .text_color(tema.muted_foreground)
-                .child(dia_semana),
-        )
-        .child(
-            div()
-                .mt(px(tema::ESP_1))
-                .text_color(tema.muted_foreground)
-                .child(format!("{dia} de {mes} de {ano}")),
-        )
+/// Textos do relógio lateral, refeitos só quando o minuto muda.
+#[derive(Clone)]
+struct Relogio {
+    hora: SharedString,
+    dia_semana: &'static str,
+    data: SharedString,
 }
 
-/// Instante atual (Unix, segundos) para os tempos relativos da atualização.
-pub(super) fn agora_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+impl Relogio {
+    fn de_unix(utc: i64) -> Self {
+        let local = utc + crate::fuso::deslocamento_local(utc);
+        let (ano, mes, dia, hora, minuto, _) = crate::modelo::civil(local);
+        let mes = t::MESES[(mes - 1) as usize];
+        Relogio {
+            hora: format!("{hora:02}:{minuto:02}").into(),
+            dia_semana: t::DIAS_SEMANA[(local.div_euclid(86_400) + 4).rem_euclid(7) as usize],
+            data: format!("{dia} de {mes} de {ano}").into(),
+        }
+    }
+}
+
+impl Janela {
+    fn relogio_lateral(&self, tema: &Theme) -> Div {
+        let utc = crate::fuso::agora_unix();
+        let r = {
+            let mut cache = self.relogio.borrow_mut();
+            match &*cache {
+                Some((minuto, r)) if *minuto == utc / 60 => r.clone(),
+                _ => {
+                    let r = Relogio::de_unix(utc as i64);
+                    *cache = Some((utc / 60, r.clone()));
+                    r
+                }
+            }
+        };
+        v_flex()
+            .items_center()
+            .text_center()
+            .pt(px(tema::ESP_4))
+            .pb(px(tema::ESP_APOS_RELOGIO))
+            .child(
+                div()
+                    .font_bold()
+                    .text_size(px(tema::TAM_RELOGIO_LATERAL))
+                    .child(r.hora),
+            )
+            .child(
+                div()
+                    .font_semibold()
+                    .text_size(px(tema::TAM_SUBTITULO))
+                    .text_color(tema.muted_foreground)
+                    .child(r.dia_semana),
+            )
+            .child(
+                div()
+                    .mt(px(tema::ESP_1))
+                    .text_color(tema.muted_foreground)
+                    .child(r.data),
+            )
+    }
 }
 
 #[cfg(test)]
 mod testes {
     use std::collections::HashSet;
 
-    use super::{Destino, Secao, Tela};
+    use super::Secao;
 
     #[cfg(not(feature = "medicao-partidas"))]
     #[test]
@@ -1095,32 +1037,36 @@ mod testes {
     }
 
     #[test]
-    fn rotas_do_avancado_ficam_indisponiveis() {
-        assert_eq!(Destino::de_chave("avancado"), None);
-        for tela in Tela::TODAS.into_iter().filter(|tela| *tela != Tela::Jogos) {
-            assert_eq!(Destino::de_chave(tela.chave()), None);
+    fn rotas_fora_da_navegacao_ficam_indisponiveis() {
+        for chave in [
+            "avancado",
+            "visao-geral",
+            "mudancas",
+            "windows",
+            "historico",
+        ] {
+            assert_eq!(Secao::de_chave(chave), None);
         }
     }
 
     #[test]
     fn chaves_das_secoes() {
         for &s in Secao::visiveis() {
-            assert_eq!(Destino::de_chave(s.chave()), Some(Destino::de_secao(s)));
+            assert_eq!(Secao::de_chave(s.chave()), Some(s));
         }
-        assert_eq!(Destino::de_chave("nada"), None);
-        assert_eq!(Destino::default().secao, Secao::Inicio);
+        assert_eq!(Secao::de_chave("nada"), None);
+        assert_eq!(Secao::default(), Secao::Inicio);
     }
 }
 
 /// R-UI-11: espaçamento, tipografia e cantos só pelos tokens do tema.
 #[cfg(test)]
 mod tokens {
-    const TELAS: [(&str, &str); 5] = [
+    const TELAS: [(&str, &str); 4] = [
         ("estrutura", include_str!("estrutura.rs")),
         ("inicio", include_str!("inicio.rs")),
         ("boas_vindas", include_str!("boas_vindas.rs")),
         ("jogos", include_str!("jogos.rs")),
-        ("avancado", include_str!("avancado.rs")),
     ];
 
     #[test]

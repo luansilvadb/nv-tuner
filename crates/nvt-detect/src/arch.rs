@@ -71,6 +71,8 @@ pub struct GpuArchFacts {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct TabelaToml {
+    // Obrigatório no TOML; lido só pelos testes.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub versao_schema: u32,
     pub arquitetura: Vec<ArquiteturaToml>,
     pub fora_de_escopo: ForaDeEscopoToml,
@@ -111,11 +113,6 @@ pub(crate) fn tabela() -> &'static TabelaToml {
         // é erro de build, não de runtime.
         toml::from_str(CAPACIDADES_TOML).expect("data/capacidades-gpu.toml inválido")
     })
-}
-
-/// Versão do schema da tabela embutida (`versao_schema`).
-pub fn versao_tabela() -> u32 {
-    tabela().versao_schema
 }
 
 fn familia_por_nome(nome: &str) -> FamiliaGpu {

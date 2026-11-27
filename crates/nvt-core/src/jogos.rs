@@ -288,8 +288,13 @@ pub struct BaseJogos {
 
 impl BaseJogos {
     /// Base embutida (`regras/jogos.toml`).
+    /// O parse e a validação rodam uma vez por processo; cada chamada devolve um clone.
     pub fn embutida() -> Result<Self, ErrosJogos> {
-        Self::from_toml("jogos.toml", JOGOS_TOML)
+        static CACHE: std::sync::OnceLock<Result<BaseJogos, ErrosJogos>> =
+            std::sync::OnceLock::new();
+        CACHE
+            .get_or_init(|| Self::from_toml("jogos.toml", JOGOS_TOML))
+            .clone()
     }
 
     /// Carrega e valida a base a partir do texto. Retorna todos os erros.

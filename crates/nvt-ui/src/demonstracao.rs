@@ -188,23 +188,12 @@ pub fn responder(c: Cenario, d: &mut Dados, cmd: Comando) -> Vec<Evento> {
             match &cmd {
                 Comando::DefinirPreferencias(prefs) => e.preferencias = prefs.clone(),
                 Comando::RestaurarOriginal => e.autonomia_pausada = true,
-                Comando::AplicarAgora => e.autonomia_pausada = false,
-                Comando::MarcarAtualizacaoVista { .. } => e.atualizacao.nao_vista = false,
                 _ => {}
-            }
-        }
-        if let (Comando::MarcarInicioVisto { fonte, nome }, Some(s)) = (&cmd, d.saude.as_mut()) {
-            for p in &mut s.inicializacao {
-                if p.fonte == *fonte && p.nome == *nome {
-                    p.situacao = SituacaoInicio::NaBase;
-                }
             }
         }
         Ok(
             match (&cmd, d.estado.as_ref().and_then(|e| e.adiamento.clone())) {
-                (Comando::AplicarAgora | Comando::RestaurarOriginal, Some(a)) => {
-                    Desfecho::Adiado(a)
-                }
+                (Comando::RestaurarOriginal, Some(a)) => Desfecho::Adiado(a),
                 _ => Desfecho::Feito,
             },
         )
@@ -829,29 +818,13 @@ pub fn dados(c: Cenario) -> Dados {
 #[cfg(test)]
 mod testes {
     use super::*;
-    use crate::modelo::{EstadoUi, Fatos, MotivoIndisponivel, Tela, Veredito, veredito};
+    use crate::modelo::{EstadoUi, Fatos, MotivoIndisponivel, Veredito, veredito};
 
     fn ui(c: Cenario) -> EstadoUi {
-        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        let mut ui = EstadoUi::new();
         let canal = iniciar(c);
         ui.aplicar(canal.eventos.recv().expect("primeiro evento"));
         ui
-    }
-
-    #[test]
-    fn marcar_como_visto_tira_a_novidade() {
-        let mut d = dados(Cenario::Saude);
-        let p = d.saude.as_ref().unwrap().inicializacao[0].clone();
-        assert_eq!(p.situacao, SituacaoInicio::Novo);
-        let cmd = Comando::MarcarInicioVisto {
-            fonte: p.fonte,
-            nome: p.nome.clone(),
-        };
-        assert!(responder(Cenario::Saude, &mut d, cmd).len() >= 2);
-        assert_eq!(
-            d.saude.unwrap().inicializacao[0].situacao,
-            SituacaoInicio::NaBase
-        );
     }
 
     /// Sem a feature, o cenário e a tela de partidas não existem.
@@ -859,7 +832,7 @@ mod testes {
     #[test]
     fn sem_partidas_no_build_normal() {
         assert_eq!(Cenario::de_chave("partidas"), None);
-        assert_eq!(crate::ui::Destino::de_chave("partidas"), None);
+        assert_eq!(crate::ui::Secao::de_chave("partidas"), None);
         assert!(!Cenario::chaves().contains("partidas"));
     }
 
@@ -922,13 +895,9 @@ mod testes {
         let _ = canal.eventos.recv().unwrap();
         let comandos = [
             Comando::Atualizar,
-            Comando::AplicarAgora,
             Comando::RestaurarOriginal,
             Comando::Reescanear,
             Comando::DefinirPreferencias(crate::modelo::preferencias_padrao()),
-            Comando::MarcarAtualizacaoVista {
-                versao: VERSAO.into(),
-            },
         ];
         for cmd in comandos {
             canal.comandos.send(cmd.clone()).unwrap();
@@ -955,8 +924,6 @@ mod testes {
         let mut d = dados(Cenario::Otimizado);
         responder(Cenario::Otimizado, &mut d, Comando::RestaurarOriginal);
         assert!(d.estado.as_ref().unwrap().autonomia_pausada);
-        responder(Cenario::Otimizado, &mut d, Comando::AplicarAgora);
-        assert!(!d.estado.as_ref().unwrap().autonomia_pausada);
     }
 
     /// O módulo não tem caminho de código até o serviço nem até a máquina.

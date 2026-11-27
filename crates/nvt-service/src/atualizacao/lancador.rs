@@ -3,7 +3,6 @@
 //! Tudo o que decide *o quê* lançar (caminho, linha de comando, flags, ambiente, pasta
 //! de instalação, conferência de SID) é função pura testável; a parte Windows só
 //! executa a decisão. Nenhum teste chama a criação de processo.
-#![allow(dead_code)]
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf, Prefix};
@@ -213,19 +212,18 @@ pub(crate) fn conferir_sid(sessao: u32, esperado: &str, obtido: &str) -> Result<
 
 // ---------------------------------------------------------------- Windows
 
-// O `Atualizador` (lote 3) passa a usar; até lá, sem aviso.
 #[cfg(windows)]
-#[allow(unused_imports)]
 pub(crate) use real::LancadorReal;
 
 #[cfg(windows)]
 mod real {
     use super::*;
-    use std::ffi::{OsStr, OsString, c_void};
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::ffi::{OsString, c_void};
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::fs::MetadataExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use std::ptr::{null, null_mut};
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+    use windows_sys::Win32::Foundation::{GetLastError, HANDLE};
     use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_USER, TokenUser};
     use windows_sys::Win32::System::Environment::{
         CreateEnvironmentBlock, DestroyEnvironmentBlock,
@@ -255,18 +253,13 @@ mod real {
         ErroLancador::Win32 { api, codigo }
     }
 
-    fn wide(s: &str) -> Vec<u16> {
-        OsStr::new(s).encode_wide().chain(Some(0)).collect()
-    }
+    use crate::diretorio::utf16 as wide;
 
-    /// Fecha o handle ao sair do escopo.
-    struct Handle(HANDLE);
-    impl Drop for Handle {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                // SAFETY: handle próprio, fechado uma única vez.
-                unsafe { CloseHandle(self.0) };
-            }
+    /// Fecha o handle (se houver) assumindo a posse dele.
+    fn fechar(h: HANDLE) {
+        if !h.is_null() {
+            // SAFETY: handle próprio, fechado uma única vez.
+            drop(unsafe { OwnedHandle::from_raw_handle(h) });
         }
     }
 
@@ -282,8 +275,8 @@ mod real {
     }
 
     fn fechar_processo(pi: &PROCESS_INFORMATION) {
-        drop(Handle(pi.hThread));
-        drop(Handle(pi.hProcess));
+        fechar(pi.hThread);
+        fechar(pi.hProcess);
     }
 
     fn pasta_sistema() -> Result<String, ErroLancador> {
@@ -422,11 +415,12 @@ mod real {
             if unsafe { WTSQueryUserToken(sessao, &mut t) } == 0 {
                 return Err(erro("WTSQueryUserToken"));
             }
-            let token = Handle(t);
-            conferir_sid(sessao, sid, &sid_do_token(token.0)?)?;
+            // SAFETY: token próprio devolvido pela chamada, fechado uma vez.
+            let token = unsafe { OwnedHandle::from_raw_handle(t) };
+            conferir_sid(sessao, sid, &sid_do_token(token.as_raw_handle())?)?;
             let mut env: *mut c_void = null_mut();
             // SAFETY: token válido; sem herdar o ambiente do serviço.
-            if unsafe { CreateEnvironmentBlock(&mut env, token.0, 0) } == 0 {
+            if unsafe { CreateEnvironmentBlock(&mut env, token.as_raw_handle(), 0) } == 0 {
                 return Err(erro("CreateEnvironmentBlock"));
             }
             let env = Ambiente(env);
@@ -442,7 +436,7 @@ mod real {
             // zero vivas durante a chamada; sem herança de handles (U-44).
             let ok = unsafe {
                 windows_sys::Win32::System::Threading::CreateProcessAsUserW(
-                    token.0,
+                    token.as_raw_handle(),
                     app.as_ptr(),
                     cmd.as_mut_ptr(),
                     null(),
@@ -517,7 +511,7 @@ mod real {
                 .iter()
                 .map(|(sessao, sid)| {
                     let r = preparo.clone().and_then(|pasta| {
-                        let app = wide(&format!("{pasta}\\{AGENTE}"));
+                        let app = wide(format!("{pasta}\\{AGENTE}"));
                         Self::relancar_um(*sessao, sid, &pasta, &app)
                     });
                     (*sessao, r)
@@ -611,6 +605,8 @@ mod testes {
             "C:\\a\"b.msi",
             "C:\\%TEMP%\\x.msi",
             "C:\\a\nb.msi",
+            "C:\\a\u{7}\\x.msi",
+            "\\\\?\\UNC\\srv\\c\\x.msi",
             "\\\\?\\C:\\x.msi",
             "\\\\srv\\c\\x.msi",
             "x.msi",

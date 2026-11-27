@@ -17,15 +17,16 @@
 //!   Administradores.
 
 use std::io::{self, Read, Write};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA,
-    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, ERROR_SEM_TIMEOUT,
-    GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_BUSY,
+    ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, ERROR_SEM_TIMEOUT, GetLastError, HANDLE,
+    INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -80,18 +81,12 @@ const PARADA: io::ErrorKind = io::ErrorKind::ConnectionAborted;
 // ---------------------------------------------------------------------------
 
 /// `HANDLE` dono, fechado no `Drop`.
-struct Handle(HANDLE);
+type Handle = OwnedHandle;
 
-// SAFETY: handles de kernel podem ser usados e fechados de qualquer thread.
-unsafe impl Send for Handle {}
-// SAFETY: as operações usadas (SetEvent, Wait*) são seguras entre threads.
-unsafe impl Sync for Handle {}
-
-impl Drop for Handle {
-    fn drop(&mut self) {
-        // SAFETY: o handle é válido e pertence exclusivamente a este valor.
-        unsafe { CloseHandle(self.0) };
-    }
+/// Assume a posse de `h`, que deve ser um handle válido e exclusivo.
+fn dono(h: HANDLE) -> Handle {
+    // SAFETY: o chamador entrega um handle válido que passa a pertencer só a este valor.
+    unsafe { OwnedHandle::from_raw_handle(h) }
 }
 
 fn evento_manual() -> io::Result<Handle> {
@@ -100,7 +95,7 @@ fn evento_manual() -> io::Result<Handle> {
     if h.is_null() {
         return Err(io::Error::last_os_error());
     }
-    Ok(Handle(h))
+    Ok(dono(h))
 }
 
 fn utf16(s: &str) -> Vec<u16> {
@@ -140,12 +135,12 @@ impl Parada {
     /// [`Servidor::executar`] retorna.
     pub fn parar(&self) {
         // SAFETY: o evento é válido enquanto o `Arc` existir.
-        unsafe { SetEvent(self.0.0) };
+        unsafe { SetEvent(self.0.as_raw_handle()) };
     }
 
     pub fn sinalizada(&self) -> bool {
         // SAFETY: idem.
-        unsafe { WaitForSingleObject(self.0.0, 0) == WAIT_OBJECT_0 }
+        unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) == WAIT_OBJECT_0 }
     }
 }
 
@@ -187,19 +182,21 @@ impl Pipe {
     /// cancelamento antes de retornar, para que `ov` e o buffer não sejam
     /// usados pelo kernel depois de liberados.
     fn aguardar(&self, ov: &OVERLAPPED, limite: Option<Duration>) -> io::Result<u32> {
-        let mut objetos = vec![self.evento.0];
-        if let Some(p) = &self.parada {
-            objetos.push(p.0.0);
-        }
+        let objetos = [
+            self.evento.as_raw_handle(),
+            self.parada
+                .as_ref()
+                .map_or(null_mut(), |p| p.0.as_raw_handle()),
+        ];
+        let quantos = if self.parada.is_some() { 2 } else { 1 };
         let espera = limite.map_or(INFINITE, ms);
-        // SAFETY: `objetos` contém handles válidos durante a chamada.
-        let r =
-            unsafe { WaitForMultipleObjects(objetos.len() as u32, objetos.as_ptr(), 0, espera) };
+        // SAFETY: os `quantos` primeiros itens de `objetos` são handles válidos.
+        let r = unsafe { WaitForMultipleObjects(quantos, objetos.as_ptr(), 0, espera) };
         let erro = match r {
             WAIT_OBJECT_0 => {
                 let mut n = 0u32;
                 // SAFETY: a operação concluiu; `ov` é o mesmo da chamada original.
-                if unsafe { GetOverlappedResult(self.handle.0, ov, &mut n, 0) } != 0 {
+                if unsafe { GetOverlappedResult(self.handle.as_raw_handle(), ov, &mut n, 0) } != 0 {
                     return Ok(n);
                 }
                 return Err(erro_os(ultimo_erro()));
@@ -216,16 +213,34 @@ impl Pipe {
         let mut n = 0u32;
         // SAFETY: cancela e espera (bwait = TRUE) a conclusão da operação de `ov`.
         unsafe {
-            CancelIoEx(self.handle.0, ov);
-            GetOverlappedResult(self.handle.0, ov, &mut n, 1);
+            CancelIoEx(self.handle.as_raw_handle(), ov);
+            GetOverlappedResult(self.handle.as_raw_handle(), ov, &mut n, 1);
         }
     }
 
     fn novo_ov(&self) -> OVERLAPPED {
         // SAFETY: OVERLAPPED é POD; zerado é o estado inicial documentado.
         let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
-        ov.hEvent = self.evento.0;
+        ov.hEvent = self.evento.as_raw_handle();
         ov
+    }
+
+    /// Fluxo comum de uma operação sobreposta: `f` inicia a operação com o
+    /// `OVERLAPPED` recebido; a conclusão, imediata ou pendente, é aguardada aqui.
+    fn operar(
+        &self,
+        espera: Duration,
+        f: impl FnOnce(*mut OVERLAPPED) -> windows_sys::core::BOOL,
+    ) -> io::Result<u32> {
+        let ov = self.novo_ov();
+        if f((&raw const ov).cast_mut()) != 0 {
+            self.aguardar(&ov, Some(Duration::ZERO))
+        } else {
+            match ultimo_erro() {
+                ERROR_IO_PENDING => self.aguardar(&ov, Some(espera)),
+                e => Err(erro_os(e)),
+            }
+        }
     }
 }
 
@@ -235,26 +250,12 @@ impl Read for Pipe {
             return Ok(0);
         }
         let espera = self.espera_leitura()?;
-        let ov = self.novo_ov();
         let len = buf.len().min(u32::MAX as usize) as u32;
+        let handle = self.handle.as_raw_handle();
         // SAFETY: `buf` e `ov` vivem até a conclusão (aguardar/cancelar esperam por ela).
-        let ok = unsafe {
-            ReadFile(
-                self.handle.0,
-                buf.as_mut_ptr(),
-                len,
-                null_mut(),
-                (&raw const ov).cast_mut(),
-            )
-        };
-        let r = if ok != 0 {
-            self.aguardar(&ov, Some(Duration::ZERO))
-        } else {
-            match ultimo_erro() {
-                ERROR_IO_PENDING => self.aguardar(&ov, Some(espera)),
-                e => Err(erro_os(e)),
-            }
-        };
+        let r = self.operar(espera, |ov| unsafe {
+            ReadFile(handle, buf.as_mut_ptr(), len, null_mut(), ov)
+        });
         match r {
             Ok(n) => Ok(n as usize),
             Err(e) if e.raw_os_error().is_some_and(|c| fim_de_conexao(c as u32)) => Ok(0),
@@ -268,27 +269,12 @@ impl Write for Pipe {
         if buf.is_empty() {
             return Ok(0);
         }
-        let ov = self.novo_ov();
         let len = buf.len().min(u32::MAX as usize) as u32;
+        let handle = self.handle.as_raw_handle();
         // SAFETY: idem a `read`.
-        let ok = unsafe {
-            WriteFile(
-                self.handle.0,
-                buf.as_ptr(),
-                len,
-                null_mut(),
-                (&raw const ov).cast_mut(),
-            )
-        };
-        let r = if ok != 0 {
-            self.aguardar(&ov, Some(Duration::ZERO))
-        } else {
-            match ultimo_erro() {
-                ERROR_IO_PENDING => self.aguardar(&ov, Some(self.timeout_escrita)),
-                e => Err(erro_os(e)),
-            }
-        };
-        let n = r?;
+        let n = self.operar(self.timeout_escrita, |ov| unsafe {
+            WriteFile(handle, buf.as_ptr(), len, null_mut(), ov)
+        })?;
         if n == 0 {
             return Err(io::ErrorKind::WriteZero.into());
         }
@@ -325,7 +311,7 @@ impl Drop for ReverterImpersonacao {
 
 fn identidade_cliente(pipe: &Handle) -> io::Result<IdentidadeCliente> {
     // SAFETY: o pipe está conectado e o quadro foi lido nesta thread.
-    if unsafe { ImpersonateNamedPipeClient(pipe.0) } == 0 {
+    if unsafe { ImpersonateNamedPipeClient(pipe.as_raw_handle()) } == 0 {
         return Err(io::Error::last_os_error());
     }
     let _reverter = ReverterImpersonacao;
@@ -335,13 +321,20 @@ fn identidade_cliente(pipe: &Handle) -> io::Result<IdentidadeCliente> {
     if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    let token = Handle(token);
+    let token = dono(token);
     let ler_u32 = |classe| {
         let mut valor = 0u32;
         let mut tamanho = 0;
         // SAFETY: as classes consultadas aqui retornam um valor de 32 bits.
-        if unsafe { GetTokenInformation(token.0, classe, (&raw mut valor).cast(), 4, &mut tamanho) }
-            == 0
+        if unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                classe,
+                (&raw mut valor).cast(),
+                4,
+                &mut tamanho,
+            )
+        } == 0
         {
             return Err(io::Error::last_os_error());
         }
@@ -357,7 +350,7 @@ fn identidade_cliente(pipe: &Handle) -> io::Result<IdentidadeCliente> {
     // SAFETY: buffer alinhado para TOKEN_USER, com espaço para o SID.
     if unsafe {
         GetTokenInformation(
-            token.0,
+            token.as_raw_handle(),
             TokenUser,
             buffer.as_mut_ptr().cast(),
             size_of_val(&buffer) as u32,
@@ -517,7 +510,7 @@ impl Servidor {
         if h == INVALID_HANDLE_VALUE {
             return Err(erro);
         }
-        let handle = Handle(h);
+        let handle = dono(h);
         Ok(Self {
             pipe: Pipe {
                 handle,
@@ -546,7 +539,7 @@ impl Servidor {
             }
             self.atender(tratador);
             // SAFETY: handle válido; descarta a conexão atual.
-            unsafe { DisconnectNamedPipe(self.pipe.handle.0) };
+            unsafe { DisconnectNamedPipe(self.pipe.handle.as_raw_handle()) };
         }
         Ok(())
     }
@@ -555,7 +548,9 @@ impl Servidor {
     fn aguardar_conexao(&self) -> io::Result<bool> {
         let ov = self.pipe.novo_ov();
         // SAFETY: `ov` vive até a conclusão (aguardar espera por ela).
-        if unsafe { ConnectNamedPipe(self.pipe.handle.0, (&raw const ov).cast_mut()) } != 0 {
+        if unsafe { ConnectNamedPipe(self.pipe.handle.as_raw_handle(), (&raw const ov).cast_mut()) }
+            != 0
+        {
             return Ok(true);
         }
         match ultimo_erro() {
@@ -678,7 +673,7 @@ impl Cliente {
                 )
             };
             if h != INVALID_HANDLE_VALUE {
-                break Handle(h);
+                break dono(h);
             }
             match ultimo_erro() {
                 ERROR_FILE_NOT_FOUND => return Err(ErroIpc::ServicoIndisponivel),
@@ -742,7 +737,7 @@ fn dono_privilegiado(h: &Handle) -> Result<bool, ErroIpc> {
     // SAFETY: handle válido com READ_CONTROL (incluso em FILE_GENERIC_READ).
     let r = unsafe {
         GetSecurityInfo(
-            h.0,
+            h.as_raw_handle(),
             SE_KERNEL_OBJECT,
             OWNER_SECURITY_INFORMATION,
             &mut dono,

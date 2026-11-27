@@ -13,7 +13,7 @@ use crate::saude::{FonteInicio, PARTIDAS_MAX, Partida, ResumoPartida, Saude, Sau
 use crate::usuario::{
     Camada, Diagnostico, EstadoAgente, EstadoExperimental, EstadoTarefa, FatosUsuario,
     OperacaoUsuario, PlanoAgente, ResultadoUsuario, ResumoSistema, SettingUsuario,
-    SugestaoExperimental, validar_texto,
+    SugestaoExperimental, ascii_restrito, validar_texto,
 };
 
 /// Limite inferior aceito para o limitador de FPS.
@@ -26,6 +26,14 @@ pub const HISTORICO_MAX: u32 = 1000;
 pub const PERFIL_MAX: usize = 256;
 /// Comprimento máximo de um nome simbólico de setting.
 pub const SETTING_MAX: usize = 64;
+/// Comprimento máximo do identificador de regra experimental.
+pub const REGRA_MAX: usize = 128;
+/// Máximo de resultados em [`Requisicao::AgenteRelatar`].
+pub const RESULTADOS_MAX: usize = 256;
+/// Comprimento máximo do detalhe de um resultado.
+pub const DETALHE_MAX: usize = 1024;
+/// Comprimento máximo de uma versão.
+const VERSAO_MAX: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Requisições
@@ -149,14 +157,10 @@ impl Requisicao {
                 validar_setting(setting)
             }
             Self::DefinirAceiteExperimental { regra, .. } => {
-                if regra.is_empty()
-                    || regra.len() > 128
-                    || !regra.bytes().all(|b| {
-                        b.is_ascii_lowercase()
-                            || b.is_ascii_digit()
-                            || matches!(b, b'-' | b'_' | b'.')
-                    })
-                {
+                let classe = |b: u8| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.')
+                };
+                if !ascii_restrito(regra, REGRA_MAX, classe, classe) {
                     return Err("identificador de regra inválido".into());
                 }
                 Ok(())
@@ -172,7 +176,7 @@ impl Requisicao {
                 if let Some(saude) = saude {
                     saude.validar()?;
                 }
-                if resultados.len() > 256 {
+                if resultados.len() > RESULTADOS_MAX {
                     return Err("muitos resultados da tarefa".into());
                 }
                 let mut destinos = std::collections::BTreeSet::new();
@@ -188,7 +192,7 @@ impl Requisicao {
                         }
                     }
                     if let Some(detalhe) = &resultado.detalhe {
-                        validar_texto(detalhe, 1024)?;
+                        validar_texto(detalhe, DETALHE_MAX)?;
                     }
                 }
                 Ok(())
@@ -216,12 +220,8 @@ impl Requisicao {
 /// Versão (`X.Y.Z`, opcionalmente com sufixo): 1 a 64 caracteres ASCII
 /// alfanuméricos, `.`, `-` ou `+`.
 pub fn validar_versao(versao: &str) -> Result<(), String> {
-    if versao.is_empty()
-        || versao.len() > 64
-        || !versao
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
-    {
+    let classe = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+');
+    if !ascii_restrito(versao, VERSAO_MAX, classe, classe) {
         return Err("versão inválida".into());
     }
     Ok(())
@@ -241,12 +241,12 @@ pub fn validar_perfil(perfil: &str) -> Result<(), String> {
 /// Nome simbólico de setting: 1 a [`SETTING_MAX`] caracteres em
 /// `[a-z0-9_.]`, começando por letra.
 pub fn validar_setting(setting: &str) -> Result<(), String> {
-    let ok = !setting.is_empty()
-        && setting.len() <= SETTING_MAX
-        && setting.starts_with(|c: char| c.is_ascii_lowercase())
-        && setting
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.');
+    let ok = ascii_restrito(
+        setting,
+        SETTING_MAX,
+        |b| b.is_ascii_lowercase(),
+        |b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.',
+    );
     if ok {
         Ok(())
     } else {

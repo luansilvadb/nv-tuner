@@ -61,6 +61,10 @@ pub trait LeitorInicio {
     fn pasta(&self, pasta: PastaInicio) -> Option<Vec<ArquivoPasta>>;
     /// Tarefas com gatilho de logon/boot (todas as pastas; o filtro de `\Microsoft\` é aqui).
     fn tarefas(&self) -> Option<Vec<TarefaBruta>>;
+    /// Executa uma coleta inteira; a fachada real mantém o COM ativo durante `f`.
+    fn coleta<R>(&self, f: impl FnOnce() -> R) -> R {
+        f()
+    }
 }
 
 /// Entrada lida. `comando` fica no processo (só para o hash da linha de base) e nunca
@@ -107,22 +111,26 @@ pub struct LeituraInicio {
 
 /// Sessão (agente): HKCU Run/RunOnce, pasta do usuário e tarefas agendadas.
 pub fn ler_inicio_sessao(l: &impl LeitorInicio) -> LeituraInicio {
-    let mut c = Coletor::default();
-    c.run(l, ChaveRun::RunUsuario, Some(Aprovacao::RunUsuario));
-    c.run(l, ChaveRun::RunOnceUsuario, None);
-    c.pasta(l, PastaInicio::Usuario, Aprovacao::PastaUsuario);
-    c.tarefas(l);
-    c.fim()
+    l.coleta(|| {
+        let mut c = Coletor::default();
+        c.run(l, ChaveRun::RunUsuario, Some(Aprovacao::RunUsuario));
+        c.run(l, ChaveRun::RunOnceUsuario, None);
+        c.pasta(l, PastaInicio::Usuario, Aprovacao::PastaUsuario);
+        c.tarefas(l);
+        c.fim()
+    })
 }
 
 /// Máquina (serviço): HKLM Run/RunOnce, WOW6432Node e pasta comum.
 pub fn ler_inicio_maquina(l: &impl LeitorInicio) -> LeituraInicio {
-    let mut c = Coletor::default();
-    c.run(l, ChaveRun::RunMaquina, Some(Aprovacao::RunMaquina));
-    c.run(l, ChaveRun::RunOnceMaquina, None);
-    c.run(l, ChaveRun::RunMaquina32, Some(Aprovacao::Run32Maquina));
-    c.pasta(l, PastaInicio::Comum, Aprovacao::PastaMaquina);
-    c.fim()
+    l.coleta(|| {
+        let mut c = Coletor::default();
+        c.run(l, ChaveRun::RunMaquina, Some(Aprovacao::RunMaquina));
+        c.run(l, ChaveRun::RunOnceMaquina, None);
+        c.run(l, ChaveRun::RunMaquina32, Some(Aprovacao::Run32Maquina));
+        c.pasta(l, PastaInicio::Comum, Aprovacao::PastaMaquina);
+        c.fim()
+    })
 }
 
 #[derive(Default)]

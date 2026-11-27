@@ -218,7 +218,6 @@ mod real {
     use super::*;
     use std::fs::{self, OpenOptions};
     use std::io::{Read, Seek, SeekFrom};
-    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
 
     use crate::atualizacao::arquivo::{self, Baixado, Download, MsiProtegido};
@@ -229,10 +228,7 @@ mod real {
     pub(super) fn msi_ocupado() -> bool {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::OpenMutexW;
-        let nome: Vec<u16> = std::ffi::OsStr::new("Global\\_MSIExecute")
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
+        let nome = crate::diretorio::utf16("Global\\_MSIExecute");
         // SAFETY: nome terminado em zero vivo durante a chamada.
         let h = unsafe { OpenMutexW(SYNCHRONIZE, 0, nome.as_ptr()) };
         if h.is_null() {
@@ -381,25 +377,8 @@ mod real {
                     destino.display()
                 )));
             }
-            let (tmp, mut f) = (0..100)
-                .find_map(|i| {
-                    let tmp = self
-                        .pasta
-                        .join(format!("{nome}.{}-{i}.tmp", std::process::id()));
-                    match crate::diretorio::criar_arquivo_privado(&tmp) {
-                        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => None,
-                        r => Some(r.map(|f| (tmp, f))),
-                    }
-                })
-                .ok_or_else(|| io::Error::other(format!("sem nome temporário para {nome}")))??;
-            let gravado = f.write_all(bytes).and_then(|()| f.sync_all());
-            drop(f);
             // A troca substitui a entrada (um link no destino é trocado, não seguido).
-            let r = gravado.and_then(|()| fs::rename(&tmp, &destino));
-            if r.is_err() {
-                let _ = fs::remove_file(&tmp);
-            }
-            r
+            crate::diretorio::gravar_atomico_privado(&self.pasta, nome, bytes)
         }
 
         fn novo_download(&self, versao: Versao) -> io::Result<Box<dyn DownloadMsi>> {

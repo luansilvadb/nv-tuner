@@ -7,6 +7,7 @@ pub const PARAGRAFO_DESFAZER: &str = "Você pode desfazer tudo a qualquer moment
 pub const BOTAO_COMECAR: &str = "Começar";
 
 /// Todas as frases da tela, para os testes de linguagem.
+#[cfg(test)]
 pub const TODOS: &[&str] = &[
     TITULO,
     PARAGRAFO_AJUSTA,

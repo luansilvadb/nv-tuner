@@ -337,7 +337,6 @@ Plataforma: somente Windows com GPU NVIDIA. Licença: [MIT](LICENSE).
 | Domínio | `nvt-core` | Capacidades, fatos, preferências, regras, avaliador e plano |
 | Driver | `nvt-drs` | FFI própria da NVAPI DRS |
 | Detecção | `nvt-detect` | GPU/capacidades e jogos/bibliotecas |
-| Telemetria | `nvt-telemetry` | Medição passiva via PresentMon CLI (v0.2) |
 | Protocolo | `nvt-ipc` | Mensagens do named pipe entre UI e serviço |
 | Serviço | `nvt-service` | Serviço do Windows privilegiado: único avaliador, aplica planos no driver |
 | Windows | `nvt-windows` | Ajustes do usuário e diagnósticos somente leitura |

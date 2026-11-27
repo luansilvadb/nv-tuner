@@ -128,7 +128,7 @@ impl Condicoes {
         .count()
     }
 
-    fn usa_fatos_de_jogo(&self) -> bool {
+    pub(crate) fn usa_fatos_de_jogo(&self) -> bool {
         self.jogo_api.is_some()
             || self.jogo_dlss.is_some()
             || self.jogo_dlss_min.is_some()

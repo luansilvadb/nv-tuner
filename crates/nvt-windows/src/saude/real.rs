@@ -5,12 +5,9 @@ use std::{ffi::OsString, io, mem, os::windows::ffi::OsStringExt, path::PathBuf, 
 
 use windows::{
     Win32::{
-        Foundation::{RPC_E_CHANGED_MODE, VARIANT_FALSE},
+        Foundation::VARIANT_FALSE,
         System::{
-            Com::{
-                CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
-                CoUninitialize, IPersistFile, STGM_READ,
-            },
+            Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ},
             TaskScheduler::{
                 IExecAction, IRegisteredTask, ITaskFolder, ITaskService, TASK_ACTION_EXEC,
                 TASK_ACTION_TYPE, TASK_ENUM_HIDDEN, TASK_TRIGGER_BOOT, TASK_TRIGGER_LOGON,
@@ -39,6 +36,8 @@ use winreg::{
         REG_EXPAND_SZ, REG_SZ,
     },
 };
+
+use crate::{com::Com, registro::utf16_bytes};
 
 use super::{
     inicio::{Aprovacao, ArquivoPasta, ChaveRun, LeitorInicio, PastaInicio, TarefaBruta},
@@ -72,20 +71,6 @@ fn abrir(raiz: isize, caminho: &str) -> Option<Option<RegKey>> {
     }
 }
 
-fn utf16(bytes: &[u8]) -> Option<String> {
-    if bytes.len() % 2 != 0 {
-        return None;
-    }
-    let mut u: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    while u.last() == Some(&0) {
-        u.pop();
-    }
-    String::from_utf16(&u).ok()
-}
-
 fn valores<T>(
     raiz: isize,
     caminho: &str,
@@ -114,7 +99,7 @@ impl LeitorInicio for SaudeWindows {
             ChaveRun::RunMaquina32 => (HKEY_LOCAL_MACHINE, RUN_32),
         };
         valores(raiz as isize, caminho, |v| match v.vtype {
-            REG_SZ | REG_EXPAND_SZ => utf16(&v.bytes),
+            REG_SZ | REG_EXPAND_SZ => utf16_bytes(&v.bytes),
             _ => None,
         })
     }
@@ -163,6 +148,12 @@ impl LeitorInicio for SaudeWindows {
         Some(saida)
     }
 
+    fn coleta<R>(&self, f: impl FnOnce() -> R) -> R {
+        // Uma inicialização real por coleta; as de `pasta`/`tarefas` só contam referência.
+        let _com = Com::iniciar();
+        f()
+    }
+
     fn tarefas(&self) -> Option<Vec<TarefaBruta>> {
         let _com = Com::iniciar()?;
         // SAFETY: COM ativo nesta thread; interfaces gerenciadas pelo crate windows.
@@ -176,33 +167,6 @@ impl LeitorInicio for SaudeWindows {
             let mut saida = Vec::new();
             varrer_pasta(&raiz, 0, &mut saida);
             Some(saida)
-        }
-    }
-}
-
-struct Com {
-    desfazer: bool,
-}
-
-impl Com {
-    fn iniciar() -> Option<Self> {
-        // SAFETY: inicialização pareada pela guarda; modo já definido é aceito sem desfazer.
-        let r = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        if r.is_ok() {
-            Some(Self { desfazer: true })
-        } else if r == RPC_E_CHANGED_MODE {
-            Some(Self { desfazer: false })
-        } else {
-            None
-        }
-    }
-}
-
-impl Drop for Com {
-    fn drop(&mut self) {
-        if self.desfazer {
-            // SAFETY: pareado com o CoInitializeEx bem-sucedido.
-            unsafe { CoUninitialize() };
         }
     }
 }
@@ -461,8 +425,11 @@ mod testes {
 
     #[test]
     fn utf16_tolera_terminador() {
-        assert_eq!(utf16(&[0x61, 0, 0x62, 0, 0, 0]).as_deref(), Some("ab"));
-        assert_eq!(utf16(&[0x61]), None);
+        assert_eq!(
+            utf16_bytes(&[0x61, 0, 0x62, 0, 0, 0]).as_deref(),
+            Some("ab")
+        );
+        assert_eq!(utf16_bytes(&[0x61]), None);
     }
 
     /// Lê a máquina real e imprime só contagens.

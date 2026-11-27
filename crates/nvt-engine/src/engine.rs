@@ -7,7 +7,7 @@ use nvt_core::{
     Alvo, BaseJogos, Capabilities, ConjuntoRegras, DefSetting, ErroRegra, ErrosRegras, GameFacts,
     Plan, Preferences, SettingChange,
 };
-use nvt_drs::{ProfileRef, RestoreOp, Setting, SettingLocation, SettingValue};
+use nvt_drs::{ProfileRef, RestoreOp, Setting, SettingValue};
 use serde::{Deserialize, Serialize};
 
 use crate::deteccao::{JogoEntrada, capacidades, casar_na_base, fatos_do_jogo};
@@ -76,14 +76,32 @@ enum Original {
     Desconhecido,
 }
 
-fn perfil_ausente(e: &ErroEngine) -> bool {
+fn perfil_ausente(e: &nvt_drs::Error) -> bool {
     matches!(
         e,
-        ErroEngine::Drs(nvt_drs::Error::Nvapi {
+        nvt_drs::Error::Nvapi {
             status: nvt_drs::Status::ProfileNotFound,
             ..
-        })
+        }
     )
+}
+
+/// Isola o erro de um perfil de jogo: registra a mensagem em `erros` e devolve
+/// `Ok(None)`; erro no perfil global é propagado.
+fn isolar<T>(
+    perfil: &ProfileRef,
+    r: Resultado<T>,
+    erros: &mut Vec<String>,
+    msg: impl FnOnce(&ErroEngine) -> String,
+) -> Resultado<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if matches!(perfil, ProfileRef::Named(_)) => {
+            erros.push(msg(&e));
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn mesmo_perfil(a: &ProfileRef, b: &ProfileRef) -> bool {
@@ -168,6 +186,21 @@ pub struct MudancaPlanejada {
     pub alvo: Alvo,
     pub perfil: ProfileRef,
     pub mudanca: SettingChange,
+}
+
+impl MudancaPlanejada {
+    /// O que passa a ser vigiado depois de gravada (ou já conforme).
+    fn esperado(&self, antes_da_gestao: Option<ValorAntes>) -> Esperado {
+        Esperado {
+            alvo: self.alvo.clone(),
+            perfil: self.perfil.clone(),
+            setting: self.mudanca.setting.clone(),
+            id: self.mudanca.id,
+            valor: self.mudanca.valor,
+            origem: self.mudanca.origem.clone(),
+            antes_da_gestao,
+        }
+    }
 }
 
 /// Resultado de [`Engine::planejar`]: o que precisa mudar para o DRS ficar conforme o plano.
@@ -347,16 +380,26 @@ impl<S: DriverStore> Engine<S> {
                 mensagem: e.to_string(),
             }]))
         })?;
-        Ok(Self::com_regras(store, armazem, ConjuntoRegras::embutido()?).com_base(base))
+        Ok(Self::montar(
+            store,
+            armazem,
+            ConjuntoRegras::embutido()?,
+            base,
+        ))
     }
 
     /// Motor com as regras dadas e a base de jogos embutida (vazia se a base
     /// embutida for inválida, o que o teste de carga impede).
     pub fn com_regras(store: S, armazem: Armazem, regras: ConjuntoRegras) -> Self {
+        let base = BaseJogos::embutida().unwrap_or_else(|_| BaseJogos::vazia());
+        Self::montar(store, armazem, regras, base)
+    }
+
+    fn montar(store: S, armazem: Armazem, regras: ConjuntoRegras, base: BaseJogos) -> Self {
         Self {
             store: Guardado::new(store),
             regras,
-            base: BaseJogos::embutida().unwrap_or_else(|_| BaseJogos::vazia()),
+            base,
             armazem,
             portao: Portao::do_sistema(),
         }
@@ -467,8 +510,7 @@ impl<S: DriverStore> Engine<S> {
         let def = self
             .regras
             .catalogo
-            .iter()
-            .find(|d| d.id == id)
+            .por_id(id)
             .ok_or(ErroEngine::IdNaoPermitido { id })?;
         if let Some(v) = valor
             && !def.aceita(v)
@@ -535,8 +577,7 @@ impl<S: DriverStore> Engine<S> {
     fn nome_setting(&self, id: u32) -> String {
         self.regras
             .catalogo
-            .iter()
-            .find(|d| d.id == id)
+            .por_id(id)
             .map_or_else(|| format!("0x{id:08X}"), |d| d.nome.clone())
     }
 
@@ -749,7 +790,7 @@ impl<S: DriverStore> Engine<S> {
             Ok(s) => s,
             Err(err) => {
                 let err = ErroEngine::from(err);
-                if perfil_ausente(&err) {
+                if matches!(&err, ErroEngine::Drs(e) if perfil_ausente(e)) {
                     return Ok(Reversao {
                         esperado: e.clone(),
                         atual: None,
@@ -760,9 +801,7 @@ impl<S: DriverStore> Engine<S> {
             }
         };
         let atual = lido.as_ref().and_then(|s| s.value.as_u32());
-        let propria = lido
-            .as_ref()
-            .filter(|s| s.location == SettingLocation::Current && !s.is_current_predefined);
+        let propria = lido.as_ref().filter(|s| s.is_user_specified());
         // O valor de antes da gestão (registrado na primeira gravação do app)
         // vale mais que o snapshot inicial: o usuário pode ter mudado a
         // setting depois do snapshot e antes de o app passar a geri-la.
@@ -866,7 +905,7 @@ impl<S: DriverStore> Engine<S> {
         let exes: Vec<&str> = diff.jogos.iter().map(|j| j.entrada.exe.as_str()).collect();
         let licenca = self.licenca(&exes)?;
 
-        rel.snapshot_capturado = self.garantir_snapshot(diff)?;
+        rel.snapshot_capturado = self.garantir_snapshot(diff, &exes)?;
 
         let agora = agora_iso();
         // Perfis de jogo com erro nesta aplicação: o resto deles é pulado.
@@ -912,17 +951,12 @@ impl<S: DriverStore> Engine<S> {
             if falho(&falhos, &m.perfil) {
                 continue;
             }
-            match self.gravar_com(&licenca, &m.perfil, m.mudanca.id, m.mudanca.valor) {
-                Ok(()) => {}
-                Err(e) if matches!(m.perfil, ProfileRef::Named(_)) => {
-                    let n = nome_perfil(&m.perfil);
-                    rel.erros.push(format!(
-                        "gravação de {} em “{n}” falhou: {e}",
-                        m.mudanca.setting
-                    ));
-                    falhos.insert(n.to_lowercase());
-                }
-                Err(e) => return Err(e),
+            let gravado = self.gravar_com(&licenca, &m.perfil, m.mudanca.id, m.mudanca.valor);
+            let n = nome_perfil(&m.perfil);
+            let msg =
+                |e: &ErroEngine| format!("gravação de {} em “{n}” falhou: {e}", m.mudanca.setting);
+            if isolar(&m.perfil, gravado, &mut rel.erros, msg)?.is_none() {
+                falhos.insert(n.to_lowercase());
             }
         }
         let mut revertidas: Vec<&Reversao> = Vec::new();
@@ -938,14 +972,15 @@ impl<S: DriverStore> Engine<S> {
                 }
                 AcaoReversao::SoDeixarDeVigiar => Ok(()),
             };
-            match feito {
-                Ok(()) => revertidas.push(r),
-                Err(err) if matches!(e.perfil, ProfileRef::Named(_)) => rel.erros.push(format!(
+            let msg = |err: &ErroEngine| {
+                format!(
                     "reversão de {} em “{}” falhou: {err}",
                     e.setting,
                     nome_perfil(&e.perfil)
-                )),
-                Err(err) => return Err(err),
+                )
+            };
+            if isolar(&e.perfil, feito, &mut rel.erros, msg)?.is_some() {
+                revertidas.push(r);
             }
         }
         self.store.escrita(&licenca).salvar()?;
@@ -979,28 +1014,19 @@ impl<S: DriverStore> Engine<S> {
             if falho(&falhos, &m.perfil) {
                 continue;
             }
-            let lido = match self.ler_u32(&m.perfil, m.mudanca.id) {
-                Ok(v) => v,
-                Err(e) if matches!(m.perfil, ProfileRef::Named(_)) => {
-                    rel.erros.push(format!(
-                        "releitura de {} em “{}” falhou: {e}",
-                        m.mudanca.setting,
-                        nome_perfil(&m.perfil)
-                    ));
-                    continue;
-                }
-                Err(e) => return Err(e),
+            let msg = |e: &ErroEngine| {
+                format!(
+                    "releitura de {} em “{}” falhou: {e}",
+                    m.mudanca.setting,
+                    nome_perfil(&m.perfil)
+                )
+            };
+            let lido = self.ler_u32(&m.perfil, m.mudanca.id);
+            let Some(lido) = isolar(&m.perfil, lido, &mut rel.erros, msg)? else {
+                continue;
             };
             if lido == Some(m.mudanca.valor) {
-                self.armazem.estado.registrar_esperado(Esperado {
-                    alvo: m.alvo.clone(),
-                    perfil: m.perfil.clone(),
-                    setting: m.mudanca.setting.clone(),
-                    id: m.mudanca.id,
-                    valor: m.mudanca.valor,
-                    origem: m.mudanca.origem.clone(),
-                    antes_da_gestao: *antes,
-                });
+                self.armazem.estado.registrar_esperado(m.esperado(*antes));
                 self.registrar(RegistroHistorico {
                     data: agora.clone(),
                     perfil: nome_perfil(&m.perfil),
@@ -1024,15 +1050,9 @@ impl<S: DriverStore> Engine<S> {
                 continue;
             }
             let antes_da_gestao = self.valor_antes_da_gestao(&m.perfil, m.mudanca.id);
-            self.armazem.estado.registrar_esperado(Esperado {
-                alvo: m.alvo.clone(),
-                perfil: m.perfil.clone(),
-                setting: m.mudanca.setting.clone(),
-                id: m.mudanca.id,
-                valor: m.mudanca.valor,
-                origem: m.mudanca.origem.clone(),
-                antes_da_gestao,
-            });
+            self.armazem
+                .estado
+                .registrar_esperado(m.esperado(antes_da_gestao));
         }
         self.armazem.estado.driver_visto = Some(self.store.versao_driver()?.raw);
         self.armazem.salvar()?;
@@ -1061,14 +1081,9 @@ impl<S: DriverStore> Engine<S> {
             return Some(ValorAntes::Inexistente);
         }
         match self.store.ler_setting(perfil, id) {
-            Ok(Some(s)) if s.location == SettingLocation::Current && !s.is_current_predefined => {
-                s.value.as_u32().map(ValorAntes::Valor)
-            }
+            Ok(Some(s)) if s.is_user_specified() => s.value.as_u32().map(ValorAntes::Valor),
             Ok(_) => Some(ValorAntes::Inexistente),
-            Err(nvt_drs::Error::Nvapi {
-                status: nvt_drs::Status::ProfileNotFound,
-                ..
-            }) => Some(ValorAntes::Inexistente),
+            Err(e) if perfil_ausente(&e) => Some(ValorAntes::Inexistente),
             Err(_) => None,
         }
     }
@@ -1092,10 +1107,9 @@ impl<S: DriverStore> Engine<S> {
 
     /// Snapshot original na primeira aplicação; depois, só o original de perfis novos
     /// que ainda não estavam cobertos. Devolve `true` se capturou o original agora.
-    fn garantir_snapshot(&mut self, diff: &Diff) -> Resultado<bool> {
-        let exes: Vec<&str> = diff.jogos.iter().map(|j| j.entrada.exe.as_str()).collect();
+    fn garantir_snapshot(&mut self, diff: &Diff, exes: &[&str]) -> Resultado<bool> {
         if self.armazem.snapshot_original().is_none() {
-            let snap = self.store.capturar(&exes)?;
+            let snap = self.store.capturar(exes)?;
             return self.armazem.guardar_snapshot_original(snap);
         }
         let mut mudou = false;
@@ -1146,10 +1160,7 @@ impl<S: DriverStore> Engine<S> {
             let lido: Option<Setting> = match self.store.ler_setting(&e.perfil, e.id) {
                 Ok(s) => s,
                 // Perfil sumiu: tudo dele voltou ao padrão.
-                Err(nvt_drs::Error::Nvapi {
-                    status: nvt_drs::Status::ProfileNotFound,
-                    ..
-                }) => None,
+                Err(err) if perfil_ausente(&err) => None,
                 // Erro de um perfil de jogo: isolado (fica para o próximo ciclo).
                 Err(_) if matches!(e.perfil, ProfileRef::Named(_)) => continue,
                 Err(err) => return Err(err.into()),
@@ -1158,9 +1169,7 @@ impl<S: DriverStore> Engine<S> {
             if atual == Some(e.valor) {
                 continue;
             }
-            let voltou_ao_padrao = lido
-                .as_ref()
-                .is_none_or(|s| s.location != SettingLocation::Current || s.is_current_predefined);
+            let voltou_ao_padrao = lido.as_ref().is_none_or(|s| !s.is_user_specified());
             divergencias.push(Divergencia {
                 esperado: e.clone(),
                 atual,
@@ -1223,7 +1232,7 @@ impl<S: DriverStore> Engine<S> {
             match self.gravar_com(licenca, &e.perfil, e.id, e.valor) {
                 Ok(()) => gravadas.push(d),
                 Err(err) if matches!(e.perfil, ProfileRef::Named(_)) => {
-                    if perfil_ausente(&err) {
+                    if matches!(&err, ErroEngine::Drs(e) if perfil_ausente(e)) {
                         self.armazem.estado.remover_esperado(&e.perfil, e.id);
                         t.removidas.push(e.clone());
                     } else {
@@ -1253,17 +1262,16 @@ impl<S: DriverStore> Engine<S> {
             _ => String::new(),
         };
         for d in reaplicar {
-            let lido = match self.ler_u32(&d.esperado.perfil, d.esperado.id) {
-                Ok(v) => v,
-                Err(err) if matches!(d.esperado.perfil, ProfileRef::Named(_)) => {
-                    t.erros.push(format!(
-                        "releitura de {} em “{}” falhou: {err}",
-                        d.esperado.setting,
-                        nome_perfil(&d.esperado.perfil)
-                    ));
-                    continue;
-                }
-                Err(err) => return Err(err),
+            let msg = |err: &ErroEngine| {
+                format!(
+                    "releitura de {} em “{}” falhou: {err}",
+                    d.esperado.setting,
+                    nome_perfil(&d.esperado.perfil)
+                )
+            };
+            let lido = self.ler_u32(&d.esperado.perfil, d.esperado.id);
+            let Some(lido) = isolar(&d.esperado.perfil, lido, &mut t.erros, msg)? else {
+                continue;
             };
             if lido == Some(d.esperado.valor) {
                 self.registrar(RegistroHistorico {
@@ -1292,10 +1300,7 @@ impl<S: DriverStore> Engine<S> {
                 motivo: "mudança manual detectada numa setting gerida pelo app".into(),
             };
             let e = &d.esperado;
-            self.armazem
-                .estado
-                .esperado
-                .retain(|x| !(x.perfil == e.perfil && x.id == e.id));
+            self.armazem.estado.remover_esperado(&e.perfil, e.id);
             if !self
                 .armazem
                 .estado

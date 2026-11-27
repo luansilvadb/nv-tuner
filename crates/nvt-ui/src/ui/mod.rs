@@ -1,7 +1,6 @@
 //! Janela principal: estrutura comum ([`estrutura`]) e as seções Início,
-//! Jogos e Avançado.
+//! Jogos e Partidas (esta só com a feature `medicao-partidas`).
 
-mod avancado;
 mod boas_vindas;
 mod estrutura;
 mod inicio;
@@ -10,4 +9,4 @@ mod movimento;
 #[cfg(feature = "medicao-partidas")]
 mod partidas;
 
-pub use estrutura::{Destino, Janela};
+pub use estrutura::{Janela, Secao};

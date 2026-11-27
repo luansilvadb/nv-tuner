@@ -12,6 +12,11 @@
 //!
 //! Variantes que a UI v0.2.0 não envia (não fazem parte do inventário): `TravarSetting`,
 //! `AgenteConsultar`, `AgenteRelatar`.
+//!
+//! `DestravarSetting`, `DefinirAceiteExperimental`, `ReverterAjusteUsuario` e
+//! `MarcarAtualizacaoVista` foram retiradas do inventário na limpeza pós-v0.3.2: só a tela
+//! Avançado as enviava, e ela saiu da navegação na v0.3.2; o serviço e o protocolo
+//! continuam aceitando-as.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,17 +36,7 @@ const INVENTARIO: &[(&str, &str)] = &[
     ("RestaurarOriginal", "restaurar original / desfazer tudo"),
     ("ReescanearJogos", "reescanear jogos"),
     ("DefinirPreferencias", "preferências técnicas"),
-    ("DestravarSetting", "destravar ajuste"),
-    (
-        "DefinirAceiteExperimental",
-        "aceitar e retirar experimentais",
-    ),
-    ("ReverterAjusteUsuario", "Windows: reverter o que o app fez"),
     ("ReverterConfigJogo", "arquivo do jogo: reversão por chave"),
-    (
-        "MarcarAtualizacaoVista",
-        "verificar atualização / aviso visto",
-    ),
 ];
 
 fn raiz_workspace() -> PathBuf {

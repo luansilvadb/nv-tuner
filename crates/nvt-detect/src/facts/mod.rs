@@ -81,10 +81,6 @@ impl FatosDlss {
     pub fn presente(&self) -> bool {
         self.super_resolution.is_some()
     }
-
-    pub fn tem_streamline(&self) -> bool {
-        !self.streamline_modulos.is_empty()
-    }
 }
 
 /// Fatos completos de um jogo.

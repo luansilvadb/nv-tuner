@@ -4,11 +4,11 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, GetLastError, HANDLE,
-    INVALID_HANDLE_VALUE,
+    ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, GetLastError, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     self as fsys, CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY,
@@ -88,15 +88,6 @@ impl SistemaArquivos for SistemaArquivosWindows {
     }
 }
 
-struct Handle(HANDLE);
-
-impl Drop for Handle {
-    fn drop(&mut self) {
-        // SAFETY: handle aberto por CreateFileW/OpenMutexW e fechado uma vez.
-        unsafe { CloseHandle(self.0) };
-    }
-}
-
 /// Exclusão real (R-L-03): abre com `DELETE`, compartilhamento 0,
 /// `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`; reconfere os atributos
 /// pelo handle; marca a exclusão sem `POSIX_SEMANTICS` nem `IGNORE_READONLY`.
@@ -127,14 +118,15 @@ impl Excluidor for ExcluidorReal {
                 MotivoPulo::AcessoNegado
             });
         }
-        let h = Handle(h);
+        // SAFETY: handle válido recém-aberto por CreateFileW; fechado uma vez no drop.
+        let h = unsafe { OwnedHandle::from_raw_handle(h) };
 
         // SAFETY: FILE_BASIC_INFO é POD; zero é válido.
         let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
         // SAFETY: handle válido; buffer do tamanho informado.
         let ok = unsafe {
             GetFileInformationByHandleEx(
-                h.0,
+                h.as_raw_handle(),
                 fsys::FileBasicInfo,
                 (&raw mut info).cast(),
                 size_of::<FILE_BASIC_INFO>() as u32,
@@ -167,7 +159,7 @@ impl Excluidor for ExcluidorReal {
         // SAFETY: handle aberto com DELETE; estrutura do tamanho informado.
         let ok = unsafe {
             SetFileInformationByHandle(
-                h.0,
+                h.as_raw_handle(),
                 fsys::FileDispositionInfoEx,
                 (&raw const disp).cast(),
                 size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
@@ -209,7 +201,8 @@ impl Instalacao for MutexMsi {
             // SAFETY: sem pré-condições.
             return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
         }
-        drop(Handle(h));
+        // SAFETY: handle válido aberto por OpenMutexW; fechado uma vez no drop.
+        drop(unsafe { OwnedHandle::from_raw_handle(h) });
         true
     }
 }

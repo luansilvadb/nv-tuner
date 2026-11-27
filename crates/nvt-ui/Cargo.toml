@@ -11,20 +11,19 @@ publish.workspace = true
 [dependencies]
 nvt-ipc.workspace = true
 # Modo de visualização (sem serviço): pipeline local somente leitura.
-nvt-core = { path = "../nvt-core" }
-nvt-detect = { path = "../nvt-detect" }
-nvt-drs = { path = "../nvt-drs" }
-nvt-engine = { path = "../nvt-engine" }
+nvt-core.workspace = true
+nvt-drs.workspace = true
+nvt-engine.workspace = true
 # GPUI + gpui-component (ver docs/pesquisa/gpui-windows.md). Versão exata:
 # gpui-kit 0.11.0 fixa gpui-pre =0.3.14.
 gpui-kit = "=0.11.0"
-serde_json = "1"
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_RemoteDesktop", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Services", "Win32_System_SystemInformation", "Win32_System_Time", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
-embed-resource = "3"
+embed-resource.workspace = true
 
 [lints]
 workspace = true

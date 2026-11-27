@@ -150,7 +150,10 @@ fn consultar_scm() -> ConsultaScm {
         return ConsultaScm::Falhou;
     }
     let scm = HandleScm(scm);
-    let nome: Vec<u16> = "nvt-service".encode_utf16().chain([0]).collect();
+    let nome: Vec<u16> = nvt_core::produto::NOME_SERVICO
+        .encode_utf16()
+        .chain([0])
+        .collect();
     // SAFETY: handle válido e nome terminado em zero.
     let servico = unsafe {
         OpenServiceW(
@@ -544,7 +547,6 @@ impl Trabalhador {
             return;
         }
         let req = match &c {
-            Comando::AplicarAgora => Requisicao::AplicarAgora,
             Comando::RestaurarOriginal => Requisicao::RestaurarOriginal,
             Comando::Reescanear => Requisicao::ReescanearJogos,
             Comando::DefinirPreferencias(p) => Requisicao::DefinirPreferencias {
@@ -552,32 +554,8 @@ impl Trabalhador {
                 qualidade: p.qualidade,
                 limite_fps: p.limite_fps,
             },
-            Comando::Destravar { perfil, setting } => Requisicao::DestravarSetting {
-                perfil: perfil.clone(),
-                setting: setting.clone(),
-            },
-            Comando::DefinirAceiteExperimental { regra, aceito } => {
-                Requisicao::DefinirAceiteExperimental {
-                    regra: regra.clone(),
-                    aceito: *aceito,
-                }
-            }
-            Comando::ReverterAjusteUsuario { destino } => Requisicao::ReverterAjusteUsuario {
-                alvo_tela: match destino {
-                    nvt_ipc::SettingUsuario::Refresh { alvo } => Some(alvo.clone()),
-                    _ => None,
-                },
-                destino: destino.clone(),
-            },
             Comando::ReverterConfigJogo { destino } => Requisicao::ReverterConfigJogo {
                 destino: destino.clone(),
-            },
-            Comando::MarcarAtualizacaoVista { versao } => Requisicao::MarcarAtualizacaoVista {
-                versao: versao.clone(),
-            },
-            Comando::MarcarInicioVisto { fonte, nome } => Requisicao::MarcarInicioVisto {
-                fonte: *fonte,
-                nome: nome.clone(),
             },
             Comando::Atualizar => unreachable!("tratado acima"),
         };
@@ -592,10 +570,6 @@ impl Trabalhador {
             Err(Falha::Ipc(e)) => Err(mensagem_ipc(&e)),
         };
         let reescaneou = matches!(c, Comando::Reescanear);
-        if matches!(c, Comando::MarcarInicioVisto { .. }) {
-            // A lista muda: a próxima atualização relê a saúde.
-            self.saude_lida = None;
-        }
         self.atualizar(reescaneou);
         self.concluir(c, resultado);
     }
@@ -756,7 +730,7 @@ mod testes_inicio {
         let (tx, rx) = mpsc::channel();
         let mut trabalhador = Trabalhador::new(String::new(), tx);
         trabalhador.servico = true;
-        let mut ui = crate::modelo::EstadoUi::new(crate::modelo::Tela::VisaoGeral);
+        let mut ui = crate::modelo::EstadoUi::new();
         ui.aplicar(Evento::Servico(Dados::default()));
         assert!(ui.pode_escrever());
 

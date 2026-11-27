@@ -8,7 +8,6 @@
 //! `tick` é síncrono (rede e hash rodam dentro dele): o laço deve chamá-lo fora de
 //! um ciclo DRS, ou numa thread própria (o atualizador é `Send`).
 // Integrado ao laço na tarefa 3.2.
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -72,6 +71,7 @@ pub(crate) struct Atualizador {
     status_http: u16,
     erro_estado: bool,
     /// Texto do último registro de lançamento (U-34), o mesmo enviado ao log.
+    #[cfg(test)]
     ultimo_lancamento: Option<String>,
 }
 
@@ -112,6 +112,7 @@ impl Atualizador {
             motivo_adiamento: None,
             status_http: 0,
             erro_estado: false,
+            #[cfg(test)]
             ultimo_lancamento: None,
         }
     }
@@ -124,11 +125,13 @@ impl Atualizador {
     }
 
     /// Último registro de lançamento do msiexec (U-34).
+    #[cfg(test)]
     pub(crate) fn ultimo_lancamento(&self) -> Option<&str> {
         self.ultimo_lancamento.as_deref()
     }
 
-    /// Estado persistido atual (diagnóstico e testes).
+    /// Estado persistido atual (testes).
+    #[cfg(test)]
     pub(crate) fn estado(&self) -> &EstadoPersistido {
         &self.estado
     }
@@ -585,7 +588,10 @@ impl Atualizador {
                     self.f.relogio.agora_unix()
                 );
                 tracing::info!("atualização: {registro}");
-                self.ultimo_lancamento = Some(registro);
+                #[cfg(test)]
+                {
+                    self.ultimo_lancamento = Some(registro);
+                }
                 self.soltar_msi_em = Some(agora + SEGURAR_MSI);
                 Evento::Lancado { pid: l.pid }
             }

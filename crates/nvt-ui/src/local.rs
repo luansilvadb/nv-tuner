@@ -143,7 +143,7 @@ pub fn gpu_simulada_de(nome: &str) -> Option<GpuInfo> {
 pub fn calcular() -> Result<Dados, String> {
     let api = NvApi::load().map_err(|e| textos::erro_local(&e.to_string()))?;
     let store = DrsReal::abrir(&api).map_err(|e| textos::erro_local(&e.to_string()))?;
-    let agora = agora_unix();
+    let agora = crate::fuso::agora_unix();
     let salvo = ler_salvo(&Armazem::diretorio_padrao(), agora);
     // Só a leitura: o motor recebe um armazém em memória.
     let mut armazem = Armazem::em_memoria();
@@ -188,12 +188,6 @@ pub fn aviso_do_plano(a: nvt_core::AvisoPlano, quando: u64) -> Aviso {
         nvt_core::AvisoPlano::GsyncSemVrr => Aviso::gsync_sem_vrr(quando),
         nvt_core::AvisoPlano::VrrDesligadoNoPainel => Aviso::vrr_desligado_no_painel(quando),
     }
-}
-
-fn agora_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 // ---------------------------------------------------------------------------
@@ -862,7 +856,7 @@ const CHAVE_BOAS_VINDAS: &str = "boas_vindas_vista";
 /// `%LOCALAPPDATA%\nv-tuner`, se a variável existir.
 pub fn pasta_ui() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(std::path::PathBuf::from(base).join("nv-tuner"))
+    Some(std::path::PathBuf::from(base).join(nvt_core::produto::PASTA_DADOS))
 }
 
 /// As boas-vindas já foram vistas? Qualquer falha de leitura conta como
@@ -1105,22 +1099,6 @@ mod testes {
             assert!(constantes.contains(&c.como_str()), "{c:?} sem constante");
             assert!(!textos::texto_aviso_motor(c).trim().is_empty(), "{c:?}");
         }
-        // O texto próprio de `snapshot_original_perdido` substitui a mensagem
-        // recebida e explica que “voltar ao original” volta à base.
-        let a = Aviso::novo(
-            NivelAviso::Atencao,
-            codigo_aviso::SNAPSHOT_ORIGINAL_PERDIDO,
-            "mensagem do serviço",
-            None,
-            1,
-        );
-        assert_eq!(
-            textos::mensagem_aviso(&a),
-            textos::SNAPSHOT_ORIGINAL_PERDIDO
-        );
-        assert!(textos::SNAPSHOT_ORIGINAL_PERDIDO.contains("base pós-quarentena"));
-        let b = Aviso::snapshot_indisponivel("x", 1);
-        assert_eq!(textos::mensagem_aviso(&b), b.mensagem);
     }
 
     #[test]
@@ -1141,7 +1119,7 @@ mod testes {
         let dir = std::env::temp_dir().join(format!(
             "nvt-ui-ler-salvo-{}-{}",
             std::process::id(),
-            agora_unix()
+            crate::fuso::agora_unix()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let anterior = estado_json();
@@ -1253,6 +1231,40 @@ mod testes {
         &jogos.iter().find(|j| j.nome == nome).unwrap().resumo
     }
 
+    /// Resumo de uma linha do que o plano fez no jogo: as regras aplicadas,
+    /// ou o motivo mais relevante de nada específico ter sido feito.
+    fn resumo_curto(r: &nvt_ipc::ResumoJogo) -> String {
+        use nvt_ipc::MotivoNaoAplicada as N;
+        if !r.aplicadas.is_empty() {
+            return r
+                .aplicadas
+                .iter()
+                .map(|a| textos::nome_regra(&a.regra, &a.descricao))
+                .collect::<Vec<_>>()
+                .join(" + ");
+        }
+        let relevancia = |m: &N| match m {
+            N::Experimental => 0,
+            N::EscolhaDoUsuario { .. } => 1,
+            N::BloqueadaPeloTetoDeQualidade { .. } => 2,
+            N::SemTensorCores => 3,
+            N::ArquiteturaNaoPrecisa { .. } => 4,
+            N::JogoSemDlss => 5,
+            N::FatoDesconhecido { .. } => 6,
+            N::ConflitoComRegraMaisEspecifica { .. } | N::VrrInativo | N::JogoComReflex => 7,
+            _ => 8,
+        };
+        match r
+            .nao_aplicadas
+            .iter()
+            .map(|n| &n.motivo)
+            .min_by_key(|m| relevancia(m))
+        {
+            None => "Nenhum ajuste específico".into(),
+            Some(m) => format!("Nenhum ajuste específico — {}", textos::motivo_curto(m)),
+        }
+    }
+
     /// Descrição da regra `energia-desempenho-maximo-por-jogo` (regras/base.toml).
     const ENERGIA_TXT: &str =
         "Gerenciamento de energia em desempenho máximo no perfil do jogo competitivo";
@@ -1270,9 +1282,9 @@ mod testes {
         // Spec competitivo F1-11 e §11 item 19: a energia por jogo só vale para
         // jogo competitivo. WARDOGS está fora da base: só o DLSS; LoL é
         // competitivo (base curada): recebe a energia.
-        assert_eq!(textos::resumo_curto(&w.resumo), "Preset E do DLSS (Turing)");
+        assert_eq!(resumo_curto(&w.resumo), "Preset E do DLSS (Turing)");
         assert_eq!(
-            textos::resumo_curto(resumo(&jogos, "League of Legends")),
+            resumo_curto(resumo(&jogos, "League of Legends")),
             ENERGIA_TXT
         );
         assert!(!w.resumo.herda_do_global.is_empty());
@@ -1303,8 +1315,6 @@ mod testes {
         assert_eq!(a.quando_unix, 9);
         let b = aviso_do_plano(nvt_core::AvisoPlano::VrrDesligadoNoPainel, 9);
         assert_eq!(b.codigo, codigo_aviso::VRR_DESLIGADO_NO_PAINEL);
-        assert_eq!(textos::mensagem_aviso(&a), textos::GSYNC_SEM_VRR);
-        assert_eq!(textos::mensagem_aviso(&b), textos::VRR_DESLIGADO_NO_PAINEL);
     }
 
     #[test]
@@ -1318,11 +1328,11 @@ mod testes {
         let diff = e.planejar(&entrada).unwrap();
         let jogos = jogos_ipc(&e, &diff);
         assert_eq!(
-            textos::resumo_curto(resumo(&jogos, "Jogo Qualquer")),
+            resumo_curto(resumo(&jogos, "Jogo Qualquer")),
             "Nenhum ajuste específico — jogo sem DLSS"
         );
         assert_eq!(
-            textos::resumo_curto(resumo(&jogos, "League of Legends")),
+            resumo_curto(resumo(&jogos, "League of Legends")),
             ENERGIA_TXT
         );
     }
@@ -1347,11 +1357,11 @@ mod testes {
         // curto volta a explicar o motivo do DLSS (spec competitivo §11 item
         // 19). LoL é competitivo e recebe a energia.
         assert_eq!(
-            textos::resumo_curto(resumo(&jogos, "WARDOGS")),
+            resumo_curto(resumo(&jogos, "WARDOGS")),
             "Nenhum ajuste específico — GPU Ada roda o DLSS padrão sem custo extra"
         );
         assert_eq!(
-            textos::resumo_curto(resumo(&jogos, "League of Legends")),
+            resumo_curto(resumo(&jogos, "League of Legends")),
             ENERGIA_TXT
         );
     }

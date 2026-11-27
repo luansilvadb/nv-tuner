@@ -17,8 +17,7 @@
 //! O log registra só contagens e bytes (R-L-09). Nenhum processo é criado.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -103,36 +102,12 @@ pub(crate) struct ArquivoManutencao(pub PathBuf);
 
 impl ArmazemManutencao for ArquivoManutencao {
     fn carregar(&self) -> io::Result<EstadoManutencao> {
-        match crate::diretorio::abrir_arquivo_privado(&self.0.join(ARQUIVO)) {
-            Ok(f) => Ok(serde_json::from_reader(io::BufReader::new(f))?),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(EstadoManutencao::default()),
-            Err(e) => Err(e),
-        }
+        crate::diretorio::ler_json_privado(&self.0.join(ARQUIVO))
     }
 
     fn salvar(&self, estado: &EstadoManutencao) -> io::Result<()> {
-        let (tmp, mut f) = (0..100)
-            .find_map(|tentativa| {
-                let tmp = self
-                    .0
-                    .join(format!("{ARQUIVO}.{}-{tentativa}.tmp", std::process::id()));
-                match crate::diretorio::criar_arquivo_privado(&tmp) {
-                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => None,
-                    r => Some(r.map(|f| (tmp, f))),
-                }
-            })
-            .ok_or_else(|| io::Error::other("sem nome temporário livre para manutencao.json"))??;
-        let gravado = (|| {
-            serde_json::to_writer(&mut f, estado)?;
-            f.flush()?;
-            f.sync_all()
-        })();
-        drop(f);
-        let r = gravado.and_then(|()| fs::rename(&tmp, self.0.join(ARQUIVO)));
-        if r.is_err() {
-            let _ = fs::remove_file(tmp);
-        }
-        r
+        let bytes = serde_json::to_vec(estado)?;
+        crate::diretorio::gravar_atomico_privado(&self.0, ARQUIVO, &bytes)
     }
 }
 

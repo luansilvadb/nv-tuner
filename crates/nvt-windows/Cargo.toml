@@ -12,11 +12,11 @@ publish.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-nvt-core = { path = "../nvt-core" }
+nvt-core.workspace = true
 nvt-ipc.workspace = true
-nvt-detect = { path = "../nvt-detect" }
+nvt-detect.workspace = true
 serde.workspace = true
-winreg = "0.56"
+winreg.workspace = true
 windows = { version = "0.58", features = [
     "Win32_System_Com",
     "Win32_System_Ole",
@@ -26,7 +26,7 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell",
     "Win32_Storage_FileSystem",
 ] }
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
     "Wdk_System_SystemServices",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Display",

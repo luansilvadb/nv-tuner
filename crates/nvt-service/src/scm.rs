@@ -19,7 +19,7 @@ use windows_service::{define_windows_service, service_dispatcher};
 use crate::laco::{self, Evento, Opcoes};
 
 /// Nome interno do serviço no SCM.
-pub const NOME_SERVICO: &str = "nvt-service";
+pub const NOME_SERVICO: &str = nvt_core::produto::NOME_SERVICO;
 
 static OPCOES: OnceLock<Opcoes> = OnceLock::new();
 

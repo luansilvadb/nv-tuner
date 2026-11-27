@@ -1,6 +1,6 @@
 //! Linha de estado única no topo do conteúdo (§5.1, R-UI-05).
 //!
-//! Uma frase por estado, sem ação. Códigos de falha ficam no Avançado.
+//! Uma frase por estado, sem ação.
 
 use crate::modelo::LinhaEstado;
 

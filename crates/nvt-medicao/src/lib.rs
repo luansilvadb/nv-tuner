@@ -26,6 +26,3 @@ pub mod etw;
 pub mod nvml;
 #[cfg(all(feature = "medicao-partidas", windows))]
 pub mod processos;
-
-/// Verdadeiro só quando o crate foi compilado com a feature no build de teste.
-pub const GRAVACAO_DISPONIVEL: bool = cfg!(all(feature = "medicao-partidas", nvt_build_de_teste));

@@ -103,6 +103,15 @@ impl SettingJogo {
         }
     }
 
+    /// Limite padrão do próprio jogo, abaixo do qual `refresh_limitado_ao_menu`
+    /// não sobe; `None` = a ação não vale para esta setting.
+    pub const fn limite_padrao(self) -> Option<i64> {
+        match self {
+            Self::Dota2FpsMax => Some(FPS_MAX_PADRAO_DOTA2),
+            _ => None,
+        }
+    }
+
     /// Id do arquivo lógico (`[[arquivo]].id`).
     pub const fn arquivo(self) -> &'static str {
         match self {
@@ -915,7 +924,7 @@ fn validar_regra(
                 }
             }
             AcaoJogo::RefreshLimitadoAoMenu => {
-                if setting != SettingJogo::Dota2FpsMax
+                if setting.limite_padrao().is_none()
                     || q.limite_fps_definido != Some(false)
                     || q.refresh_conhecido != Some(true)
                     || def.faixa.is_none()
@@ -1125,7 +1134,9 @@ pub fn avaliar_config_jogo(
                     }
                 }
                 AcaoJogo::RefreshLimitadoAoMenu => {
-                    let (Some(hz), Some(f)) = (refresh_hz, def.faixa) else {
+                    let (Some(hz), Some(f), Some(padrao)) =
+                        (refresh_hz, def.faixa, setting.limite_padrao())
+                    else {
                         continue;
                     };
                     let n = i64::from(hz).min(f.max);
@@ -1134,7 +1145,7 @@ pub fn avaliar_config_jogo(
                         ValorJogo::TokenLancamento(Some(m)) => Some(i64::from(*m)),
                         _ => None,
                     };
-                    if n <= FPS_MAX_PADRAO_DOTA2 || existente.is_some_and(|m| m >= n) {
+                    if n <= padrao || existente.is_some_and(|m| m >= n) {
                         descartar(MotivoDescarteJogo::NaoSobeOLimite);
                         continue;
                     }

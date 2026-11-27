@@ -21,7 +21,7 @@ use super::movimento::recolhivel;
 use crate::abrir::{self, Bloqueio, FalhaAbrir};
 use crate::demonstracao;
 use crate::local;
-use crate::modelo::{Conexao, Fatos, MotivoIndisponivel, Veredito, veredito};
+use crate::modelo::{Conexao, Fatos, MotivoIndisponivel, Veredito};
 use crate::servico::{self, AcaoInicio, FalhaInicio, RespostaInicio};
 use crate::tema::{self, EstadoBotao as _};
 use crate::textos::inicio as t;
@@ -189,7 +189,7 @@ pub(super) fn mostra_saude(saude: Option<&nvt_ipc::Saude>) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Abrir inicialização (D3, R-S-04), usado também pelo Avançado
+// Abrir inicialização (D3, R-S-04)
 // ---------------------------------------------------------------------------
 
 /// Último estado **do serviço** (no modo de visualização, desconhecido).
@@ -450,9 +450,7 @@ pub(super) fn controle_otimizacao(
     window: &mut Window,
     cx: &mut Context<Janela>,
 ) -> Option<AnyElement> {
-    let fatos = janela.fatos();
-    let veredito = veredito(&fatos, janela.ui.saude().as_ref());
-    let botoes = botoes(&veredito, &fatos);
+    let botoes = botoes(janela.veredito(), janela.fatos());
     let ocupado = cx.default_global::<EstadoInicio>().ocupado;
     let ligando = ocupado == Some(AcaoInicio::VoltarAAjustar);
     let desligando = ocupado == Some(AcaoInicio::DesfazerTudo);
@@ -595,8 +593,7 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
         .and_then(|estado| estado.gpu.as_ref());
     let cenario = demonstracao::ativo();
     let simulacao = cenario.is_some() && gpu.is_some();
-    let v = veredito(&janela.fatos(), janela.ui.saude().as_ref());
-    let texto = t::veredito(&v);
+    let texto = t::veredito(janela.veredito());
     let descricao = if cenario == Some(demonstracao::Cenario::Otimizado) {
         "Todos os subsistemas calibrados e otimizados para máxima estabilidade competitiva.".into()
     } else {
@@ -789,16 +786,16 @@ pub(super) fn recomendacoes(
         .saude
         .as_ref()
         .filter(|s| mostra_saude(Some(s)));
-    let v = veredito(&fatos, janela.ui.saude().as_ref());
-    let texto = t::veredito(&v);
-    let b = botoes(&v, &fatos);
+    let v = janela.veredito();
+    let texto = t::veredito(v);
+    let b = botoes(v, fatos);
     let tema = cx.theme().clone();
     let ocupado = estado.ocupado;
-    let otimizado_com_pausa = fatos.agente_ausente && v == Veredito::Otimizado;
+    let otimizado_com_pausa = fatos.agente_ausente && *v == Veredito::Otimizado;
     let (icone, cor) = if otimizado_com_pausa {
         (IconName::SlidersHorizontal, tema.info)
     } else {
-        (icone(&v), cor_tom(tom(&v), &tema))
+        (icone(v), cor_tom(tom(v), &tema))
     };
 
     // A aplicação de recomendações fica junto do resumo dos ajustes.
@@ -951,7 +948,7 @@ pub(super) fn recomendacoes(
 #[cfg(test)]
 mod testes {
     use super::*;
-    use crate::modelo::{Saude, TipoSinal};
+    use crate::modelo::{Saude, TipoSinal, veredito};
     use core::prelude::v1::test;
 
     fn pronto() -> Fatos {

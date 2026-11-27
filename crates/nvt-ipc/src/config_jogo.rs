@@ -9,8 +9,9 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocolo::{ImpactoVisual, MotivoNaoAplicada, StatusMudanca};
-use crate::usuario::{EstadoExperimental, Fato, ReferenciaTarefa, validar_texto};
+use crate::protocolo::{ImpactoVisual, MotivoNaoAplicada, StatusMudanca, validar_setting};
+use crate::saude::validar_nome_simples;
+use crate::usuario::{EstadoExperimental, Fato, ReferenciaTarefa, ascii_restrito, validar_texto};
 
 /// Máximo de instâncias de arquivo de jogo relatadas numa consulta.
 pub const ARQUIVOS_JOGO_MAX: usize = 64;
@@ -67,7 +68,7 @@ pub struct DestinoJogoIpc {
 impl DestinoJogoIpc {
     pub fn validar(&self) -> Result<(), String> {
         self.alvo.validar()?;
-        validar_chave(&self.setting)?;
+        validar_setting(&self.setting)?;
         validar_instancia(&self.instancia)
     }
 }
@@ -181,7 +182,7 @@ impl FatoConfigJogo {
         }
         let mut vistos = BTreeSet::new();
         for v in &self.valores {
-            validar_chave(&v.setting)?;
+            validar_setting(&v.setting)?;
             if !vistos.insert(&v.setting) {
                 return Err("chave de jogo repetida".into());
             }
@@ -191,7 +192,7 @@ impl FatoConfigJogo {
         }
         let mut vistos = BTreeSet::new();
         for g in &self.gestao {
-            validar_chave(&g.setting)?;
+            validar_setting(&g.setting)?;
             if !vistos.insert(&g.setting) {
                 return Err("gestão de jogo repetida".into());
             }
@@ -324,7 +325,7 @@ impl ResultadoJogo {
             return Err("muitas chaves alteradas".into());
         }
         for c in &self.chaves_alteradas {
-            validar_chave(c)?;
+            validar_setting(c)?;
         }
         Ok(())
     }
@@ -460,7 +461,7 @@ impl ArquivoJogoUi {
             return Err("muitas mudanças no arquivo de jogo".into());
         }
         for m in &self.mudancas {
-            validar_chave(&m.setting)?;
+            validar_setting(&m.setting)?;
             m.antes.validar()?;
             m.depois.validar()?;
             if let Some(motivo) = &m.motivo {
@@ -532,31 +533,24 @@ fn validar_processos(processos: &[String]) -> Result<(), String> {
         return Err("lista de processos inválida".into());
     }
     for p in processos {
-        validar_texto(p, 128)?;
-        if p.contains(['\\', '/', ':']) {
-            return Err("processo deve ser só o nome do executável".into());
-        }
+        validar_nome_simples(p, 128, "processo deve ser só o nome do executável")?;
     }
     Ok(())
 }
 
 /// Id kebab/snake da base: `[a-z0-9_-]`, 1 a 64, começando por letra ou dígito.
 fn validar_id(id: &str) -> Result<(), String> {
-    let ok = !id.is_empty()
-        && id.len() <= 64
-        && id.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'));
+    let ok = ascii_restrito(
+        id,
+        64,
+        |b| b.is_ascii_lowercase() || b.is_ascii_digit(),
+        |b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'),
+    );
     if ok {
         Ok(())
     } else {
         Err("identificador de jogo/arquivo inválido".into())
     }
-}
-
-fn validar_chave(chave: &str) -> Result<(), String> {
-    crate::protocolo::validar_setting(chave)
 }
 
 /// Instância opaca: 1 a 64 caracteres `[a-z0-9_-]`.
@@ -566,11 +560,8 @@ fn validar_instancia(instancia: &str) -> Result<(), String> {
 
 /// SHA-256 em 64 dígitos hexadecimais minúsculos.
 pub fn validar_hash(hash: &str) -> Result<(), String> {
-    if hash.len() != 64
-        || !hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    let hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    if hash.len() != 64 || !ascii_restrito(hash, 64, hex, hex) {
         return Err("hash SHA-256 inválido".into());
     }
     Ok(())

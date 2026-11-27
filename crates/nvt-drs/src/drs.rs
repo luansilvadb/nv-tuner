@@ -311,14 +311,6 @@ impl<'a> Session<'a> {
         self.get_profile(id::DRS_GET_BASE_PROFILE, "NvAPI_DRS_GetBaseProfile")
     }
 
-    /// Perfil global atual (normalmente o próprio “Base Profile”).
-    pub fn current_global_profile(&self) -> Result<Profile<'_>> {
-        self.get_profile(
-            id::DRS_GET_CURRENT_GLOBAL_PROFILE,
-            "NvAPI_DRS_GetCurrentGlobalProfile",
-        )
-    }
-
     /// Perfil pelo nome; `Ok(None)` se não existir (-163).
     pub fn find_profile_by_name(&self, name: &str) -> Result<Option<Profile<'_>>> {
         const F: &str = "NvAPI_DRS_FindProfileByName";

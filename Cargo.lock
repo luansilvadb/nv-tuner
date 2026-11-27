@@ -4613,7 +4613,6 @@ name = "nvt-medicao"
 version = "0.3.2"
 dependencies = [
  "nvt-ipc",
- "serde",
  "serde_json",
  "windows-sys 0.61.2",
 ]
@@ -4644,17 +4643,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "nvt-telemetry"
-version = "0.3.2"
-
-[[package]]
 name = "nvt-ui"
 version = "0.3.2"
 dependencies = [
  "embed-resource",
  "gpui-kit",
  "nvt-core",
- "nvt-detect",
  "nvt-drs",
  "nvt-engine",
  "nvt-ipc",

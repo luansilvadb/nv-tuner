@@ -7,6 +7,7 @@ use std::{
     os::windows::{
         ffi::OsStrExt,
         fs::{MetadataExt, OpenOptionsExt},
+        io::{FromRawHandle, OwnedHandle},
     },
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
@@ -15,9 +16,7 @@ use std::{
 use nvt_engine::Portao;
 use nvt_ipc::{Requisicao, Resposta};
 use windows_sys::Win32::{
-    Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION, GetLastError, HANDLE,
-    },
+    Foundation::{ERROR_ALREADY_EXISTS, ERROR_SHARING_VIOLATION, GetLastError},
     Storage::FileSystem::{
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, MOVEFILE_REPLACE_EXISTING,
@@ -82,7 +81,8 @@ fn wide(texto: &OsStr) -> Vec<u16> {
     texto.encode_wide().chain([0]).collect()
 }
 
-struct Instancia(HANDLE);
+/// Guarda do mutex nomeado; o handle só existe para ser fechado no drop.
+struct Instancia(#[allow(dead_code)] OwnedHandle);
 
 impl Instancia {
     fn abrir() -> io::Result<Option<Self>> {
@@ -95,17 +95,9 @@ impl Instancia {
         if handle.is_null() {
             return Err(io::Error::from_raw_os_error(erro as i32));
         }
-        let instancia = Self(handle);
+        // O handle válido pertence exclusivamente à guarda.
+        let instancia = Self(unsafe { OwnedHandle::from_raw_handle(handle) });
         Ok((erro != ERROR_ALREADY_EXISTS).then_some(instancia))
-    }
-}
-
-impl Drop for Instancia {
-    fn drop(&mut self) {
-        // O handle pertence exclusivamente à guarda.
-        unsafe {
-            CloseHandle(self.0);
-        }
     }
 }
 
@@ -179,7 +171,7 @@ impl Perfil {
             ));
         }
 
-        let caminho = local.join("nv-tuner").join("usuario");
+        let caminho = local.join(nvt_core::produto::PASTA_DADOS).join("usuario");
         let mut diretorios = Vec::new();
         // Abra da raiz para o destino. Sem compartilhamento de DELETE, os
         // componentes já verificados ficam fixos enquanto seus filhos são usados.
@@ -409,10 +401,16 @@ mod testes {
         drop(outro);
         drop(perfil);
         for arquivo in ["estado.json", "trava"] {
-            fs::remove_file(local.join("nv-tuner").join("usuario").join(arquivo)).unwrap();
+            fs::remove_file(
+                local
+                    .join(nvt_core::produto::PASTA_DADOS)
+                    .join("usuario")
+                    .join(arquivo),
+            )
+            .unwrap();
         }
-        fs::remove_dir(local.join("nv-tuner").join("usuario")).unwrap();
-        fs::remove_dir(local.join("nv-tuner")).unwrap();
+        fs::remove_dir(local.join(nvt_core::produto::PASTA_DADOS).join("usuario")).unwrap();
+        fs::remove_dir(local.join(nvt_core::produto::PASTA_DADOS)).unwrap();
         fs::remove_dir(local).unwrap();
     }
 }

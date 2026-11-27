@@ -9,8 +9,6 @@ pub struct TextoVeredito {
     pub frase: String,
 }
 
-pub const TITULO: &str = "Início";
-
 // Vereditos fixos ----------------------------------------------------------
 pub const VERIFICANDO_TITULO: &str = "Verificando o PC…";
 pub const VERIFICANDO_FRASE: &str = "Isso leva só alguns segundos.";
@@ -38,9 +36,7 @@ pub const MOTIVO_POUCO_ESPACO: &str = "pouco espaço livre";
 // Botões e respostas -------------------------------------------------------
 pub const BOTAO_APLICAR_RECOMENDADAS: &str = "Aplicar melhorias recomendadas";
 pub const BOTAO_DESFAZER_TUDO: &str = "Desfazer tudo";
-pub const BOTAO_DESFAZER_AJUSTES: &str = "Desfazer ajustes";
 pub const OTIMIZACAO_AUTOMATICA: &str = "Otimização automática";
-pub const BOTAO_VOLTAR_A_AJUSTAR: &str = "Voltar a ajustar";
 pub const BOTAO_CANCELAR: &str = "Cancelar";
 pub const APLICAR_INDISPONIVEL: &str = "Disponível quando o nv-tuner estiver ativo.";
 pub const APLICAR_ADIADO: &str = "As melhorias serão aplicadas quando o jogo fechar.";
@@ -60,31 +56,10 @@ pub const DESFAZER_ADIADO: &str = "Tudo volta a ser como era quando o jogo fecha
 
 // Saúde do PC --------------------------------------------------------------
 pub const SECAO_SAUDE: &str = "Saúde do PC";
-pub const SAUDE_VERIFICANDO: &str = "Verificando o PC…";
-pub const SAUDE_TUDO_CERTO: &str = "Tudo certo com a saúde do PC";
-pub const ROTULO_ESPACO: &str = "Espaço livre";
-pub const ROTULO_INICIALIZACAO: &str = "Inicialização";
-pub const ROTULO_PLACA: &str = "Placa de vídeo";
-pub const ROTULO_ENERGIA: &str = "Energia";
-pub const ROTULO_REPOUSO: &str = "Uso em repouso";
-pub const ROTULO_LIMPEZA: &str = "Limpeza do Windows";
-pub const BOTAO_ABRIR_INICIALIZACAO: &str = "Abrir inicialização";
-pub const INICIALIZACAO_OK: &str = "Nenhum programa novo começa junto com o Windows.";
-pub const PLACA_OK: &str = "O driver está em dia.";
-pub const PLACA_ANTIGO: &str = "Há um driver mais novo da NVIDIA.";
-pub const PLACA_ATUALIZAR: &str = "Para atualizar, abra o aplicativo da NVIDIA.";
-pub const ENERGIA_OK: &str = "O PC está no modo de energia recomendado.";
-pub const ENERGIA_ATENCAO: &str = "O PC está num modo de energia que poupa desempenho.";
-pub const ENERGIA_CAMINHO: &str = "Para mudar: Configurações > Sistema > Energia.";
-pub const REPOUSO_OK: &str = "O PC está tranquilo quando você não está jogando.";
-pub const REPOUSO_ATENCAO: &str = "O PC trabalha muito mesmo quando você não está jogando.";
-pub const LIMPEZA_LIGADA: &str = "O Sensor de Armazenamento está ligado.";
-pub const LIMPEZA_DESLIGADA: &str = "O Sensor de Armazenamento está desligado.";
-pub const LIMPEZA_CAMINHO: &str = "Para ligar: Configurações > Sistema > Armazenamento.";
 
 /// Todas as frases fixas da tela, para os testes de linguagem.
+#[cfg(test)]
 pub const TODOS: &[&str] = &[
-    TITULO,
     INICIANDO_TITULO,
     INICIANDO_FRASE,
     SEM_RESPOSTA_TITULO,
@@ -107,8 +82,6 @@ pub const TODOS: &[&str] = &[
     MOTIVO_POUCO_ESPACO,
     BOTAO_APLICAR_RECOMENDADAS,
     BOTAO_DESFAZER_TUDO,
-    BOTAO_DESFAZER_AJUSTES,
-    BOTAO_VOLTAR_A_AJUSTAR,
     BOTAO_CANCELAR,
     APLICAR_INDISPONIVEL,
     APLICAR_ADIADO,
@@ -120,27 +93,6 @@ pub const TODOS: &[&str] = &[
     DESFEITO_OK,
     DESFAZER_ADIADO,
     SECAO_SAUDE,
-    SAUDE_VERIFICANDO,
-    SAUDE_TUDO_CERTO,
-    ROTULO_ESPACO,
-    ROTULO_INICIALIZACAO,
-    ROTULO_PLACA,
-    ROTULO_ENERGIA,
-    ROTULO_REPOUSO,
-    ROTULO_LIMPEZA,
-    BOTAO_ABRIR_INICIALIZACAO,
-    INICIALIZACAO_OK,
-    PLACA_OK,
-    PLACA_ANTIGO,
-    PLACA_ATUALIZAR,
-    ENERGIA_OK,
-    ENERGIA_ATENCAO,
-    ENERGIA_CAMINHO,
-    REPOUSO_OK,
-    REPOUSO_ATENCAO,
-    LIMPEZA_LIGADA,
-    LIMPEZA_DESLIGADA,
-    LIMPEZA_CAMINHO,
 ];
 
 /// "3 ajustes podem deixar seus jogos mais leves." Sem prometer ganho medido.
@@ -203,26 +155,6 @@ pub fn veredito(v: &Veredito) -> TextoVeredito {
     TextoVeredito { titulo, frase }
 }
 
-/// "Restam 210 GB. Tudo certo." / "Restam 12 GB no disco do Windows."
-/// Gigabytes inteiros, arredondados para baixo.
-pub fn espaco_livre(bytes_livres: u64, pouco: bool) -> String {
-    let gb = bytes_livres / 1_000_000_000;
-    if pouco {
-        format!("Restam {gb} GB no disco do Windows.")
-    } else {
-        format!("Restam {gb} GB. Tudo certo.")
-    }
-}
-
-/// "2 programas novos começam junto com o Windows."
-pub fn inicializacao_novos(n: usize) -> String {
-    match n {
-        0 => INICIALIZACAO_OK.to_owned(),
-        1 => "1 programa novo começa junto com o Windows.".to_owned(),
-        n => format!("{n} programas novos começam junto com o Windows."),
-    }
-}
-
 // Resultados das ações do Início (L2) --------------------------------------
 pub const PARA_VOLTAR_ATRAS: &str = "Para voltar atrás, use Desfazer tudo.";
 pub const NENHUMA_APLICADA: &str = "Não havia melhorias para aplicar agora.";
@@ -233,6 +165,7 @@ pub const VOLTAR_ADIADO: &str = "Os ajustes voltam quando o jogo fechar.";
 pub const AGUARDE: &str = "Só um instante…";
 
 /// Frases fixas acrescentadas no L2, para os testes de linguagem.
+#[cfg(test)]
 pub const TODOS_L2: &[&str] = &[
     PARA_VOLTAR_ATRAS,
     NENHUMA_APLICADA,

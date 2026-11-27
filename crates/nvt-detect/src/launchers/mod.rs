@@ -38,57 +38,73 @@ pub struct RelatorioVarredura {
     pub falhas: Vec<FalhaScanner>,
 }
 
+type Scanner<'a> = Box<dyn FnOnce() -> Result<Vec<DetectedGame>, String> + Send + 'a>;
+
+/// Roda um scanner isolando pânico; o erro vira texto.
+fn rodar(
+    f: impl FnOnce() -> Result<Vec<DetectedGame>, String>,
+) -> Result<Vec<DetectedGame>, String> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err("pânico no scanner".into()))
+}
+
+fn acumular(
+    launcher: Launcher,
+    r: Result<Vec<DetectedGame>, String>,
+    jogos: &mut Vec<DetectedGame>,
+    falhas: &mut Vec<FalhaScanner>,
+) {
+    match r {
+        Ok(v) => jogos.extend(v),
+        Err(erro) => falhas.push(FalhaScanner { launcher, erro }),
+    }
+}
+
+#[cfg(test)]
 fn executar(
     launcher: Launcher,
     f: impl FnOnce() -> Result<Vec<DetectedGame>, String>,
     jogos: &mut Vec<DetectedGame>,
     falhas: &mut Vec<FalhaScanner>,
 ) {
-    match catch_unwind(AssertUnwindSafe(f)) {
-        Ok(Ok(v)) => jogos.extend(v),
-        Ok(Err(erro)) => falhas.push(FalhaScanner { launcher, erro }),
-        Err(_) => falhas.push(FalhaScanner {
-            launcher,
-            erro: "pânico no scanner".into(),
-        }),
-    }
+    acumular(launcher, rodar(f), jogos, falhas);
 }
 
-/// Executa todos os scanners (ordem = prioridade na deduplicação).
+/// Executa todos os scanners em paralelo (ordem da lista = prioridade na
+/// deduplicação; os resultados são juntados nessa ordem).
 pub fn varrer_tudo() -> RelatorioVarredura {
     let mut jogos = Vec::new();
     let mut falhas = Vec::new();
     let entradas = catch_unwind(registro::entradas_desinstalacao).unwrap_or_default();
+    let entradas = &entradas;
 
-    executar(Launcher::Steam, steam::varrer, &mut jogos, &mut falhas);
-    executar(Launcher::Riot, riot::varrer, &mut jogos, &mut falhas);
-    executar(Launcher::Epic, epic::varrer, &mut jogos, &mut falhas);
-    executar(Launcher::Gog, por_registro::gog, &mut jogos, &mut falhas);
-    executar(
-        Launcher::Ubisoft,
-        por_registro::ubisoft,
-        &mut jogos,
-        &mut falhas,
-    );
-    executar(
-        Launcher::Ea,
-        || por_registro::ea(&entradas),
-        &mut jogos,
-        &mut falhas,
-    );
-    executar(
-        Launcher::BattleNet,
-        || por_registro::battlenet(&entradas),
-        &mut jogos,
-        &mut falhas,
-    );
-    executar(Launcher::Xbox, xbox::varrer, &mut jogos, &mut falhas);
-    executar(
-        Launcher::Generico,
-        || generico::varrer(&entradas),
-        &mut jogos,
-        &mut falhas,
-    );
+    let scanners: Vec<(Launcher, Scanner)> = vec![
+        (Launcher::Steam, Box::new(steam::varrer)),
+        (Launcher::Riot, Box::new(riot::varrer)),
+        (Launcher::Epic, Box::new(epic::varrer)),
+        (Launcher::Gog, Box::new(por_registro::gog)),
+        (Launcher::Ubisoft, Box::new(por_registro::ubisoft)),
+        (Launcher::Ea, Box::new(move || por_registro::ea(entradas))),
+        (
+            Launcher::BattleNet,
+            Box::new(move || por_registro::battlenet(entradas)),
+        ),
+        (Launcher::Xbox, Box::new(xbox::varrer)),
+        (
+            Launcher::Generico,
+            Box::new(move || generico::varrer(entradas)),
+        ),
+    ];
+
+    std::thread::scope(|s| {
+        let tarefas: Vec<_> = scanners
+            .into_iter()
+            .map(|(l, f)| (l, s.spawn(move || rodar(f))))
+            .collect();
+        for (l, t) in tarefas {
+            let r = t.join().unwrap_or_else(|_| Err("pânico no scanner".into()));
+            acumular(l, r, &mut jogos, &mut falhas);
+        }
+    });
 
     // Pastas que não existem mais (desinstalação incompleta) são descartadas.
     jogos.retain(|j| j.pasta.is_dir());

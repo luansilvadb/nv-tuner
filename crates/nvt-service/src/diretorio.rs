@@ -36,6 +36,7 @@
 //! [`abrir_sem_reparse`] abre arquivos com `FILE_FLAG_OPEN_REPARSE_POINT` e
 //! recusa o que não for um arquivo comum com um único vínculo.
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -168,8 +169,9 @@ pub enum Situacao {
     Inseguro(Vec<Problema>),
 }
 
-fn utf16(p: &Path) -> Vec<u16> {
-    p.as_os_str().encode_wide().chain(Some(0)).collect()
+/// Texto UTF-16 terminado em zero para as APIs `W` do Windows.
+pub(crate) fn utf16(s: impl AsRef<OsStr>) -> Vec<u16> {
+    s.as_ref().encode_wide().chain(Some(0)).collect()
 }
 
 /// Lista legível dos primeiros problemas.
@@ -574,6 +576,40 @@ pub fn abrir_arquivo_privado(p: &Path) -> io::Result<File> {
     }
 }
 
+/// Lê o JSON privado `p` ([`abrir_arquivo_privado`]); ausente = padrão.
+pub(crate) fn ler_json_privado<T: Default + serde::de::DeserializeOwned>(
+    p: &Path,
+) -> io::Result<T> {
+    match abrir_arquivo_privado(p) {
+        Ok(f) => Ok(serde_json::from_reader(io::BufReader::new(f))?),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(T::default()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Grava `dir\nome` de forma atômica: temporário novo e privado
+/// ([`criar_arquivo_privado`], até 100 nomes), `sync_all` e renomeação por
+/// cima do destino; em erro, o temporário é apagado.
+pub(crate) fn gravar_atomico_privado(dir: &Path, nome: &str, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let (tmp, mut f) = (0..100)
+        .find_map(|tentativa| {
+            let tmp = dir.join(format!("{nome}.{}-{tentativa}.tmp", std::process::id()));
+            match criar_arquivo_privado(&tmp) {
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => None,
+                r => Some(r.map(|f| (tmp, f))),
+            }
+        })
+        .ok_or_else(|| io::Error::other(format!("sem nome temporário livre para {nome}")))??;
+    let gravado = f.write_all(bytes).and_then(|()| f.sync_all());
+    drop(f);
+    let r = gravado.and_then(|()| fs::rename(&tmp, dir.join(nome)));
+    if r.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    r
+}
+
 fn quarentena_para(dir: &Path) -> PathBuf {
     let nome = dir
         .file_name()
@@ -828,30 +864,8 @@ pub fn modo_do_processo() -> Modo {
 #[cfg(test)]
 mod testes {
     use super::*;
+    use crate::teste_util::DirTemp;
     use std::process::Command;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    struct Temp(PathBuf);
-
-    impl Temp {
-        fn novo(nome: &str) -> Self {
-            static N: AtomicU32 = AtomicU32::new(0);
-            let p = std::env::temp_dir().join(format!(
-                "nvt-dir-{nome}-{}-{}",
-                std::process::id(),
-                N.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&p);
-            fs::create_dir_all(&p).unwrap();
-            Self(p)
-        }
-    }
-
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn juncao(link: &Path, alvo: &Path) {
         let s = Command::new("cmd")
@@ -867,7 +881,7 @@ mod testes {
 
     #[test]
     fn juncao_e_detectada_sem_ser_seguida() {
-        let t = Temp::novo("juncao");
+        let t = DirTemp::criado("juncao");
         let estado = t.0.join("estado");
         let alvo = t.0.join("alvo");
         fs::create_dir_all(estado.join("logs-real")).unwrap();
@@ -888,7 +902,7 @@ mod testes {
 
     #[test]
     fn diretorio_raiz_como_juncao_e_detectado() {
-        let t = Temp::novo("raiz");
+        let t = DirTemp::criado("raiz");
         let alvo = t.0.join("alvo");
         fs::create_dir_all(&alvo).unwrap();
         let estado = t.0.join("estado");
@@ -903,7 +917,7 @@ mod testes {
 
     #[test]
     fn hard_link_e_detectado_e_recusado_na_abertura() {
-        let t = Temp::novo("vinculo");
+        let t = DirTemp::criado("vinculo");
         let estado = t.0.join("estado");
         fs::create_dir_all(&estado).unwrap();
         let fora = t.0.join("fora.txt");
@@ -935,7 +949,7 @@ mod testes {
 
     #[test]
     fn link_simbolico_e_recusado_na_abertura() {
-        let t = Temp::novo("symlink");
+        let t = DirTemp::criado("symlink");
         let alvo = t.0.join("alvo.txt");
         fs::write(&alvo, "x").unwrap();
         let link = t.0.join("link.txt");
@@ -952,7 +966,7 @@ mod testes {
     fn pasta_temporaria_comum_nao_passa() {
         // A pasta temporária do usuário pertence ao usuário (ou, elevado, a
         // Administradores) e concede escrita a ele: nunca é "segura".
-        let t = Temp::novo("comum");
+        let t = DirTemp::criado("comum");
         let p = verificar(&t.0);
         assert!(
             p.iter()
@@ -963,7 +977,7 @@ mod testes {
 
     #[test]
     fn arquivo_privado_restringe_a_dacl_desde_a_criacao() {
-        let t = Temp::novo("privado");
+        let t = DirTemp::criado("privado");
         let p = t.0.join("usuarios.json");
         let f = criar_arquivo_privado(&p).unwrap();
         let mut problemas = Vec::new();
@@ -980,7 +994,7 @@ mod testes {
 
     #[test]
     fn criado_com_descritor_seguro_so_tem_problema_de_dono_sem_privilegio() {
-        let t = Temp::novo("criado");
+        let t = DirTemp::criado("criado");
         let estado = t.0.join("estado");
         assert_eq!(preparar(&estado, Modo::Avisar), Ok(Situacao::Ausente));
         assert!(!estado.exists(), "Avisar não cria");
@@ -1009,8 +1023,8 @@ mod testes {
 
     #[test]
     fn exigir_poe_em_quarentena_e_recria() {
-        let t = Temp::novo("quarentena");
-        let estado = t.0.join("nv-tuner");
+        let t = DirTemp::criado("quarentena");
+        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
         let alvo = t.0.join("alvo");
         fs::create_dir_all(&estado).unwrap();
         fs::create_dir_all(&alvo).unwrap();
@@ -1072,8 +1086,8 @@ mod testes {
     /// quarentena.
     #[test]
     fn arquivo_que_some_durante_a_verificacao_nao_e_problema() {
-        let t = Temp::novo("some");
-        let estado = t.0.join("nv-tuner");
+        let t = DirTemp::criado("some");
+        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
         fs::create_dir_all(estado.join("logs")).unwrap();
         let tmp = estado.join("estado.json.tmp");
         let log = estado.join("logs").join("nv-tuner.log.1");
@@ -1117,8 +1131,8 @@ mod testes {
             return; // criar com O:BA e gravar dentro exigem privilégio
         }
         definir_dono_padrao().unwrap();
-        let t = Temp::novo("sumido-exigir");
-        let estado = t.0.join("nv-tuner");
+        let t = DirTemp::criado("sumido-exigir");
+        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
         criar_seguro(&estado).unwrap();
         fs::write(estado.join("estado.json"), "{}").unwrap();
         fs::write(estado.join("estado.json.tmp"), "{}").unwrap();
@@ -1144,8 +1158,8 @@ mod testes {
         if !processo_privilegiado() {
             return; // definir dono e criar com O:BA exigem privilégio
         }
-        let t = Temp::novo("posse");
-        let estado = t.0.join("nv-tuner");
+        let t = DirTemp::criado("posse");
+        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
         criar_seguro(&estado).unwrap();
         let arq = estado.join("estado.json");
         fs::write(&arq, "{}").unwrap();
@@ -1172,8 +1186,8 @@ mod testes {
 
     #[test]
     fn avisar_nao_altera_nada() {
-        let t = Temp::novo("avisar");
-        let estado = t.0.join("nv-tuner");
+        let t = DirTemp::criado("avisar");
+        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
         fs::create_dir_all(&estado).unwrap();
         fs::write(estado.join("estado.json"), "{}").unwrap();
         let r = preparar(&estado, Modo::Avisar).unwrap();

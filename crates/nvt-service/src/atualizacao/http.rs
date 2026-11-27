@@ -3,7 +3,6 @@
 //! A lógica (redirecionamento manual, status, limites, prazo total, cancelamento) é
 //! genérica sobre [`Transporte`] e testada sem rede com [`FonteFalsa`]; só
 //! [`WinHttp`] toca a API do Windows.
-#![allow(dead_code)]
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;

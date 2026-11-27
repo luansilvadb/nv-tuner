@@ -1,4 +1,4 @@
-//! Textos da tela Partidas e do grupo Métricas (build de teste, spec
+//! Textos da tela Partidas (build de teste, spec
 //! `interface-e-saude.md` §5.6 e §7.4).
 
 pub const NAV: &str = "Partidas";
@@ -16,32 +16,7 @@ pub const LEGENDA_GRAFICO: &str = "Quadros por segundo ao longo da partida";
 
 pub const ESTAVEL: &str = "Estável";
 
-// Métricas (Avançado) ----------------------------------------------------
-pub const GRUPO_METRICAS: &str = "Métricas";
-pub const GRUPO_METRICAS_DESC: &str =
-    "Números detalhados da última partida gravada e o que cada um significa.";
-pub const EXPLICA_FRAMETIME: &str = "Frametime: quanto tempo cada quadro leva para aparecer, em \
-     milissegundos. Quanto menor e mais regular, mais liso o jogo.";
-pub const EXPLICA_1PCT: &str = "1% low (\"piores momentos\"): o FPS do 1% de quadros mais lentos \
-     (percentil 99 do frametime convertido em FPS). Mostra as quedas que a média esconde.";
-pub const EXPLICA_ENGASGO: &str = "Engasgo: quadro que demorou mais de 2,5 vezes a mediana dos \
-     2 segundos anteriores e mais de 25 ms.";
-pub const SEM_PARTIDA: &str = "Nenhuma partida gravada para detalhar.";
-pub const ROTULO_JOGO: &str = "Partida";
-pub const ROTULO_FRAMETIME: &str = "Frametime médio";
-pub const ROTULO_MEDIANA: &str = "FPS mediano";
-pub const ROTULO_1PCT: &str = "1% low";
-pub const ROTULO_01PCT: &str = "0,1% low";
-pub const ROTULO_ENGASGADO: &str = "Tempo engasgado";
-pub const ROTULO_USO_GPU: &str = "Uso médio da placa de vídeo";
-pub const ROTULO_PERDA: &str = "Eventos perdidos na medição";
-pub const BOTAO_APAGAR: &str = "Apagar histórico de partidas";
-pub const CONFIRMAR_TITULO: &str = "Apagar o histórico de partidas?";
-pub const CONFIRMAR_TEXTO: &str =
-    "Todas as partidas gravadas deste usuário serão apagadas. Isso não pode ser desfeito.";
-pub const CONFIRMAR_OK: &str = "Apagar";
-pub const CANCELAR: &str = "Cancelar";
-pub const APAGADO: &str = "Histórico de partidas apagado.";
+// Métricas ------------------------------------------------------------------
 
 /// Veredito em linguagem simples: "Estável" ou "N engasgos".
 pub fn veredito(engasgos: u32) -> String {
@@ -91,11 +66,7 @@ pub fn temperatura(c: u8) -> String {
 }
 
 fn partidas(n: u32) -> String {
-    if n == 1 {
-        "1 partida".into()
-    } else {
-        format!("{n} partidas")
-    }
+    super::plural(n.into(), "partida", "partidas")
 }
 
 /// Uma semana: "12 partidas, 3 com engasgos".
@@ -123,22 +94,6 @@ pub fn comparacao_jogo(esta: (u32, Option<f32>), passada: (u32, Option<f32>)) ->
         lado(esta),
         lado(passada)
     )
-}
-
-pub fn ms(v: f32) -> String {
-    format!("{v:.1} ms").replace('.', ",")
-}
-
-pub fn percentual(v: f32) -> String {
-    format!("{v:.1}%").replace('.', ",")
-}
-
-pub fn tempo_engasgado(ms_total: u32) -> String {
-    if ms_total < 1000 {
-        format!("{ms_total} ms")
-    } else {
-        format!("{:.1} s", f64::from(ms_total) / 1000.0).replace('.', ",")
-    }
 }
 
 /// Rótulo do eixo do gráfico: minuto da partida.
@@ -188,7 +143,5 @@ mod testes {
             comparacao_jogo((1, Some(280.0)), (0, None)),
             "Neste jogo, esta semana: 1 partida, média 280 FPS. Semana passada: nenhuma partida."
         );
-        assert_eq!(ms(4.26), "4,3 ms");
-        assert_eq!(tempo_engasgado(1500), "1,5 s");
     }
 }

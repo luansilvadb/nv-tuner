@@ -14,6 +14,7 @@ pub mod facts;
 pub mod jogos;
 pub mod plan;
 pub mod preferences;
+pub mod produto;
 pub mod rules;
 pub mod usuario;
 pub mod versao;
@@ -55,7 +56,12 @@ pub const BASE_TOML: &str = include_str!("../../../regras/base.toml");
 
 impl ConjuntoRegras {
     /// Catálogo e regras embutidos (`regras/settings.toml` + `regras/base.toml`).
+    /// O parse e a validação rodam uma vez por processo; cada chamada devolve um clone.
     pub fn embutido() -> Result<Self, ErrosRegras> {
-        Self::from_toml(SETTINGS_TOML, &[("base.toml", BASE_TOML)])
+        static CACHE: std::sync::OnceLock<Result<ConjuntoRegras, ErrosRegras>> =
+            std::sync::OnceLock::new();
+        CACHE
+            .get_or_init(|| Self::from_toml(SETTINGS_TOML, &[("base.toml", BASE_TOML)]))
+            .clone()
     }
 }

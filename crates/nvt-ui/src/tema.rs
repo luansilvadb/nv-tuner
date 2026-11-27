@@ -69,7 +69,7 @@ pub fn escolher_fonte<S: AsRef<str>>(instaladas: &[S]) -> &'static str {
 // ---------------------------------------------------------------------------
 
 pub const TAM_TITULO_PAGINA: f32 = 28.;
-/// Subtítulo (veredito, seções do Avançado, marca). Escala do Windows 11:
+/// Subtítulo (veredito, títulos de seção, marca). Escala do Windows 11:
 /// 28 / 20 / 14 / 12, nada fora dela.
 pub const TAM_SUBTITULO: f32 = 20.;
 pub const TAM_CORPO: f32 = 14.;
@@ -100,9 +100,15 @@ pub const LOGO_BOAS_VINDAS: f32 = 96.;
 /// Círculo do ícone do veredito e dos estados vazios.
 pub const ICONE_DESTAQUE: f32 = 56.;
 pub const ICONE_DESTAQUE_INTERNO: f32 = 28.;
-/// Largura máxima do conteúdo e dos parágrafos centrados.
-pub const LARGURA_CONTEUDO: f32 = 880.;
 pub const LARGURA_TEXTO: f32 = 520.;
+/// Largura máxima do conteúdo e dos parágrafos centrados.
+#[cfg(feature = "medicao-partidas")]
+pub const LARGURA_CONTEUDO: f32 = 880.;
+/// Colunas das tabelas técnicas (valor curto e valor).
+#[cfg(feature = "medicao-partidas")]
+pub const COLUNA_CURTA: f32 = 96.;
+#[cfg(feature = "medicao-partidas")]
+pub const COLUNA_VALOR: f32 = 124.;
 /// Largura mínima do botão principal das boas-vindas.
 pub const LARGURA_BOTAO_DESTAQUE: f32 = 220.;
 /// Altura dos botões de ação principal (alvo confortável) e do "Começar".
@@ -110,9 +116,6 @@ pub const ALTURA_BOTAO: f32 = 36.;
 pub const ALTURA_BOTAO_DESTAQUE: f32 = 44.;
 /// Colunas das tabelas técnicas (rótulo, valor curto, valor, texto longo).
 pub const COLUNA_ROTULO: f32 = 160.;
-pub const COLUNA_CURTA: f32 = 96.;
-pub const COLUNA_VALOR: f32 = 124.;
-pub const COLUNA_LARGA: f32 = 300.;
 pub const ALTURA_BARRA: f32 = 36.;
 /// Barra de busca do Material 3 (pílula).
 pub const ALTURA_BUSCA: f32 = 48.;

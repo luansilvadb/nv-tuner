@@ -116,9 +116,13 @@ pub fn avaliar_com_aceites(
                 .collect(),
         };
         for (alvo, jogo) in alvos {
-            if !regra.quando.casa(caps, jogo, prefs) {
+            // Mesmo critério de `Condicoes::casa`, avaliando as condições uma vez só.
+            if jogo.is_none() && regra.quando.usa_fatos_de_jogo() {
+                continue;
+            }
+            let falhas = regra.quando.falhas(caps, jogo, prefs);
+            if !falhas.is_empty() {
                 if jogo.is_some() {
-                    let falhas = regra.quando.falhas(caps, jogo, prefs);
                     nao(
                         &alvo,
                         &regra.id,
@@ -324,6 +328,25 @@ pub fn avaliar_com_aceites(
     plan
 }
 
+/// Valor calculado a partir do refresh (`(hz_piso, valor)`) e o texto que o
+/// explica, ou `None` se não houver valor aceito pela setting.
+fn por_refresh(
+    caps: &Capabilities,
+    def: &crate::catalogo::DefSetting,
+    calculado: Option<(u32, u32)>,
+    formula: impl FnOnce(u32, u32) -> String,
+) -> Option<(u32, String)> {
+    let (hz, v) = calculado.filter(|&(_, v)| def.aceita(v))?;
+    let formula = formula(hz, v);
+    let texto = match caps.refresh_hz() {
+        Some(exib) if exib != hz => {
+            format!(" Valor: refresh de ≈{exib} Hz, contado como {hz} Hz (para baixo); {formula}.")
+        }
+        _ => format!(" Valor: {formula}."),
+    };
+    Some((v, texto))
+}
+
 /// Id estável da origem: o id da regra ou `preferencia:<nome>`.
 fn id_origem(origem: &Origem) -> String {
     match origem.regra() {
@@ -375,34 +398,29 @@ fn resolver(
             // O cálculo usa o piso do refresh (59,94 Hz → 59): arredondar para
             // cima deixaria o limite a menos de 3 FPS do refresh real. O
             // arredondamento fica só na exibição.
-            ValorAcao::LimiteVrr => match caps
-                .refresh_hz_piso()
-                .and_then(|hz| limite_vrr(hz).map(|v| (hz, v)))
-            {
-                Some((hz, v)) if def.aceita(v) => {
-                    let formula = format!("mínimo entre {hz} Hz − 3 e ⌊{hz} − {hz}²/3600⌋ = {v}");
-                    let texto = match caps.refresh_hz() {
-                        Some(exib) if exib != hz => format!(
-                            " Valor: refresh de ≈{exib} Hz, contado como {hz} Hz (para baixo); {formula}."
-                        ),
-                        _ => format!(" Valor: {formula}."),
-                    };
-                    (v, texto)
+            ValorAcao::LimiteVrr => {
+                let calculado = caps
+                    .refresh_hz_piso()
+                    .and_then(|hz| limite_vrr(hz).map(|v| (hz, v)));
+                match por_refresh(caps, def, calculado, |hz, v| {
+                    format!("mínimo entre {hz} Hz − 3 e ⌊{hz} − {hz}²/3600⌋ = {v}")
+                }) {
+                    Some(par) => par,
+                    None => {
+                        descartes.push(Descarte {
+                            regra: Some(regra.id.clone()),
+                            alvo: alvo.clone(),
+                            setting: Some(setting.clone()),
+                            motivo: format!(
+                                "limite para VRR com refresh {:?} Hz não gera valor aceito ({})",
+                                caps.refresh_hz(),
+                                def.valores_aceitos()
+                            ),
+                        });
+                        continue;
+                    }
                 }
-                _ => {
-                    descartes.push(Descarte {
-                        regra: Some(regra.id.clone()),
-                        alvo: alvo.clone(),
-                        setting: Some(setting.clone()),
-                        motivo: format!(
-                            "limite para VRR com refresh {:?} Hz não gera valor aceito ({})",
-                            caps.refresh_hz(),
-                            def.valores_aceitos()
-                        ),
-                    });
-                    continue;
-                }
-            },
+            }
             // Mesmo critério do limite para VRR: a conta usa o piso do refresh
             // (59,94 Hz → 59), senão `Hz − N` ficaria a menos de N FPS do
             // refresh real; o arredondamento fica só na exibição.
@@ -410,17 +428,11 @@ fn resolver(
                 let calculado = caps
                     .refresh_hz_piso()
                     .and_then(|hz| hz.checked_sub(*margem).map(|v| (hz, v)));
-                match calculado {
-                    Some((hz, v)) if def.aceita(v) => {
-                        let texto = match caps.refresh_hz() {
-                            Some(exib) if exib != hz => format!(
-                                " Valor: refresh de ≈{exib} Hz, contado como {hz} Hz (para baixo); {hz} Hz − {margem} = {v}."
-                            ),
-                            _ => format!(" Valor: {hz} Hz − {margem} = {v}."),
-                        };
-                        (v, texto)
-                    }
-                    _ => {
+                match por_refresh(caps, def, calculado, |hz, v| {
+                    format!("{hz} Hz − {margem} = {v}")
+                }) {
+                    Some(par) => par,
+                    None => {
                         descartes.push(Descarte {
                             regra: Some(regra.id.clone()),
                             alvo: alvo.clone(),

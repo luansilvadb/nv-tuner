@@ -65,9 +65,14 @@ impl EstadoJogo {
 
     /// Há algo que uma restauração precisa devolver.
     pub(crate) fn gerido(&self) -> bool {
-        self.arquivos
-            .iter()
-            .any(|a| a.intencao.is_some() || a.chaves.iter().any(ChaveGerida::alterada))
+        self.arquivos.iter().any(ArquivoGerido::gerido)
+    }
+}
+
+impl ArquivoGerido {
+    /// Intenção pendente ou chave alterada pelo app.
+    pub(crate) fn gerido(&self) -> bool {
+        self.intencao.is_some() || self.chaves.iter().any(ChaveGerida::alterada)
     }
 }
 

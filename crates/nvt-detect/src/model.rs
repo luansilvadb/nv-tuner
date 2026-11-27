@@ -104,6 +104,11 @@ pub fn pasta_canonica(p: &Path) -> String {
     chave_caminho(&base)
 }
 
+/// Troca `/` por `\` (forma de caminho do Windows), sem outras mudanças.
+pub(crate) fn caminho_windows(s: &str) -> PathBuf {
+    PathBuf::from(s.replace('/', "\\"))
+}
+
 pub(crate) fn chave_caminho(base: &Path) -> String {
     let mut s = base.to_string_lossy().replace('/', "\\");
     if let Some(r) = s.strip_prefix(r"\\?\UNC\") {

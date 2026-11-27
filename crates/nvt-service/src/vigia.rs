@@ -23,6 +23,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 
+use crate::diretorio::utf16;
 use crate::nucleo::Assinatura;
 
 /// Diretório padrão do banco de perfis do driver.
@@ -63,11 +64,6 @@ impl Drop for Handle {
         // SAFETY: handle próprio, válido, fechado uma vez.
         unsafe { CloseHandle(self.0) };
     }
-}
-
-fn utf16(p: &Path) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    p.as_os_str().encode_wide().chain([0]).collect()
 }
 
 /// Vigia `dir` até `parar` ficar verdadeiro, chamando `ao_mudar` a cada lote

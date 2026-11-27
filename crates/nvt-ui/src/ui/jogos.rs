@@ -18,7 +18,7 @@ use nvt_ipc::{Jogo, LIMITE_FPS_MAX, LIMITE_FPS_MIN, Qualidade, Sincronismo, Stat
 use super::estrutura::{Janela, estado_vazio, rotulo, superficie};
 use super::movimento::{recolhivel, ripple, ripple_com_forma};
 use crate::arquivo_jogo as aj;
-use crate::modelo::{Comando, EstadoUi, Evento, Fatos, StatusJogo, status_jogo};
+use crate::modelo::{Comando, Evento, StatusJogo, status_jogo};
 use crate::tema::{self, EstadoBotao as _};
 use crate::textos as t;
 use crate::textos::jogos as tj;
@@ -59,10 +59,6 @@ pub(crate) struct LinhaJogo {
     pub competitivo: bool,
     pub status: StatusJogo,
     pub texto_status: String,
-}
-
-fn esperando(ui: &EstadoUi) -> bool {
-    Fatos::de_ui(ui, false).esperando_jogo
 }
 
 pub(crate) fn linha(j: &Jogo, esperando_jogo: bool) -> LinhaJogo {
@@ -109,16 +105,16 @@ pub(crate) fn passos(j: &Jogo) -> Vec<String> {
 }
 
 /// Detalhes técnicos (recolhidos por padrão): API, DLSS, perfil, anticheat.
-pub(crate) fn tecnicos(j: &Jogo) -> Vec<(&'static str, String)> {
+pub(crate) fn tecnicos(j: &Jogo) -> Vec<(&'static str, SharedString)> {
     let launcher = if j.launcher.is_empty() {
-        "?".to_owned()
+        "?".into()
     } else {
-        j.launcher.clone()
+        j.launcher.clone().into()
     };
     let dlss = match &j.dlss {
-        None => t::NAO.to_owned(),
-        Some(v) if v.is_empty() => t::SIM.to_owned(),
-        Some(v) => v.clone(),
+        None => t::NAO.into(),
+        Some(v) if v.is_empty() => t::SIM.into(),
+        Some(v) => v.clone().into(),
     };
     let anticheat = match j.anticheat_kernel {
         Some(true) => t::ANTICHEAT_KERNEL,
@@ -126,13 +122,13 @@ pub(crate) fn tecnicos(j: &Jogo) -> Vec<(&'static str, String)> {
     };
     vec![
         (t::COL_LAUNCHER, launcher),
-        (t::COL_API, t::api_grafica(&j.api).to_owned()),
+        (t::COL_API, t::api_grafica(&j.api).into()),
         (t::COL_DLSS, dlss),
-        (t::COL_REFLEX, t::talvez(j.reflex).to_owned()),
-        (t::COL_ANTICHEAT, anticheat.to_owned()),
+        (t::COL_REFLEX, t::talvez(j.reflex).into()),
+        (t::COL_ANTICHEAT, anticheat.into()),
         (
             tj::ROTULO_PERFIL,
-            format!("“{}” · {}", j.perfil, t::origem_perfil(j.origem_perfil)),
+            format!("“{}” · {}", j.perfil, t::origem_perfil(j.origem_perfil)).into(),
         ),
     ]
 }
@@ -169,16 +165,12 @@ pub(super) fn render(
     let busca_focada = campo.has_selection_focus(window, cx);
     let foco_busca = campo.focus_handle(cx);
     let selecao = cx.default_global::<Selecao>();
-    let esp = esperando(&janela.ui);
+    let esp = janela.fatos().esperando_jogo;
     let mostrar_recomendacoes = selecao.mostrar_recomendacoes;
     let filtrados: Vec<_> = jogos
         .iter()
         .enumerate()
-        .filter(|(_, j)| {
-            termo.is_empty()
-                || j.nome.to_lowercase().contains(&termo)
-                || j.launcher.to_lowercase().contains(&termo)
-        })
+        .filter(|(i, _)| janela.ui.jogo_corresponde(*i, &termo))
         .collect();
     let (aberto, tec) = cx
         .try_global::<Selecao>()
@@ -1030,7 +1022,7 @@ fn detalhe(janela: &Janela, i: usize, j: &Jogo, tec: bool, cx: &mut Context<Jane
 /// "Arquivo do jogo": arquivo, antes/depois, backup e Reverter por chave.
 fn arquivo(janela: &Janela, i: usize, j: &Jogo, cx: &mut Context<Janela>) -> Option<Div> {
     let c = j.config_jogo.as_ref()?;
-    let tema = cx.theme().clone();
+    let tema = cx.theme();
     let pode = janela.ui.pode_escrever() && cx.has_global::<Envio>();
     let sub = |s: String| {
         div()

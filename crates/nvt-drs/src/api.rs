@@ -272,11 +272,7 @@ pub struct ArchInfo {
 }
 
 impl ArchInfo {
-    pub const PASCAL: u32 = 0x130;
     pub const TURING: u32 = 0x160;
-    pub const AMPERE: u32 = 0x170;
-    pub const ADA: u32 = 0x190;
-    pub const BLACKWELL: u32 = 0x1B0;
 
     /// Nome da arquitetura (ou `None` se desconhecida).
     pub fn architecture_name(&self) -> Option<&'static str> {

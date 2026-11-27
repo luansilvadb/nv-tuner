@@ -19,16 +19,16 @@ medicao-partidas = ["dep:nvt-medicao", "nvt-medicao/medicao-partidas", "build-de
 
 [dependencies]
 nvt-ipc.workspace = true
-nvt-core = { path = "../nvt-core" }
-nvt-drs = { path = "../nvt-drs" }
-nvt-windows = { path = "../nvt-windows" }
-nvt-engine = { path = "../nvt-engine" }
-nvt-atualizacao = { path = "../nvt-atualizacao" }
-nvt-manutencao = { path = "../nvt-manutencao" }
+nvt-core.workspace = true
+nvt-drs.workspace = true
+nvt-windows.workspace = true
+nvt-engine.workspace = true
+nvt-atualizacao.workspace = true
+nvt-manutencao.workspace = true
 nvt-medicao = { path = "../nvt-medicao", optional = true }
 serde.workspace = true
-toml = "1"
-serde_json = "1"
+toml.workspace = true
+serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "registry"] }
@@ -36,7 +36,7 @@ tracing-appender = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
-windows-sys = { version = "0.61", features = [
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Networking_WinHttp",
     "Win32_Security",
@@ -55,13 +55,13 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
-minisign = "=0.7.9"
+minisign.workspace = true
 
 [build-dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "1"
-embed-resource = "3"
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+embed-resource.workspace = true
 
 [lints]
 workspace = true

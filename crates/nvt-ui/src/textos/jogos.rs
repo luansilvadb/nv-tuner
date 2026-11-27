@@ -2,7 +2,6 @@
 
 use crate::modelo::StatusJogo;
 
-pub const TITULO: &str = "Jogos";
 pub const BOTAO_PROCURAR: &str = "Procurar jogos de novo";
 pub const NENHUM_JOGO: &str = "Não encontramos jogos neste PC.";
 pub const STATUS_OTIMIZADO: &str = "Otimizado";
@@ -17,8 +16,8 @@ pub const DETALHE_NADA_A_FAZER: &str = "Não há nada para você fazer no jogo."
 pub const BOTAO_DETALHES_TECNICOS: &str = "Ver detalhes técnicos";
 
 /// Todas as frases fixas da tela, para os testes de linguagem.
+#[cfg(test)]
 pub const TODOS: &[&str] = &[
-    TITULO,
     BOTAO_PROCURAR,
     NENHUM_JOGO,
     STATUS_OTIMIZADO,
@@ -30,15 +29,6 @@ pub const TODOS: &[&str] = &[
     DETALHE_NADA_A_FAZER,
     BOTAO_DETALHES_TECNICOS,
 ];
-
-/// "Encontramos 4 jogos neste PC."
-pub fn encontrados(n: usize) -> String {
-    match n {
-        0 => NENHUM_JOGO.to_owned(),
-        1 => "Encontramos 1 jogo neste PC.".to_owned(),
-        n => format!("Encontramos {n} jogos neste PC."),
-    }
-}
 
 /// "Faça 2 ajustes no jogo".
 pub fn faca_ajustes(n: usize) -> String {
@@ -65,5 +55,4 @@ pub fn passo(numero: usize, texto: &str) -> String {
 
 pub const BOTAO_OCULTAR_TECNICOS: &str = "Ocultar detalhes técnicos";
 pub const AJUSTOU_ARQUIVO: &str = "Ajustou o arquivo de configuração do jogo.";
-pub const DICA_CLIQUE: &str = "Clique em um jogo para ver o que foi feito.";
 pub const ROTULO_PERFIL: &str = "Perfil do driver";

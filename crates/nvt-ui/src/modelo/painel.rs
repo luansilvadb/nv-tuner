@@ -146,11 +146,6 @@ impl Veredito {
     pub fn oferece_voltar_a_ajustar(&self) -> bool {
         matches!(self, Veredito::AjustesDesligados)
     }
-
-    /// O veredito oferece "Aplicar melhorias recomendadas"?
-    pub fn oferece_aplicar_recomendadas(&self) -> bool {
-        matches!(self, Veredito::Melhorias { .. })
-    }
 }
 
 /// Veredito por prioridade: indisponível > sem placa > desligado > esperando
@@ -286,7 +281,6 @@ pub fn status_jogo(jogo: &Jogo, esperando_jogo: bool) -> StatusJogo {
 #[cfg(test)]
 mod testes {
     use super::*;
-    use crate::modelo::Tela;
 
     fn pronto() -> Fatos {
         Fatos {
@@ -489,8 +483,6 @@ mod testes {
     fn acoes_do_veredito() {
         assert!(Veredito::AjustesDesligados.oferece_voltar_a_ajustar());
         assert!(!Veredito::Otimizado.oferece_voltar_a_ajustar());
-        assert!(Veredito::Melhorias { quantidade: 1 }.oferece_aplicar_recomendadas());
-        assert!(!Veredito::NadaAFazer.oferece_aplicar_recomendadas());
     }
 
     #[test]
@@ -662,7 +654,7 @@ mod testes {
 
     #[test]
     fn fatos_do_estado_v7() {
-        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        let mut ui = EstadoUi::new();
         ui.conexao = Conexao::Conectando;
         assert_eq!(
             veredito(&Fatos::de_ui(&ui, false), None),

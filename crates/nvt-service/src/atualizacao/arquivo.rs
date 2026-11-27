@@ -22,8 +22,6 @@
 //! nenhum outro handle tiver escrita/exclusão; e o SHA-256 e o tamanho são
 //! recalculados pelo handle final e comparados. Uma escrita na janela (que exige
 //! já poder escrever na pasta, ou seja, ser administrador) é detectada.
-// Integrado ao serviço no lote 3.
-#![allow(dead_code)]
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -80,7 +78,9 @@ pub(crate) fn pasta_programdata() -> io::Result<PathBuf> {
 
 /// `%ProgramData%\nv-tuner\atualizacao`.
 pub(crate) fn pasta_padrao() -> io::Result<PathBuf> {
-    Ok(pasta_programdata()?.join("nv-tuner").join("atualizacao"))
+    Ok(pasta_programdata()?
+        .join(nvt_core::produto::PASTA_DADOS)
+        .join("atualizacao"))
 }
 
 /// Recusa caminho relativo ou com algum componente existente que seja reparse
@@ -137,33 +137,6 @@ pub(crate) fn preparar_pasta(dir: &Path) -> io::Result<PathBuf> {
     })?;
     componentes_sem_reparse(dir)?;
     canonico(dir)
-}
-
-/// Caminho pronto para a linha de comando do msiexec (U-31): sem `\\?\`,
-/// começando por letra de unidade + `:\`, sem `"`, `%` nem caracteres de
-/// controle.
-pub(crate) fn caminho_para_comando(p: &Path) -> io::Result<String> {
-    let s = p
-        .to_str()
-        .ok_or_else(|| recusa(format!("{} não é Unicode válido", p.display())))?;
-    let s = s.strip_prefix(r"\\?\").unwrap_or(s);
-    let b = s.as_bytes();
-    let unidade = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
-    if !unidade {
-        return Err(recusa(format!("{s} não começa por unidade (X:\\)")));
-    }
-    if s.chars().any(|c| c == '"' || c == '%' || c.is_control()) {
-        return Err(recusa(format!("{s} tem aspas, % ou caractere de controle")));
-    }
-    if s.contains('/') || s[2..].contains(':') {
-        return Err(recusa(format!("{s} tem separador ou `:` inesperado")));
-    }
-    Ok(s.to_owned())
-}
-
-/// Caminho do log do MSI (`<pasta>\instalacao-X.Y.Z.log`) para o comando.
-pub(crate) fn caminho_log(dir: &Path, versao: Versao) -> io::Result<String> {
-    caminho_para_comando(&dir.join(nome_log(versao)))
 }
 
 fn info(f: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
@@ -318,6 +291,7 @@ impl Download {
     }
 
     /// Caminho do `.parcial`.
+    #[cfg(test)]
     pub(crate) fn caminho(&self) -> &Path {
         &self.parcial
     }
@@ -380,6 +354,7 @@ impl Baixado {
     }
 
     /// Fecha e apaga o `.parcial` (verificação falhou).
+    #[cfg(test)]
     pub(crate) fn descartar(mut self) {
         self.apagar();
     }
@@ -430,7 +405,7 @@ impl Baixado {
             return Err(recusa("MSI mudou durante a troca de handle"));
         }
         Ok(MsiProtegido {
-            leitura,
+            _leitura: leitura,
             caminho: destino.to_owned(),
             sha256,
             tamanho,
@@ -447,7 +422,8 @@ impl Drop for Baixado {
 /// Manter vivo até o msiexec abrir o pacote (U-22).
 #[derive(Debug)]
 pub(crate) struct MsiProtegido {
-    leitura: File,
+    /// Só mantém o handle aberto (nega escrita e exclusão a terceiros).
+    _leitura: File,
     caminho: PathBuf,
     sha256: String,
     tamanho: u64,
@@ -458,21 +434,12 @@ impl MsiProtegido {
         &self.caminho
     }
 
-    /// Caminho do MSI para a linha de comando (U-31).
-    pub(crate) fn caminho_comando(&self) -> io::Result<String> {
-        caminho_para_comando(&self.caminho)
-    }
-
     pub(crate) fn sha256(&self) -> &str {
         &self.sha256
     }
 
     pub(crate) fn tamanho(&self) -> u64 {
         self.tamanho
-    }
-
-    pub(crate) fn handle(&self) -> &File {
-        &self.leitura
     }
 }
 
@@ -526,32 +493,18 @@ pub(crate) fn limpar(dir: &Path, manter: Option<Versao>) -> io::Result<Vec<PathB
 #[cfg(test)]
 mod testes {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
     use windows_sys::Win32::System::IO::DeviceIoControl;
 
     const V: Versao = Versao::nova(1, 2, 3);
 
-    struct Temp(PathBuf);
+    use crate::teste_util::DirTemp;
 
-    impl Temp {
-        fn novo(nome: &str) -> Self {
-            static N: AtomicU32 = AtomicU32::new(0);
-            let p = std::env::temp_dir().join(format!(
-                "nvt-arq-{nome}-{}-{}",
-                std::process::id(),
-                N.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&p);
-            fs::create_dir_all(&p).unwrap();
-            Self(canonico(&p).unwrap())
-        }
-    }
-
-    impl Drop for Temp {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    /// Pasta temporária criada, pelo caminho canônico.
+    fn temp(nome: &str) -> DirTemp {
+        let mut t = DirTemp::criado(&format!("arq-{nome}"));
+        t.0 = canonico(&t.0).unwrap();
+        t
     }
 
     /// Junção `link` → `alvo` por `FSCTL_SET_REPARSE_POINT` (sem processo externo).
@@ -609,7 +562,7 @@ mod testes {
 
     #[test]
     fn reparse_e_recusado() {
-        let t = Temp::novo("reparse");
+        let t = temp("reparse");
         let alvo = t.0.join("alvo");
         fs::create_dir(&alvo).unwrap();
         let link = t.0.join("link");
@@ -624,7 +577,7 @@ mod testes {
 
     #[test]
     fn escrita_e_remocao_de_terceiro_negadas() {
-        let t = Temp::novo("terceiro");
+        let t = temp("terceiro");
         let mut d = Download::criar(&t.0, V).unwrap();
         d.arquivo().write_all(b"abc").unwrap();
         let parcial = d.caminho().to_owned();
@@ -654,7 +607,7 @@ mod testes {
 
     #[test]
     fn hash_pelo_mesmo_handle() {
-        let t = Temp::novo("hash");
+        let t = temp("hash");
         let dados = vec![7u8; 100_000];
         let b = baixar(&t.0, &dados);
         assert_eq!(b.sha256(), sha256_hex(&dados));
@@ -666,7 +619,7 @@ mod testes {
 
     #[test]
     fn finalizar_nao_substitui_e_descartar_apaga() {
-        let t = Temp::novo("subst");
+        let t = temp("subst");
         fs::write(t.0.join(nome_msi(V)), "antigo").unwrap();
         let b = baixar(&t.0, b"novo");
         assert!(b.finalizar().is_err());
@@ -680,7 +633,7 @@ mod testes {
 
     #[test]
     fn limpeza() {
-        let t = Temp::novo("limpar");
+        let t = temp("limpar");
         let v0 = Versao::nova(1, 2, 2);
         for n in [
             nome_msi(v0),
@@ -713,32 +666,6 @@ mod testes {
     }
 
     #[test]
-    fn caminho_invalido_recusado() {
-        assert_eq!(
-            caminho_para_comando(Path::new(r"\\?\C:\Program Data\nv-tuner\a.msi")).unwrap(),
-            r"C:\Program Data\nv-tuner\a.msi"
-        );
-        for p in [
-            r#"C:\a"b\x.msi"#,
-            r"C:\%TEMP%\x.msi",
-            "C:\\a\nb\\x.msi",
-            "C:\\a\u{7}\\x.msi",
-            r"\\servidor\c\x.msi",
-            r"\\?\UNC\servidor\c\x.msi",
-            r"x.msi",
-            r"C:x.msi",
-            r"C:\a\b:c.msi",
-        ] {
-            assert!(caminho_para_comando(Path::new(p)).is_err(), "{p:?}");
-        }
-        let log = caminho_log(Path::new(r"C:\ProgramData\nv-tuner\atualizacao"), V).unwrap();
-        assert_eq!(
-            log,
-            r"C:\ProgramData\nv-tuner\atualizacao\instalacao-1.2.3.log"
-        );
-    }
-
-    #[test]
     fn pasta_preparada_tem_dacl_privada() {
         // Nome único por execução: sem privilégio a pasta com DACL restrita
         // não pode ser apagada e não pode atrapalhar a próxima rodada.
@@ -746,7 +673,7 @@ mod testes {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let t = Temp::novo(&format!("pasta-{unico}"));
+        let t = temp(&format!("pasta-{unico}"));
         let dir = t.0.join("atualizacao");
         match preparar_pasta(&dir) {
             Ok(c) => {

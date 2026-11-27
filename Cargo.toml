@@ -13,6 +13,21 @@ publish = false
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 nvt-ipc = { path = "crates/nvt-ipc" }
+nvt-atualizacao = { path = "crates/nvt-atualizacao" }
+nvt-core = { path = "crates/nvt-core" }
+nvt-detect = { path = "crates/nvt-detect" }
+nvt-drs = { path = "crates/nvt-drs" }
+nvt-engine = { path = "crates/nvt-engine" }
+nvt-manutencao = { path = "crates/nvt-manutencao" }
+nvt-windows = { path = "crates/nvt-windows" }
+embed-resource = "3"
+minisign = "=0.7.9"
+minisign-verify = "=0.3.0"
+serde_json = "1.0.154"
+sha2 = "=0.10.9"
+toml = "1.2.3"
+windows-sys = "0.61"
+winreg = "0.56.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

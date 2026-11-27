@@ -314,7 +314,7 @@ impl Armazem {
         let base = std::env::var_os("ProgramData")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-        base.join("nv-tuner")
+        base.join(nvt_core::produto::PASTA_DADOS)
     }
 
     /// Estado só em memória (testes e dry-run): nada é gravado em disco.

@@ -1,4 +1,4 @@
-//! Tela Partidas e grupo Métricas do Avançado (só `medicao-partidas`; spec
+//! Tela Partidas (só `medicao-partidas`; spec
 //! `interface-e-saude.md` §5.6 e §7.4).
 //!
 //! As partidas são lidas pelo IPC numa conexão própria, fora da thread da
@@ -9,18 +9,17 @@ use std::collections::BTreeMap;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Theme;
-use gpui_kit::component::button::{ButtonVariant, ButtonVariants};
 use gpui_kit::component::chart::LineChart;
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, WindowExt};
+use gpui_kit::component::{ActiveTheme, Icon, StyledExt};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use nvt_ipc::{AmostraSegundo, PARTIDAS_MAX, Partida, Requisicao, Resposta, ResumoPartida};
 
-use super::estrutura::{Janela, agora_unix, estado_vazio, explicacao, linha, superficie};
+use super::estrutura::{Janela, estado_vazio, explicacao, superficie};
 use crate::demonstracao;
 use crate::servico::{self, FalhaInicio};
-use crate::tema::{self, EstadoBotao as _};
+use crate::tema;
 use crate::textos::partidas as tp;
 
 /// Altura do gráfico pequeno de FPS.
@@ -33,7 +32,6 @@ const PONTOS_GRAFICO: usize = 90;
 enum Pedido {
     Listar,
     Obter(u64),
-    Apagar,
 }
 
 impl Pedido {
@@ -44,7 +42,6 @@ impl Pedido {
                 limite: PARTIDAS_MAX,
             },
             Pedido::Obter(id) => Requisicao::ObterPartida { id },
-            Pedido::Apagar => Requisicao::ApagarPartidas,
         }
     }
 }
@@ -54,7 +51,6 @@ impl Pedido {
 enum Retorno {
     Lista(Vec<ResumoPartida>),
     Detalhe(Box<Partida>),
-    Apagado,
 }
 
 /// Situação da lista de partidas.
@@ -73,10 +69,8 @@ struct EstadoPartidas {
     detalhes: BTreeMap<u64, Partida>,
     /// Partida com a linha aberta.
     aberta: Option<u64>,
-    apagando: bool,
     /// Detalhes já pedidos (evita pedir duas vezes pelo mesmo id).
     pedidos: std::collections::BTreeSet<u64>,
-    mensagem: Option<String>,
 }
 
 impl Global for EstadoPartidas {}
@@ -92,7 +86,6 @@ fn interpretar(p: Pedido, r: Resposta) -> Result<Retorno, FalhaInicio> {
         (Pedido::Obter(_), Resposta::Partida(d)) if d.validar().is_ok() => {
             Ok(Retorno::Detalhe(Box::new(d)))
         }
-        (Pedido::Apagar, Resposta::Ok) => Ok(Retorno::Apagado),
         (
             _,
             Resposta::Erro {
@@ -118,7 +111,6 @@ fn executar(p: Pedido) -> Result<Retorno, FalhaInicio> {
                     Some(d) => Retorno::Detalhe(Box::new(d)),
                     None => return Err(FalhaInicio::Outra(tp::FALHA.into())),
                 },
-                Pedido::Apagar => Retorno::Apagado,
             })
         }
         None => servico::requisitar(&p.requisicao()).and_then(|r| interpretar(p, r)),
@@ -148,27 +140,8 @@ fn concluir(e: &mut EstadoPartidas, p: Pedido, r: Result<Retorno, FalhaInicio>) 
         (_, Ok(Retorno::Detalhe(d))) => {
             e.detalhes.insert(d.resumo.id, *d);
         }
-        (_, Ok(Retorno::Apagado)) => {
-            e.apagando = false;
-            e.carga = Carga::Pronta(Vec::new());
-            e.detalhes.clear();
-            e.aberta = None;
-            e.mensagem = Some(tp::APAGADO.into());
-        }
-        (Pedido::Apagar, Err(f)) => {
-            e.apagando = false;
-            e.mensagem = Some(mensagem_falha(&f).into());
-        }
         (Pedido::Obter(_), Err(_)) => {}
         (Pedido::Listar, Err(f)) => e.carga = Carga::Falha(f),
-    }
-}
-
-fn mensagem_falha(f: &FalhaInicio) -> &str {
-    match f {
-        FalhaInicio::RecursoAusente => tp::RECURSO_AUSENTE,
-        FalhaInicio::SemServico => tp::SEM_SERVICO,
-        FalhaInicio::Outra(m) => m,
     }
 }
 
@@ -195,7 +168,7 @@ fn garantir(cx: &mut Context<Janela>) {
 fn agora() -> u64 {
     match demonstracao::ativo() {
         Some(_) => demonstracao::AGORA_PARTIDAS,
-        None => agora_unix(),
+        None => crate::fuso::agora_unix(),
     }
 }
 
@@ -284,18 +257,18 @@ fn nome_jogo(janela: &Janela, r: &ResumoPartida) -> String {
 /// Conteúdo da seção Partidas.
 pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
     garantir(cx);
-    let tema = cx.theme().clone();
+    let tema = cx.theme();
     let e = cx.global::<EstadoPartidas>();
     let lista = match &e.carga {
         Carga::NaoLida | Carga::Lendo => {
-            return explicacao(crate::textos::CARREGANDO, &tema).into_any_element();
+            return explicacao(crate::textos::CARREGANDO, tema).into_any_element();
         }
         Carga::Falha(f) => {
-            return estado_vazio(IconName::ChartLine, falha_estatica(f), None, &tema)
+            return estado_vazio(IconName::ChartLine, falha_estatica(f), None, tema)
                 .into_any_element();
         }
         Carga::Pronta(l) if l.is_empty() => {
-            return estado_vazio(IconName::ChartLine, tp::VAZIO, None, &tema).into_any_element();
+            return estado_vazio(IconName::ChartLine, tp::VAZIO, None, tema).into_any_element();
         }
         Carga::Pronta(l) => l.clone(),
     };
@@ -303,7 +276,7 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
     let detalhe = aberta.and_then(|id| e.detalhes.get(&id).cloned());
     let agora_l = local(agora());
     let (esta, passada) = semanas(&lista, agora_l, local, |_| true);
-    let mut linhas = superficie(&tema);
+    let mut linhas = superficie(tema);
     for (i, r) in lista.iter().enumerate() {
         let abrir = aberta == Some(r.id);
         let id = r.id;
@@ -359,7 +332,7 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                 ),
         );
         if abrir {
-            linhas = linhas.child(detalhe_partida(&lista, r, detalhe.as_ref(), agora_l, &tema));
+            linhas = linhas.child(detalhe_partida(&lista, r, detalhe.as_ref(), agora_l, tema));
         }
     }
     v_flex()
@@ -370,7 +343,7 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                 (esta.partidas, esta.com_engasgo),
                 (passada.partidas, passada.com_engasgo),
             ),
-            &tema,
+            tema,
         ))
         .child(linhas)
         .into_any_element()
@@ -453,121 +426,6 @@ fn detalhe_partida(
         ))
 }
 
-/// Grupo Métricas no fim do Avançado: números técnicos da última partida,
-/// definições e "Apagar histórico de partidas".
-pub(super) fn grupo_metricas(_janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
-    garantir(cx);
-    let tema = cx.theme().clone();
-    let e = cx.global::<EstadoPartidas>();
-    let ultima = match &e.carga {
-        Carga::Pronta(l) => l.first().cloned(),
-        _ => None,
-    };
-    let ausente = matches!(
-        e.carga,
-        Carga::Falha(FalhaInicio::RecursoAusente | FalhaInicio::SemServico)
-    );
-    let apagando = e.apagando;
-    let mensagem = e.mensagem.clone();
-    let mut corpo = v_flex().gap(px(tema::ESP_3));
-    match (&e.carga, &ultima) {
-        (Carga::Falha(f), _) => corpo = corpo.child(explicacao(falha_estatica(f), &tema)),
-        (_, None) => corpo = corpo.child(explicacao(tp::SEM_PARTIDA, &tema)),
-        (_, Some(r)) => {
-            let frametime = if r.fps_medio > 0.0 {
-                tp::ms(1000.0 / r.fps_medio)
-            } else {
-                "-".into()
-            };
-            corpo = corpo
-                .child(linha(
-                    tp::ROTULO_JOGO,
-                    format!(
-                        "{} · {}",
-                        r.executavel,
-                        crate::modelo::formatar_data(r.inicio_unix)
-                    ),
-                    &tema,
-                ))
-                .child(linha(tp::ROTULO_FRAMETIME, frametime, &tema))
-                .child(linha(tp::ROTULO_MEDIANA, tp::fps(r.fps_mediana), &tema))
-                .child(linha(tp::ROTULO_1PCT, tp::fps(r.fps_1pct_low), &tema))
-                .child(linha(tp::ROTULO_01PCT, tp::fps(r.fps_01pct_low), &tema))
-                .child(linha(
-                    tp::ROTULO_ENGASGADO,
-                    tp::tempo_engasgado(r.tempo_engasgado_ms),
-                    &tema,
-                ))
-                .when_some(r.gpu_uso_medio_pct, |c, u| {
-                    c.child(linha(tp::ROTULO_USO_GPU, format!("{u}%"), &tema))
-                })
-                .child(linha(
-                    tp::ROTULO_PERDA,
-                    tp::percentual(r.perda_eventos_pct),
-                    &tema,
-                ));
-        }
-    }
-    v_flex()
-        .gap(px(tema::ESP_3))
-        .max_w(px(tema::LARGURA_CONTEUDO))
-        .child(
-            v_flex()
-                .gap(px(tema::ESP_1))
-                .child(
-                    div()
-                        .text_size(px(tema::TAM_SUBTITULO))
-                        .font_semibold()
-                        .child(tp::GRUPO_METRICAS),
-                )
-                .child(explicacao(tp::GRUPO_METRICAS_DESC, &tema)),
-        )
-        .child(superficie(&tema).p(px(tema::ESP_4)).child(corpo))
-        .child(explicacao(tp::EXPLICA_FRAMETIME, &tema))
-        .child(explicacao(tp::EXPLICA_1PCT, &tema))
-        .child(explicacao(tp::EXPLICA_ENGASGO, &tema))
-        .when_some(mensagem, |v, m| v.child(explicacao_dinamica(m, &tema)))
-        .child(
-            h_flex().child(
-                tema::botao_base("apagar-partidas")
-                    .danger()
-                    .small()
-                    .label(tp::BOTAO_APAGAR)
-                    .indisponivel(ausente || apagando)
-                    .loading(apagando)
-                    .on_click(cx.listener(|_, _, window, cx| confirmar_apagar(window, cx))),
-            ),
-        )
-        .into_any_element()
-}
-
-fn confirmar_apagar(window: &mut Window, cx: &mut Context<Janela>) {
-    let janela = cx.entity().downgrade();
-    window.open_alert_dialog(cx, move |alerta, _, _| {
-        let janela = janela.clone();
-        alerta
-            .title(tp::CONFIRMAR_TITULO)
-            .description(tp::CONFIRMAR_TEXTO)
-            .show_cancel(true)
-            .ok_text(tp::CONFIRMAR_OK)
-            .ok_variant(ButtonVariant::Danger)
-            .cancel_text(tp::CANCELAR)
-            .on_ok(move |_, _, cx| {
-                let _ = janela.update(cx, |_, cx| {
-                    let e = cx.default_global::<EstadoPartidas>();
-                    if !e.apagando {
-                        e.apagando = true;
-                        e.mensagem = None;
-                        e.pedidos.clear();
-                        pedir(Pedido::Apagar, cx);
-                        cx.notify();
-                    }
-                });
-                true
-            })
-    });
-}
-
 #[cfg(test)]
 mod testes {
     use super::*;
@@ -601,7 +459,6 @@ mod testes {
             Pedido::Obter(3).requisicao(),
             Requisicao::ObterPartida { id: 3 }
         );
-        assert_eq!(Pedido::Apagar.requisicao(), Requisicao::ApagarPartidas);
     }
 
     #[test]
@@ -625,9 +482,6 @@ mod testes {
         let Carga::Pronta(l) = &e.carga else { panic!() };
         assert_eq!(l[0].id, 2);
         assert_eq!(e.aberta, Some(2));
-        concluir(&mut e, Pedido::Apagar, Ok(Retorno::Apagado));
-        assert_eq!(e.carga, Carga::Pronta(vec![]));
-        assert_eq!(e.aberta, None);
     }
 
     #[test]

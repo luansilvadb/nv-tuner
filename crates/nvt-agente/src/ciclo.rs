@@ -362,11 +362,7 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte> Agente<A, T> {
         let tarefa_jogo = plano.tarefa_jogo.filter(|t| Some(t.tarefa) == referencia);
         if let Some(referencia) = referencia {
             let geracao_ok = exec.sessao().geracao == plano.geracao_restauracao;
-            if (geracao_ok && !nova_geracao)
-                || tarefa
-                    .as_ref()
-                    .is_some_and(|t| t.acoes.contains(&AcaoUsuario::RestaurarSnapshot))
-            {
+            if (geracao_ok && !nova_geracao) || ref_restauracao.is_some() {
                 exec.iniciar(&referencia)?;
                 if !exec.sessao().trabalho.as_ref().is_some_and(|t| t.pronto) {
                     for acao in tarefa.into_iter().flat_map(|t| t.acoes) {

@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::model::{DetectedGame, Launcher};
+use crate::model::{DetectedGame, Launcher, caminho_windows};
 use crate::registro::{self, Hive};
 use crate::vdf;
 
@@ -19,7 +19,7 @@ pub fn raiz() -> Option<PathBuf> {
                 "InstallPath",
             )
         })
-        .map(|s| PathBuf::from(s.replace('/', "\\")))
+        .map(|s| caminho_windows(&s))
 }
 
 /// Pastas de biblioteca listadas em `libraryfolders.vdf` (formato novo e antigo).
@@ -38,7 +38,7 @@ pub fn bibliotecas(src: &str) -> Result<Vec<PathBuf>, String> {
             vdf::Vdf::Objeto(_) => v.get_texto("path"),
         };
         if let Some(p) = caminho {
-            out.push(PathBuf::from(p.replace('/', "\\")));
+            out.push(caminho_windows(p));
         }
     }
     Ok(out)

@@ -270,10 +270,10 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
         {
             usuario.atualizar_processos(self.nucleo.processos_vigiados());
         }
-        let estado = self.nucleo.servico().clone();
+        let antes = restauracao(self.nucleo.servico());
         let resposta = self
             .integracao
-            .tratar(identidade, req, agora, &estado, |req| {
+            .tratar(identidade, req, agora, antes, |req| {
                 let plano = matches!(req, Requisicao::ObterPlano);
                 let mut resposta = self.nucleo.tratar(req, agora);
                 if plano
@@ -287,7 +287,7 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
                 {
                     resposta = plano_sem_driver();
                 }
-                (resposta, self.nucleo.servico().clone())
+                (resposta, restauracao(self.nucleo.servico()))
             });
         self.integracao
             .definir_preferencias(&self.nucleo.preferencias());
@@ -384,6 +384,12 @@ fn esperar_com_erro(rx: &Receiver<Evento>, d: Duration, codigo: CodigoErro, moti
     true
 }
 
+/// Campos de `EstadoServico` que o coordenador de usuário acompanha
+/// (`geracao_restauracao`, `autonomia_pausada`).
+fn restauracao(estado: &EstadoServico) -> (u64, bool) {
+    (estado.geracao_restauracao, estado.autonomia_pausada)
+}
+
 fn esperar_sem_driver(
     integracao: &mut Integracao,
     op: &Opcoes,
@@ -398,8 +404,8 @@ fn esperar_sem_driver(
             Ok(Evento::Ipc(chamado)) => {
                 chamado.atender(|identidade, req| {
                     protegido("requisição sem driver", || {
-                        let anterior = estado.clone();
-                        integracao.tratar(identidade, req, Instant::now(), &anterior, |req| {
+                        let anterior = restauracao(&estado);
+                        integracao.tratar(identidade, req, Instant::now(), anterior, |req| {
                             let resposta = if op.config.somente_leitura
                                 && matches!(
                                     req,
@@ -412,7 +418,7 @@ fn esperar_sem_driver(
                             } else {
                                 tratar_sem_driver(req, &mut estado, &op.estado_dir, motivo)
                             };
-                            (resposta, estado.clone())
+                            (resposta, restauracao(&estado))
                         })
                     })
                     .unwrap_or_else(|| {
@@ -772,8 +778,8 @@ impl Integracao {
         identidade: IdentidadeCliente,
         req: Requisicao,
         agora: Instant,
-        estado: &EstadoServico,
-        driver: impl FnOnce(Requisicao) -> (Resposta, EstadoServico),
+        restauracao: (u64, bool),
+        driver: impl FnOnce(Requisicao) -> (Resposta, (u64, bool)),
     ) -> Resposta {
         if let Some(r) = self
             .partidas
@@ -787,14 +793,14 @@ impl Integracao {
         };
         let atualizacao = self.estado_atualizacao();
         if let Some(usuario) = &mut self.usuario {
-            usuario.atualizar_restauracao(estado.geracao_restauracao, estado.autonomia_pausada);
+            usuario.atualizar_restauracao(restauracao.0, restauracao.1);
             usuario.definir_atualizacao(atualizacao.clone());
             if let Some(resposta) = usuario.tratar(&identidade, &req, agora, agora_unix()) {
                 self.repassar_sessoes(agora);
                 return resposta;
             }
         }
-        let (mut resposta, estado) = driver(req);
+        let (mut resposta, restauracao) = driver(req);
         if let Resposta::Estado(estado) = &mut resposta {
             estado.atualizacao = atualizacao;
             estado.diagnosticos = self
@@ -804,7 +810,7 @@ impl Integracao {
                 .clone();
         }
         if let Some(usuario) = &mut self.usuario {
-            usuario.atualizar_restauracao(estado.geracao_restauracao, estado.autonomia_pausada);
+            usuario.atualizar_restauracao(restauracao.0, restauracao.1);
             usuario.projetar(&identidade, &mut resposta, limite, agora);
             if let Resposta::Plano(plano) = &mut resposta
                 && let Some(regras) = &self.regras_drs

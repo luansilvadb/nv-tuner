@@ -22,6 +22,8 @@ mod usuario;
 mod vigia;
 
 #[cfg(test)]
+mod teste_util;
+#[cfg(test)]
 mod testes;
 
 use std::path::PathBuf;

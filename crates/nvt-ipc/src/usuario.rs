@@ -342,6 +342,16 @@ pub struct ResumoSistema {
     pub sugestoes: Vec<SugestaoExperimental>,
 }
 
+/// `s` tem 1 a `max` bytes, o primeiro aceito por `primeiro` e todos por `resto`.
+pub(crate) fn ascii_restrito(
+    s: &str,
+    max: usize,
+    primeiro: impl Fn(u8) -> bool,
+    resto: impl Fn(u8) -> bool,
+) -> bool {
+    s.as_bytes().first().is_some_and(|&b| primeiro(b)) && s.len() <= max && s.bytes().all(resto)
+}
+
 pub(crate) fn validar_texto(texto: &str, limite: usize) -> Result<(), String> {
     if texto.is_empty() || texto.len() > limite || texto.chars().any(char::is_control) {
         return Err("campo textual inválido".into());

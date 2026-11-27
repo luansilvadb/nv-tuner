@@ -25,18 +25,21 @@ pub const AMOSTRAS_MAX: usize = 4096;
 /// Faixas do histograma de frametime.
 pub const FAIXAS_HISTOGRAMA: usize = 64;
 
-/// Nome sem separador de caminho nem `:` (impede caminho com nome de usuário).
-fn validar_nome_simples(texto: &str, limite: usize) -> Result<(), String> {
+/// Mensagem padrão de [`validar_nome_simples`].
+const SEPARADOR: &str = "nome não pode conter separador de caminho";
+
+/// Nome sem separador de caminho nem `:` (impede caminho com nome de usuário); `erro` é a mensagem do separador.
+pub(crate) fn validar_nome_simples(texto: &str, limite: usize, erro: &str) -> Result<(), String> {
     validar_texto(texto, limite)?;
     if texto.contains(['\\', '/', ':']) {
-        return Err("nome não pode conter separador de caminho".into());
+        return Err(erro.into());
     }
     Ok(())
 }
 
 /// Validação do nome em `MarcarInicioVisto`.
 pub fn validar_nome_inicio(nome: &str) -> Result<(), String> {
-    validar_nome_simples(nome, NOME_INICIO_MAX)
+    validar_nome_simples(nome, NOME_INICIO_MAX, SEPARADOR)
 }
 
 // ── Limpeza (§7.1) ─────────────────────────────────────────────────────────
@@ -142,8 +145,8 @@ pub struct ProgramaInicio {
 
 impl ProgramaInicio {
     pub fn validar(&self) -> Result<(), String> {
-        validar_nome_simples(&self.nome, NOME_INICIO_MAX)?;
-        validar_nome_simples(&self.executavel, EXECUTAVEL_MAX)
+        validar_nome_simples(&self.nome, NOME_INICIO_MAX, SEPARADOR)?;
+        validar_nome_simples(&self.executavel, EXECUTAVEL_MAX, SEPARADOR)
     }
 }
 
@@ -317,8 +320,8 @@ pub struct ResumoPartida {
 
 impl ResumoPartida {
     pub fn validar(&self) -> Result<(), String> {
-        validar_nome_simples(&self.jogo_id, 128)?;
-        validar_nome_simples(&self.executavel, EXECUTAVEL_MAX)?;
+        validar_nome_simples(&self.jogo_id, 128, SEPARADOR)?;
+        validar_nome_simples(&self.executavel, EXECUTAVEL_MAX, SEPARADOR)?;
         if self.histograma.len() != FAIXAS_HISTOGRAMA {
             return Err("histograma com número de faixas inválido".into());
         }

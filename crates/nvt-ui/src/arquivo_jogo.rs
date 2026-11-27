@@ -4,9 +4,8 @@
 //! grava nada. Caminhos chegam já anonimizados (`%USERPROFILE%\…`).
 
 use nvt_ipc::{
-    ArquivoJogoUi, Camada, DestinoJogoIpc, EstadoBackup, EstadoExperimental, Jogo,
-    MotivoNaoAplicada, MudancaArquivoJogo, OrientacaoConfigJogo, SugestaoExperimental,
-    ValorJogoIpc,
+    ArquivoJogoUi, DestinoJogoIpc, EstadoBackup, Jogo, MotivoNaoAplicada, MudancaArquivoJogo,
+    OrientacaoConfigJogo, ValorJogoIpc,
 };
 
 use crate::textos;
@@ -14,7 +13,6 @@ use crate::textos;
 pub const SECAO_ARQUIVO_JOGO: &str = "Arquivo do jogo";
 pub const ROTULO_CONTA: &str = "Conta";
 pub const ROTULO_BACKUP: &str = "Backup";
-pub const SECAO_SUGESTOES_JOGO: &str = "Sugestões experimentais deste jogo";
 pub const SEM_MUDANCAS_ARQUIVO: &str = "Nenhuma chave alterada neste arquivo.";
 pub const OK_REVERSAO_JOGO: &str = "Reversão do arquivo do jogo solicitada.";
 
@@ -151,60 +149,6 @@ pub fn motivo_curto_jogo(m: &MotivoNaoAplicada) -> Option<String> {
     })
 }
 
-/// Motivo da Fase 3 por extenso; `None` fora da família.
-pub fn motivo_longo_jogo(m: &MotivoNaoAplicada) -> Option<String> {
-    Some(match m {
-        MotivoNaoAplicada::ConfigPolitica { politica } => format!(
-            "A base de jogos marca este jogo como “{}”: o app não edita os arquivos dele. \
-             Faça o ajuste no menu do próprio jogo.",
-            politica_legivel(politica)
-        ),
-        MotivoNaoAplicada::JanelaFechadaExigida { processos } if exige_steam(processos) => {
-            format!(
-                "Feche a Steam para aplicar: ela regrava este arquivo enquanto está aberta \
-                 ({}). O app aplica sozinho quando a Steam estiver fechada.",
-                lista(processos)
-            )
-        }
-        MotivoNaoAplicada::JanelaFechadaExigida { processos } => format!(
-            "Feche o jogo para aplicar ({}). O app só grava com o jogo fechado e aplica \
-             sozinho na próxima vez.",
-            lista(processos)
-        ),
-        MotivoNaoAplicada::ArquivoNaNuvem => "O arquivo usado pelo jogo é o sincronizado na \
-            nuvem; uma edição local seria desfeita. Faça o ajuste no menu do jogo."
-            .into(),
-        MotivoNaoAplicada::ArquivoSomenteLeitura => "O arquivo está marcado como Somente \
-            leitura. Desmarque o atributo nas propriedades do arquivo para o app aplicar; o \
-            app nunca muda esse atributo."
-            .into(),
-        MotivoNaoAplicada::FormatoInesperado => "O conteúdo do arquivo não está no formato \
-            esperado (codificação, sintaxe ou chave ausente). Nada foi gravado."
-            .into(),
-        MotivoNaoAplicada::ArquivoAlteradoPeloJogo => "O valor foi mudado no jogo depois do \
-            ajuste do app. O app respeita a sua escolha e não grava de novo."
-            .into(),
-        MotivoNaoAplicada::ContaAmbigua => "Mais de uma conta encontrada: abra o jogo com a \
-            conta que você usa, para o app saber qual arquivo ajustar."
-            .into(),
-        MotivoNaoAplicada::ArquivoAusente => "O arquivo de configuração do jogo não foi \
-            encontrado. Abra o jogo uma vez para ele criar o arquivo."
-            .into(),
-        MotivoNaoAplicada::ReparseRecusado => "O caminho do arquivo passa por um link ou \
-            junção; por segurança, o app não grava nele."
-            .into(),
-        _ => return None,
-    })
-}
-
-fn politica_legivel(p: &str) -> &str {
-    match p {
-        "orientar" => "só orientar",
-        "proibido" => "sem edição",
-        outro => outro,
-    }
-}
-
 /// Destino de “Reverter” de uma chave: a instância opaca que o serviço
 /// projetou (`ArquivoJogoUi.instancia`), só quando há gestão do app.
 pub fn destino_reverter(a: &ArquivoJogoUi, setting: &str) -> Option<DestinoJogoIpc> {
@@ -219,32 +163,11 @@ pub fn destino_reverter(a: &ArquivoJogoUi, setting: &str) -> Option<DestinoJogoI
     d.validar().is_ok().then_some(d)
 }
 
-/// Sugestões experimentais de config deste jogo, do campo próprio
-/// `config_jogo.experimentais`, com botão Aceitar/Retirar (mesmo fluxo da
-/// Fase 2, `DefinirAceiteExperimental`).
-pub fn sugestoes_do_jogo(j: &Jogo) -> Vec<SugestaoExperimental> {
-    j.config_jogo
-        .iter()
-        .flat_map(|c| c.experimentais.iter())
-        .filter(|s| s.estado != EstadoExperimental::Estavel)
-        .map(|s| SugestaoExperimental {
-            regra: s.regra.clone(),
-            descricao: s.descricao.clone(),
-            camada: Camada::Usuario,
-            impacto_visual: s.impacto_visual,
-            estado: s.estado,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod testes {
     use super::*;
     use nvt_ipc::AlvoIpc;
-    use nvt_ipc::{
-        ConfigJogoUi, ImpactoVisual, OrigemPerfil, ResumoJogo, RotuloCaminho, StatusMudanca,
-        SugestaoConfigJogo,
-    };
+    use nvt_ipc::{ConfigJogoUi, OrigemPerfil, ResumoJogo, RotuloCaminho, StatusMudanca};
 
     fn todos_motivos() -> Vec<MotivoNaoAplicada> {
         vec![
@@ -277,17 +200,11 @@ mod testes {
     #[test]
     fn todo_motivo_da_fase3_tem_texto_proprio() {
         let generico_curto = "condições da regra não atendidas";
-        let generico_longo = "Condições da regra não atendidas.";
         for m in todos_motivos() {
             assert!(m.e_config_jogo());
             let c = textos::motivo_curto(&m);
-            let l = textos::motivo_longo(&m);
             assert_ne!(c, generico_curto, "{m:?}");
-            assert_ne!(l, generico_longo, "{m:?}");
-            assert!(l.ends_with('.'), "{l}");
-            assert!(!l.to_lowercase().contains("anticheat"), "{l}");
             sem_emoji(&c);
-            sem_emoji(&l);
         }
         assert_eq!(
             textos::motivo_curto(&MotivoNaoAplicada::JanelaFechadaExigida {
@@ -458,32 +375,5 @@ mod testes {
                 "Feche a Steam para aplicar.".to_string(),
             ]
         );
-    }
-
-    #[test]
-    fn sugestoes_experimentais_do_jogo_vem_do_campo_proprio() {
-        let s = |regra: &str, estado| SugestaoConfigJogo {
-            regra: regra.into(),
-            descricao: "d".into(),
-            impacto_visual: ImpactoVisual::Nenhum,
-            destinos: vec![],
-            estado,
-        };
-        assert!(sugestoes_do_jogo(&jogo(None)).is_empty());
-        let j = jogo(Some(ConfigJogoUi {
-            arquivos: vec![],
-            orientacoes: vec![],
-            experimentais: vec![
-                s("jogo-limite-no-jogo-r6", EstadoExperimental::Aceitavel),
-                s("jogo-vsync-r6", EstadoExperimental::Aceita),
-                s("jogo-estavel", EstadoExperimental::Estavel),
-            ],
-        }));
-        let r = sugestoes_do_jogo(&j);
-        let regras: Vec<_> = r.iter().map(|s| s.regra.as_str()).collect();
-        assert_eq!(regras, ["jogo-limite-no-jogo-r6", "jogo-vsync-r6"]);
-        assert_eq!(r[0].estado, EstadoExperimental::Aceitavel);
-        assert_eq!(r[1].estado, EstadoExperimental::Aceita);
-        assert!(r.iter().all(|s| s.camada == Camada::Usuario));
     }
 }

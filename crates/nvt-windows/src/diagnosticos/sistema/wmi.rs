@@ -1,9 +1,8 @@
 use windows::{
     Win32::System::{
         Com::{
-            CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
-            CoSetProxyBlanket, CoUninitialize, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL,
-            RPC_C_IMP_LEVEL_IMPERSONATE,
+            CLSCTX_INPROC_SERVER, CoCreateInstance, CoSetProxyBlanket, EOAC_NONE,
+            RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
         },
         Variant::{VariantGetElementCount, VariantToUInt32Array},
         Wmi::{
@@ -16,28 +15,10 @@ use windows::{
 };
 
 use super::DeviceGuard;
-
-struct ApartamentoCom;
-
-impl ApartamentoCom {
-    fn iniciar() -> Option<Self> {
-        // SAFETY: inicializa COM na thread atual. A guarda faz a chamada pareada.
-        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
-            .ok()
-            .ok()?;
-        Some(Self)
-    }
-}
-
-impl Drop for ApartamentoCom {
-    fn drop(&mut self) {
-        // SAFETY: a guarda local foi criada apenas apos CoInitializeEx bem-sucedido.
-        unsafe { CoUninitialize() };
-    }
-}
+use crate::com::Com;
 
 pub(super) fn device_guard() -> Option<DeviceGuard> {
-    let _apartamento = ApartamentoCom::iniciar()?;
+    let _com = Com::iniciar_estrito()?;
     let objeto = consultar()?;
     let vbs = propriedade(
         &objeto,

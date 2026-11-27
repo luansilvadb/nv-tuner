@@ -1,8 +1,7 @@
 //! Coordenação da camada interativa. A identidade vem exclusivamente do pipe.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,6 +26,7 @@ use nvt_ipc::{
     MotivoNaoAplicada, MudancaArquivoJogo, OrientacaoConfigJogo, ResultadoJogo, TarefaJogo,
     ValorJogoIpc,
 };
+use nvt_windows::conversao::{spi_core, spi_ipc, taxa_core, taxa_ipc};
 use serde::{Deserialize, Serialize};
 
 const PRESENCA: Duration = Duration::from_secs(180);
@@ -86,46 +86,15 @@ pub(crate) struct ArquivoUsuarios(pub PathBuf);
 
 impl Armazenamento for ArquivoUsuarios {
     fn carregar(&self) -> io::Result<DadosUsuarios> {
-        match crate::diretorio::abrir_arquivo_privado(&self.0.join("usuarios.json")) {
-            Ok(f) => Ok(serde_json::from_reader(io::BufReader::new(f))?),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(DadosUsuarios::default()),
-            Err(e) => Err(e),
-        }
+        crate::diretorio::ler_json_privado(&self.0.join("usuarios.json"))
     }
 
     fn salvar(&self, dados: &DadosUsuarios) -> io::Result<()> {
-        let (tmp, mut f) = (0..100)
-            .find_map(|tentativa| {
-                let tmp = self.0.join(format!(
-                    "usuarios.json.{}-{tentativa}.tmp",
-                    std::process::id()
-                ));
-                match crate::diretorio::criar_arquivo_privado(&tmp) {
-                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => None,
-                    r => Some(r.map(|f| (tmp, f))),
-                }
-            })
-            .ok_or_else(|| io::Error::other("sem nome temporário livre para usuarios.json"))??;
-        let gravado = (|| {
-            serde_json::to_writer(&mut f, dados)?;
-            f.flush()?;
-            f.sync_all()
-        })();
-        drop(f);
-        let r = gravado.and_then(|()| fs::rename(&tmp, self.0.join("usuarios.json")));
-        if r.is_err() {
-            let _ = fs::remove_file(tmp);
-        }
-        r
+        let bytes = serde_json::to_vec(dados)?;
+        crate::diretorio::gravar_atomico_privado(&self.0, "usuarios.json", &bytes)
     }
 }
 
-#[derive(Deserialize)]
-struct Catalogo {
-    regra: Vec<MetaRegra>,
-}
-
-#[derive(Deserialize)]
 struct MetaRegra {
     id: String,
     descricao: String,
@@ -239,18 +208,25 @@ impl Coordenador {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let dados = armazenamento.carregar()?;
         let regras = ConjuntoRegrasUsuario::embutido(drs)?;
-        let catalogo: Catalogo = toml::from_str(usuario::WINDOWS_TOML)?;
+        let metadados = regras
+            .metadados()
+            .map(|m| {
+                let meta = MetaRegra {
+                    id: m.id.to_owned(),
+                    descricao: m.descricao.to_owned(),
+                    status: m.status,
+                    impacto_visual: m.impacto_visual,
+                };
+                (meta.id.clone(), meta)
+            })
+            .collect();
         let catalogo_jogo = BaseJogos::embutida()?.config_jogo().clone();
         let mut coordenador = Self {
             armazenamento: Box::new(armazenamento),
             dados,
             sessoes: HashMap::new(),
             regras,
-            metadados: catalogo
-                .regra
-                .into_iter()
-                .map(|regra| (regra.id.clone(), regra))
-                .collect(),
+            metadados,
             drs: drs
                 .regras
                 .iter()
@@ -548,16 +524,13 @@ impl Coordenador {
         if vista == Some(versao) {
             return Ok(Resposta::Ok);
         }
-        let mut dados = self.dados.clone();
-        dados
-            .por_sid
-            .entry(identidade.sid.clone())
-            .or_default()
-            .atualizacao_vista = Some(versao.to_owned());
-        self.armazenamento
-            .salvar(&dados)
-            .map_err(erro_armazenamento)?;
-        self.dados = dados;
+        transacao(&mut self.dados, &*self.armazenamento, |dados| {
+            dados
+                .por_sid
+                .entry(identidade.sid.clone())
+                .or_default()
+                .atualizacao_vista = Some(versao.to_owned());
+        })?;
         Ok(Resposta::Ok)
     }
 
@@ -725,19 +698,16 @@ impl Coordenador {
                 nome: nome.to_owned(),
                 marcado_unix: unix.max(programa.detectado_unix),
             };
-            let mut dados = self.dados.clone();
-            let sid = dados.por_sid.entry(identidade.sid.clone()).or_default();
-            sid.inicio_vistos
-                .retain(|m| !(m.fonte == fonte && m.nome == nome));
-            sid.inicio_vistos.push(marca);
-            if sid.inicio_vistos.len() > crate::saude::VISTOS_MAX {
-                let excesso = sid.inicio_vistos.len() - crate::saude::VISTOS_MAX;
-                sid.inicio_vistos.drain(..excesso);
-            }
-            self.armazenamento
-                .salvar(&dados)
-                .map_err(erro_armazenamento)?;
-            self.dados = dados;
+            transacao(&mut self.dados, &*self.armazenamento, |dados| {
+                let sid = dados.por_sid.entry(identidade.sid.clone()).or_default();
+                sid.inicio_vistos
+                    .retain(|m| !(m.fonte == fonte && m.nome == nome));
+                sid.inicio_vistos.push(marca);
+                if sid.inicio_vistos.len() > crate::saude::VISTOS_MAX {
+                    let excesso = sid.inicio_vistos.len() - crate::saude::VISTOS_MAX;
+                    sid.inicio_vistos.drain(..excesso);
+                }
+            })?;
             Ok::<_, Erro>(Resposta::Ok)
         })();
         r.unwrap_or_else(|(codigo, mensagem)| Resposta::erro(codigo, mensagem))
@@ -1093,29 +1063,27 @@ impl Coordenador {
             let catalogo = &self.catalogo_jogo;
             let destinos =
                 validar_resultados_jogo(s, resultados_jogo, catalogo).map_err(invalida)?;
-            let mut dados = self.dados.clone();
-            let sid = dados.por_sid.entry(identidade.sid.clone()).or_default();
-            let recibos = sid.recibos.entry(identidade.sessao).or_default();
-            recibos.push_front(Recibo {
-                tarefa: referencia,
-                resultados: vec![],
-                resultados_jogo: resultados_jogo.to_vec(),
-            });
-            recibos.truncate(RECIBOS_POR_SESSAO);
-            for resultado in resultados_jogo {
-                self.serial += 1;
-                sid.historico.push_front(entrada_jogo(
-                    self.serial,
-                    unix,
-                    referencia.operacao,
-                    resultado,
-                ));
-            }
-            sid.historico.truncate(HISTORICO_POR_SID);
-            self.armazenamento
-                .salvar(&dados)
-                .map_err(erro_armazenamento)?;
-            self.dados = dados;
+            let serial = &mut self.serial;
+            transacao(&mut self.dados, &*self.armazenamento, |dados| {
+                let sid = dados.por_sid.entry(identidade.sid.clone()).or_default();
+                let recibos = sid.recibos.entry(identidade.sessao).or_default();
+                recibos.push_front(Recibo {
+                    tarefa: referencia,
+                    resultados: vec![],
+                    resultados_jogo: resultados_jogo.to_vec(),
+                });
+                recibos.truncate(RECIBOS_POR_SESSAO);
+                for resultado in resultados_jogo {
+                    *serial += 1;
+                    sid.historico.push_front(entrada_jogo(
+                        *serial,
+                        unix,
+                        referencia.operacao,
+                        resultado,
+                    ));
+                }
+                sid.historico.truncate(HISTORICO_POR_SID);
+            })?;
             let tarefa = s.em_voo_jogo.take().expect("tarefa de jogo conferida");
             for (resultado, destino) in resultados_jogo.iter().zip(destinos) {
                 registrar_jogo(s, &tarefa, resultado, destino);
@@ -1137,25 +1105,23 @@ impl Coordenador {
                 .iter()
                 .all(|r| matches!(r.status, StatusMudanca::Aplicada | StatusMudanca::JaNoValor));
 
-        let mut dados = self.dados.clone();
-        let sid = dados.por_sid.entry(identidade.sid.clone()).or_default();
-        let recibos = sid.recibos.entry(identidade.sessao).or_default();
-        recibos.push_front(Recibo {
-            tarefa: referencia,
-            resultados: resultados.to_vec(),
-            resultados_jogo: vec![],
-        });
-        recibos.truncate(RECIBOS_POR_SESSAO);
-        for resultado in resultados {
-            self.serial += 1;
-            sid.historico
-                .push_front(entrada(self.serial, unix, referencia.operacao, resultado));
-        }
-        sid.historico.truncate(HISTORICO_POR_SID);
-        self.armazenamento
-            .salvar(&dados)
-            .map_err(erro_armazenamento)?;
-        self.dados = dados;
+        let serial = &mut self.serial;
+        transacao(&mut self.dados, &*self.armazenamento, |dados| {
+            let sid = dados.por_sid.entry(identidade.sid.clone()).or_default();
+            let recibos = sid.recibos.entry(identidade.sessao).or_default();
+            recibos.push_front(Recibo {
+                tarefa: referencia,
+                resultados: resultados.to_vec(),
+                resultados_jogo: vec![],
+            });
+            recibos.truncate(RECIBOS_POR_SESSAO);
+            for resultado in resultados {
+                *serial += 1;
+                sid.historico
+                    .push_front(entrada(*serial, unix, referencia.operacao, resultado));
+            }
+            sid.historico.truncate(HISTORICO_POR_SID);
+        })?;
         if snapshot_concluido {
             s.snapshot_confirmado = s.snapshot_ofertado;
         }
@@ -1376,6 +1342,20 @@ fn invalida(mensagem: impl Into<String>) -> Erro {
     (CodigoErro::RequisicaoInvalida, mensagem.into())
 }
 
+/// Aplica `f` a uma cópia de `dados`, grava a cópia e só então a efetiva: se a
+/// gravação falhar, nada muda em memória.
+fn transacao<R>(
+    dados: &mut DadosUsuarios,
+    armazenamento: &dyn Armazenamento,
+    f: impl FnOnce(&mut DadosUsuarios) -> R,
+) -> Result<R, Erro> {
+    let mut copia = dados.clone();
+    let r = f(&mut copia);
+    armazenamento.salvar(&copia).map_err(erro_armazenamento)?;
+    *dados = copia;
+    Ok(r)
+}
+
 fn erro_armazenamento(erro: io::Error) -> Erro {
     tracing::error!("falha ao gravar estado de usuário: {erro}");
     (
@@ -1425,13 +1405,6 @@ fn valor_fato<T: Clone>(
         Fato::Conhecido(v) => Some(converter(v.clone())),
         Fato::Ausente => Some(ValorUsuario::Ausente),
         Fato::Desconhecido => None,
-    }
-}
-
-fn taxa_core(t: nvt_ipc::RefreshRacional) -> usuario::RefreshRacional {
-    usuario::RefreshRacional {
-        numerador: t.numerador,
-        denominador: t.denominador,
     }
 }
 
@@ -1566,15 +1539,6 @@ fn ajuste(
     antes: &ValorUsuario,
     depois: &ValorUsuario,
 ) -> Option<AjusteUsuario> {
-    let taxa = |t: &usuario::RefreshRacional| nvt_ipc::RefreshRacional {
-        numerador: t.numerador,
-        denominador: t.denominador,
-    };
-    let spi = |&[limiar1, limiar2, aceleracao]: &[i32; 3]| nvt_ipc::MouseSpi {
-        limiar1,
-        limiar2,
-        aceleracao,
-    };
     let token = |v: &ValorUsuario| match v {
         ValorUsuario::Token(s) => Some(Some(s.clone())),
         ValorUsuario::Ausente => Some(None),
@@ -1588,12 +1552,12 @@ fn ajuste(
     Some(match (antes, depois) {
         (ValorUsuario::Refresh(a), ValorUsuario::Refresh(b)) => AjusteUsuario::Refresh {
             alvo: alvo?.into(),
-            antes: taxa(a),
-            depois: taxa(b),
+            antes: taxa_ipc(*a),
+            depois: taxa_ipc(*b),
         },
         (ValorUsuario::Spi(a), ValorUsuario::Spi(b)) => AjusteUsuario::MouseAceleracao {
-            antes: spi(a),
-            depois: spi(b),
+            antes: spi_ipc(*a),
+            depois: spi_ipc(*b),
         },
         _ if matches!(antes, ValorUsuario::Token(_))
             || matches!(depois, ValorUsuario::Token(_)) =>
@@ -1611,7 +1575,7 @@ fn ajuste(
 }
 
 fn valores(ajuste: &AjusteUsuario) -> (ValorUsuario, ValorUsuario) {
-    let spi = |m: &nvt_ipc::MouseSpi| ValorUsuario::Spi([m.limiar1, m.limiar2, m.aceleracao]);
+    let spi = |m: &nvt_ipc::MouseSpi| ValorUsuario::Spi(spi_core(*m));
     let token = |v: &Option<String>| v.clone().map_or(ValorUsuario::Ausente, ValorUsuario::Token);
     let dword = |v: &Option<u32>| v.map_or(ValorUsuario::Ausente, ValorUsuario::Dword);
     match ajuste {

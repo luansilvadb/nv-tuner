@@ -105,6 +105,8 @@ pub const VERSAO_SCHEMA: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Catalogo {
     settings: BTreeMap<String, DefSetting>,
+    /// Índice ID DRS → nome simbólico.
+    nomes_por_id: BTreeMap<u32, String>,
 }
 
 impl Catalogo {
@@ -165,7 +167,10 @@ impl Catalogo {
             settings.insert(def.nome.clone(), def);
         }
         if erros.is_empty() {
-            Ok(Self { settings })
+            Ok(Self {
+                settings,
+                nomes_por_id: ids,
+            })
         } else {
             Err(ErrosRegras(erros))
         }
@@ -174,6 +179,13 @@ impl Catalogo {
     /// Busca uma setting pelo nome simbólico.
     pub fn get(&self, nome: &str) -> Option<&DefSetting> {
         self.settings.get(nome)
+    }
+
+    /// Busca uma setting pelo ID DRS.
+    pub fn por_id(&self, id: u32) -> Option<&DefSetting> {
+        self.nomes_por_id
+            .get(&id)
+            .and_then(|n| self.settings.get(n))
     }
 
     /// Todas as settings, em ordem de nome.

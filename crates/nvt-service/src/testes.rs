@@ -4,7 +4,6 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use nvt_core::{Alvo, Api, Versao};
@@ -13,6 +12,11 @@ use nvt_engine::{DriverFalso, JogoEntrada};
 use nvt_ipc::{CodigoErro, NivelAviso, Requisicao, Resposta, StatusMudanca, codigo_aviso};
 
 use crate::nucleo::{Assinador, Assinatura, Config, Fabrica, Nucleo, Varredor};
+use crate::teste_util::DirTemp;
+
+fn dir_temp() -> DirTemp {
+    DirTemp::novo("service-teste")
+}
 
 const EXE_WARDOGS: &str = "WardogsClient-Win64-Shipping.exe";
 const EXE_LOL: &str = "League of Legends.exe";
@@ -41,28 +45,6 @@ fn jogos() -> Vec<JogoEntrada> {
     let mut l = JogoEntrada::new("League of Legends", EXE_LOL);
     l.api = Api::Dx11;
     vec![w, l]
-}
-
-/// Diretório temporário removido no `Drop`.
-struct DirTemp(PathBuf);
-
-impl DirTemp {
-    fn novo() -> Self {
-        static N: AtomicU32 = AtomicU32::new(0);
-        let p = std::env::temp_dir().join(format!(
-            "nvt-service-teste-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&p);
-        Self(p)
-    }
-}
-
-impl Drop for DirTemp {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 fn cfg(somente_leitura: bool) -> Config {
@@ -126,7 +108,7 @@ fn wardogs() -> ProfileRef {
 
 #[test]
 fn aplicacao_inicial_com_snapshot_e_estado() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     assert_eq!(d.valor(&wardogs(), ID_PRESET), Some(5));
@@ -143,7 +125,7 @@ fn aplicacao_inicial_com_snapshot_e_estado() {
 
 #[test]
 fn reset_em_massa_reaplica_apos_debounce() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     d.resetar_settings();
@@ -162,7 +144,7 @@ fn reset_em_massa_reaplica_apos_debounce() {
 
 #[test]
 fn mudanca_pontual_trava_na_verificacao_periodica() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     d.mudar_pelo_usuario(&ProfileRef::Base, ID_VSYNC, VSYNC_ON);
@@ -182,7 +164,7 @@ fn mudanca_pontual_trava_na_verificacao_periodica() {
 
 #[test]
 fn restaurar_original_pausa_autonomia_ate_aplicar_agora() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     assert_eq!(
@@ -218,7 +200,7 @@ fn restaurar_original_pausa_autonomia_ate_aplicar_agora() {
 
 #[test]
 fn ignora_as_proprias_gravacoes() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     // Dentro da janela após a gravação própria.
@@ -237,7 +219,7 @@ fn ignora_as_proprias_gravacoes() {
 
 #[test]
 fn tratador_ipc_consulta_e_trava() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
 
@@ -343,7 +325,7 @@ fn tratador_ipc_consulta_e_trava() {
 
 #[test]
 fn somente_leitura_nunca_grava() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(true), &s, t0);
     n.iniciar(t0);
     assert_eq!(d.gravacoes(), 0);
@@ -375,7 +357,7 @@ fn laco_atende_ipc_pelo_pipe_e_para() {
 
     use crate::laco::{self, Evento};
 
-    let dir = DirTemp::novo();
+    let dir = dir_temp();
     let caminho = dir.0.clone();
     let pipe = format!(r"\\.\pipe\nvt-service-teste-{}", std::process::id());
     let (tx, rx) = mpsc::channel::<Evento>();
@@ -450,7 +432,7 @@ fn plano_de(n: &mut Nucleo<'_, DriverFalso>, req: Requisicao, t: Instant) -> nvt
 
 #[test]
 fn estado_corrompido_vira_aviso_e_o_recuperado_e_gravado() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     {
         let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
         n.iniciar(t0);
@@ -499,7 +481,7 @@ fn estado_corrompido_vira_aviso_e_o_recuperado_e_gravado() {
 
 #[test]
 fn snapshot_ilegivel_bloqueia_a_restauracao() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     std::fs::create_dir_all(&dir.0).unwrap();
     std::fs::write(dir.0.join("snapshot-original.json"), b"").unwrap();
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
@@ -520,7 +502,7 @@ fn snapshot_ilegivel_bloqueia_a_restauracao() {
 
 #[test]
 fn reversao_aparece_no_plano_pendente_e_depois_aplicada() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     let prefs = Requisicao::DefinirPreferencias {
@@ -560,7 +542,7 @@ fn reversao_aparece_no_plano_pendente_e_depois_aplicada() {
 
 #[test]
 fn jogo_invalido_e_ignorado_com_aviso() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let d2 = d.clone();
     let s2 = s.clone();
     let mut n = novo_sem_processos(
@@ -637,7 +619,7 @@ fn mapeamento_dos_avisos_do_armazem() {
 
 #[test]
 fn somente_leitura_com_estado_corrompido_nao_mexe_no_diretorio() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     {
         let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
         n.iniciar(t0);
@@ -732,7 +714,7 @@ fn prefs_limite(limite_fps: Option<u32>) -> Requisicao {
 /// mudança manual vira trava do usuário (antes: limite final `None`).
 #[test]
 fn rv4_preferencia_durante_deriva_pendente_trava_a_escolha_do_usuario() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     assert_eq!(n.tratar(prefs_limite(Some(141)), t0), Resposta::Ok);
@@ -761,7 +743,7 @@ fn rv4_preferencia_durante_deriva_pendente_trava_a_escolha_do_usuario() {
 /// é revertida pelo plano disparado ao destravar.
 #[test]
 fn rv4_destravar_durante_deriva_pendente_nao_reverte_mudanca_manual() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     assert_eq!(n.tratar(prefs_limite(Some(141)), t0), Resposta::Ok);
@@ -790,7 +772,7 @@ fn rv4_destravar_durante_deriva_pendente_nao_reverte_mudanca_manual() {
 /// seguinte não volta ao estado vazio.
 #[test]
 fn rv7_somente_leitura_nao_faz_o_servico_perder_o_estado_recuperado() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     {
         let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
         n.iniciar(t0);
@@ -849,7 +831,7 @@ fn rv7_somente_leitura_nao_faz_o_servico_perder_o_estado_recuperado() {
 /// nome canônico do DRS.
 #[test]
 fn rv10_grafias_do_perfil_viram_uma_trava_por_setting() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
     let base = "league of legends";
@@ -892,7 +874,7 @@ fn rv10_grafias_do_perfil_viram_uma_trava_por_setting() {
 /// total de travas é limitado com erro claro.
 #[test]
 fn rv10_perfil_nao_gerenciavel_e_limite_de_travas() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     d.adicionar_perfil_predefinido("Outro Programa", &["outro.exe"], &[]);
     let mut n = nucleo(&d, &dir, cfg(false), &s, t0);
     n.iniciar(t0);
@@ -949,7 +931,7 @@ fn rv10_perfil_nao_gerenciavel_e_limite_de_travas() {
 
 #[test]
 fn plano_envia_jogos_com_fatos_e_explicacao() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let d2 = d.clone();
     let s2 = s.clone();
     let mut n = novo_sem_processos(
@@ -1082,7 +1064,7 @@ fn escritas(d: &DriverFalso) -> (usize, usize) {
 #[test]
 fn jogo_aberto_adia_tudo_e_a_acao_roda_uma_vez_ao_fechar() {
     use crate::nucleo::AcaoPendente;
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let p = Processos::default();
     p.abrir(&EXE_WARDOGS.to_uppercase());
     let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
@@ -1152,7 +1134,7 @@ fn jogo_aberto_adia_tudo_e_a_acao_roda_uma_vez_ao_fechar() {
 #[test]
 fn restaurar_original_vence_aplicar_com_jogo_aberto() {
     use crate::nucleo::AcaoPendente;
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let p = Processos::default();
     let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
     let seg = Duration::from_secs;
@@ -1199,7 +1181,7 @@ fn restaurar_original_vence_aplicar_com_jogo_aberto() {
 #[test]
 fn deriva_com_jogo_aberto_e_lida_e_o_tratamento_fica_pendente() {
     use crate::nucleo::AcaoPendente;
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let p = Processos::default();
     let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
     let seg = Duration::from_secs;
@@ -1240,7 +1222,7 @@ fn retirada_de_aceite_drs_usa_portao_e_reverte_apos_reinicio() {
     use nvt_drs::{FonteFalsa, VrrBruto};
     const REGRA: &str = "sincronismo-gsync-limite";
     const ID_LIMITE: u32 = 0x1083_5002;
-    let (d, dir, s, agora) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, agora) = (driver(), dir_temp(), sinal(), Instant::now());
     let p = Processos::default();
     d.definir_exibicao(FonteFalsa::monitor(
         7,
@@ -1286,7 +1268,7 @@ fn retirada_de_aceite_drs_usa_portao_e_reverte_apos_reinicio() {
 #[test]
 fn estado_leva_refresh_vrr_real_e_aviso_do_plano() {
     use nvt_drs::{FonteFalsa, VrrBruto};
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     d.definir_exibicao(FonteFalsa::monitor(
         7,
         239_760,
@@ -1332,7 +1314,7 @@ fn estado_leva_refresh_vrr_real_e_aviso_do_plano() {
 #[test]
 fn pendencia_com_erro_e_tentada_de_novo_e_descartada_apos_tres_falhas() {
     use crate::nucleo::{AcaoPendente, TENTATIVAS_PENDENTE};
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let seg = Duration::from_secs;
     let falhar = Rc::new(std::cell::Cell::new(false));
     let p = Processos::default();
@@ -1419,7 +1401,7 @@ fn pendencia_com_erro_e_tentada_de_novo_e_descartada_apos_tres_falhas() {
 #[test]
 fn restauracao_pendente_sobrevive_ao_reinicio_do_servico() {
     use crate::nucleo::{AcaoPendente, EstadoServico};
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let seg = Duration::from_secs;
     let p = Processos::default();
     {
@@ -1473,7 +1455,7 @@ fn sem_driver_persiste_restauracao_e_aplicacao_para_o_proximo_logon() {
     use crate::laco::tratar_sem_driver;
     use crate::nucleo::EstadoServico;
 
-    let dir = DirTemp::novo();
+    let dir = dir_temp();
     let mut estado = EstadoServico::default();
     let mut pedir = |req| {
         assert!(matches!(
@@ -1510,7 +1492,7 @@ fn sem_driver_persiste_restauracao_e_aplicacao_para_o_proximo_logon() {
 #[test]
 fn restauracao_persistida_roda_no_inicio_com_o_jogo_fechado() {
     use crate::nucleo::EstadoServico;
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let p = Processos::default();
     {
         let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
@@ -1534,7 +1516,7 @@ fn restauracao_persistida_roda_no_inicio_com_o_jogo_fechado() {
 /// adiamento (não `Ok`).
 #[test]
 fn preferencias_e_destravar_com_jogo_aberto_respondem_adiada() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let p = Processos::default();
     let mut n = nucleo_com_processos(&d, &dir, &s, &p, t0);
     n.iniciar(t0);
@@ -1582,7 +1564,7 @@ fn preferencias_e_destravar_com_jogo_aberto_respondem_adiada() {
 /// marcador como nome de processo.
 #[test]
 fn lista_de_processos_indisponivel_vai_como_sinal_proprio() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let d2 = d.clone();
     let s2 = s.clone();
     let mut n = Nucleo::novo_com_portao(
@@ -1611,7 +1593,7 @@ fn lista_de_processos_indisponivel_vai_como_sinal_proprio() {
 #[test]
 fn apply_pela_cli_descarta_a_restauracao_pendente_e_grava_uma_vez() {
     use crate::nucleo::EstadoServico;
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let seg = Duration::from_secs;
     let p = Processos::default();
     {
@@ -1655,7 +1637,7 @@ fn apply_pela_cli_descarta_a_restauracao_pendente_e_grava_uma_vez() {
 /// estado não expõe adiamento.
 #[test]
 fn retomada_com_erro_real_mostra_o_erro_e_nao_jogo_aberto() {
-    let (d, dir, s, t0) = (driver(), DirTemp::novo(), sinal(), Instant::now());
+    let (d, dir, s, t0) = (driver(), dir_temp(), sinal(), Instant::now());
     let seg = Duration::from_secs;
     let p = Processos::default();
     {
@@ -2114,7 +2096,7 @@ mod recomendadas {
     fn cenario() -> Cenario {
         Cenario {
             d: driver(),
-            dir: DirTemp::novo(),
+            dir: dir_temp(),
             s: sinal(),
             p: Processos::default(),
             t: Instant::now(),

@@ -176,15 +176,6 @@ impl EstadoPersistido {
     pub fn serializar(&self) -> Vec<u8> {
         serde_json::to_vec_pretty(self).expect("estado serializável")
     }
-
-    /// Fase pendente para a UI (versão em `pronta`/`baixando`/`instalando`).
-    pub fn versao_pendente(&self) -> Option<Versao> {
-        match &self.fase {
-            Fase::Baixando { versao, .. } | Fase::Pronta { versao, .. } => Some(*versao),
-            Fase::Instalando { para, .. } => Some(*para),
-            _ => None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------- transições

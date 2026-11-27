@@ -9,8 +9,6 @@
 *.wixobj
 *.wixpdb
 *.cab
-/dist/
-/installer/out/
 
 # Arquivos locais de usuário
 *.local.toml

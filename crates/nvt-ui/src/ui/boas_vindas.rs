@@ -18,7 +18,7 @@ use crate::textos::boas_vindas as t;
 
 /// Conteúdo das boas-vindas.
 pub(super) fn render(_janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
-    let tema = cx.theme().clone();
+    let tema = cx.theme();
     let garantia = |texto: &'static str| {
         h_flex()
             .gap(px(tema::ESP_3))

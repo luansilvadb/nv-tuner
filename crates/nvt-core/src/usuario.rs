@@ -313,7 +313,27 @@ pub struct ConjuntoRegrasUsuario {
     regras: Vec<RegraUsuario>,
 }
 
+/// Metadados públicos de uma regra da camada usuário, lidos do mesmo parse
+/// que montou o [`ConjuntoRegrasUsuario`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetaRegraUsuario<'a> {
+    pub id: &'a str,
+    pub descricao: &'a str,
+    pub status: Status,
+    pub impacto_visual: ImpactoVisual,
+}
+
 impl ConjuntoRegrasUsuario {
+    /// Metadados de todas as regras, na ordem do arquivo.
+    pub fn metadados(&self) -> impl Iterator<Item = MetaRegraUsuario<'_>> {
+        self.regras.iter().map(|r| MetaRegraUsuario {
+            id: &r.id,
+            descricao: &r.descricao,
+            status: r.status,
+            impacto_visual: r.impacto_visual,
+        })
+    }
+
     pub fn embutido(drs: &ConjuntoRegras) -> Result<Self, ErrosRegras> {
         Self::carregar("windows.toml", WINDOWS_TOML, drs)
     }

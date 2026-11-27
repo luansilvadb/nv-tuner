@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
-use crate::model::{DetectedGame, Launcher};
+use crate::model::{DetectedGame, Launcher, caminho_windows};
 use crate::registro::{self, EntradaDesinstalacao, Hive};
 
 fn caminho(s: &str) -> PathBuf {
-    PathBuf::from(s.trim().trim_matches('"').replace('/', "\\"))
+    caminho_windows(s.trim().trim_matches('"'))
 }
 
 fn ultimo_componente(p: &std::path::Path) -> String {

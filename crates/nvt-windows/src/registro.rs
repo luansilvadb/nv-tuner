@@ -117,15 +117,30 @@ pub(crate) fn dword(bruto: &RegValue) -> Option<u32> {
     Some(u32::from_le_bytes(bruto.bytes.as_ref().try_into().ok()?))
 }
 
+/// Unidades UTF-16 little-endian de um valor de registro; `None` se o tamanho for ímpar.
+fn unidades_utf16(bytes: &[u8]) -> Option<Vec<u16>> {
+    (bytes.len() % 2 == 0).then(|| {
+        bytes
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect()
+    })
+}
+
+/// Decodifica texto UTF-16 de um valor de registro, tolerando terminadores NUL no fim.
+pub(crate) fn utf16_bytes(bytes: &[u8]) -> Option<String> {
+    let mut unidades = unidades_utf16(bytes)?;
+    while unidades.last() == Some(&0) {
+        unidades.pop();
+    }
+    String::from_utf16(&unidades).ok()
+}
+
 pub(crate) fn sz(bruto: &RegValue) -> Option<String> {
-    if bruto.vtype != REG_SZ || bruto.bytes.len() % 2 != 0 {
+    if bruto.vtype != REG_SZ {
         return None;
     }
-    let unidades: Vec<_> = bruto
-        .bytes
-        .chunks_exact(2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
-        .collect();
+    let unidades = unidades_utf16(&bruto.bytes)?;
     let texto = unidades.strip_suffix(&[0])?;
     if texto.contains(&0) {
         return None;

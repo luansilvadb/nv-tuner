@@ -31,13 +31,13 @@ use std::time::Duration;
 
 use gpui_kit::*;
 
-use crate::ui::Destino;
+use crate::ui::Secao;
 
 /// Opções da linha de comando.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Opcoes {
     pipe: String,
-    tela: Destino,
+    tela: Secao,
     sair_apos: Option<u64>,
     expandir: Vec<String>,
     demonstracao: Option<demonstracao::Cenario>,
@@ -46,7 +46,7 @@ struct Opcoes {
 fn ler_opcoes(args: impl IntoIterator<Item = String>) -> Result<Opcoes, String> {
     let mut o = Opcoes {
         pipe: nvt_ipc::NOME_PIPE.to_string(),
-        tela: Destino::default(),
+        tela: Secao::default(),
         sair_apos: None,
         expandir: Vec::new(),
         demonstracao: None,
@@ -58,7 +58,7 @@ fn ler_opcoes(args: impl IntoIterator<Item = String>) -> Result<Opcoes, String> 
             "--pipe" => o.pipe = valor("--pipe")?,
             "--tela" => {
                 let v = valor("--tela")?;
-                o.tela = Destino::de_chave(&v).ok_or(format!("tela desconhecida: {v}"))?;
+                o.tela = Secao::de_chave(&v).ok_or(format!("tela desconhecida: {v}"))?;
             }
             "--sair-apos" => {
                 let v = valor("--sair-apos")?;
@@ -140,8 +140,7 @@ fn main() {
 
 #[cfg(test)]
 mod testes {
-    use super::{Destino, ler_opcoes};
-    use crate::modelo::Tela;
+    use super::{Secao, ler_opcoes};
 
     fn args(s: &[&str]) -> Vec<String> {
         s.iter().map(|x| x.to_string()).collect()
@@ -151,7 +150,7 @@ mod testes {
     fn opcoes_padrao() {
         let o = ler_opcoes(args(&[])).unwrap();
         assert_eq!(o.pipe, nvt_ipc::NOME_PIPE);
-        assert_eq!(o.tela, Destino::default());
+        assert_eq!(o.tela, Secao::default());
         assert_eq!(o.sair_apos, None);
         assert!(o.expandir.is_empty());
         assert_eq!(o.demonstracao, None);
@@ -184,7 +183,7 @@ mod testes {
         ]))
         .unwrap();
         assert_eq!(o.pipe, r"\\.\pipe\teste");
-        assert_eq!(o.tela.tela, Tela::Jogos);
+        assert_eq!(o.tela, Secao::Jogos);
         assert_eq!(o.sair_apos, Some(10));
         assert_eq!(o.expandir, ["WARDOGS", "League of Legends"]);
     }

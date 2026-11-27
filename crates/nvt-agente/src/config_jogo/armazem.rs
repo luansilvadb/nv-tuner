@@ -62,8 +62,17 @@ impl AmbienteJogo {
         Ok(self
             .pastas
             .local_app_data()?
-            .join("nv-tuner")
+            .join(nvt_core::produto::PASTA_DADOS)
             .join("backups"))
+    }
+
+    /// Pasta conhecida de uma raiz de perfil (Documentos ou LocalAppData).
+    fn pasta_raiz(&self, raiz: RaizJogo) -> Option<PathBuf> {
+        match raiz {
+            RaizJogo::Documentos => self.pastas.documentos(),
+            _ => self.pastas.local_app_data(),
+        }
+        .ok()
     }
 
     /// Resolve a instância de `def` no perfil. `None`: jogo/Steam não instalados.
@@ -83,11 +92,7 @@ impl AmbienteJogo {
         };
         let (raiz, caminho, instancia) = match def.raiz {
             RaizJogo::Documentos | RaizJogo::LocalAppData => {
-                let raiz = match def.raiz {
-                    RaizJogo::Documentos => self.pastas.documentos(),
-                    _ => self.pastas.local_app_data(),
-                }
-                .ok()?;
+                let raiz = self.pasta_raiz(def.raiz)?;
                 match def.caminho.split_once("<conta>") {
                     None => (
                         raiz.clone(),
@@ -214,11 +219,7 @@ impl AmbienteJogo {
             }
             RaizJogo::Documentos | RaizJogo::LocalAppData => {
                 let (pre, _) = def.caminho.split_once("<conta>")?;
-                let raiz = match def.raiz {
-                    RaizJogo::Documentos => self.pastas.documentos(),
-                    _ => self.pastas.local_app_data(),
-                }
-                .ok()?;
+                let raiz = self.pasta_raiz(def.raiz)?;
                 let pasta = raiz.join(pre.trim_end_matches('\\'));
                 let c = nvt_jogocfg::ubisoft::escolher_conta(&raiz, &pasta).ok()?;
                 Some(instancia_conta_legada(def.jogo.as_str(), &c.id))

@@ -1,5 +1,7 @@
 //! Acesso tipado aos ajustes interativos e aos diagnosticos do Windows.
 
+mod com;
+pub mod conversao;
 pub mod diagnosticos;
 pub mod mouse;
 pub mod registro;

@@ -13,18 +13,18 @@ path = "src/main.rs"
 
 [dependencies]
 nvt-ipc.workspace = true
-nvt-core = { path = "../nvt-core" }
-nvt-detect = { path = "../nvt-detect" }
-nvt-engine = { path = "../nvt-engine" }
+nvt-core.workspace = true
+nvt-detect.workspace = true
+nvt-engine.workspace = true
 serde.workspace = true
-serde_json = "1"
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 nvt-jogocfg = { path = "../nvt-jogocfg" }
-nvt-manutencao = { path = "../nvt-manutencao" }
-nvt-windows = { path = "../nvt-windows" }
-winreg = "0.56"
-windows-sys = { version = "0.61", features = [
+nvt-manutencao.workspace = true
+nvt-windows.workspace = true
+winreg.workspace = true
+windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security",

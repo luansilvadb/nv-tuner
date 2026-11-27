@@ -77,13 +77,7 @@ pub fn decodificar<T: DeserializeOwned>(payload: &[u8]) -> Result<T, ErroIpc> {
 
 /// Escreve um quadro (cabeçalho de tamanho + payload).
 pub fn escrever_quadro<W: Write>(w: &mut W, payload: &[u8]) -> Result<(), ErroIpc> {
-    let tamanho = u32::try_from(payload.len())
-        .ok()
-        .filter(|t| *t <= TAMANHO_MAXIMO)
-        .ok_or(ErroIpc::Grande {
-            tamanho: payload.len() as u64,
-            limite: TAMANHO_MAXIMO,
-        })?;
+    let tamanho = tamanho_quadro(payload.len())?;
     w.write_all(&tamanho.to_le_bytes())?;
     w.write_all(payload)?;
     w.flush()?;
@@ -126,8 +120,34 @@ pub fn ler_quadro<R: Read>(r: &mut R) -> Result<Vec<u8>, ErroIpc> {
 }
 
 /// Codifica e envia uma mensagem em um quadro.
+///
+/// O quadro inteiro sai num único `write_all`; o fio é o mesmo de
+/// [`escrever_quadro`].
 pub fn enviar<W: Write, T: Serialize>(w: &mut W, msg: &T) -> Result<(), ErroIpc> {
-    escrever_quadro(w, &codificar(msg)?)
+    let mut quadro = vec![0u8; 4];
+    serde_json::to_writer(
+        &mut quadro,
+        &EnvelopeSaida {
+            versao: PROTOCOL_VERSION,
+            corpo: msg,
+        },
+    )?;
+    let tamanho = tamanho_quadro(quadro.len() - 4)?;
+    quadro[..4].copy_from_slice(&tamanho.to_le_bytes());
+    w.write_all(&quadro)?;
+    w.flush()?;
+    Ok(())
+}
+
+/// Tamanho do payload para o cabeçalho, recusando o que passa do limite.
+fn tamanho_quadro(len: usize) -> Result<u32, ErroIpc> {
+    u32::try_from(len)
+        .ok()
+        .filter(|t| *t <= TAMANHO_MAXIMO)
+        .ok_or(ErroIpc::Grande {
+            tamanho: len as u64,
+            limite: TAMANHO_MAXIMO,
+        })
 }
 
 /// Recebe um quadro e decodifica a mensagem.

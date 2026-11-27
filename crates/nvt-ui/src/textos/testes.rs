@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use super::{avancado, boas_vindas, estado, inicio, jogos, saude};
+use super::{boas_vindas, estado, inicio, jogos, saude};
 use crate::modelo::{LinhaEstado, MotivoIndisponivel, StatusJogo, TipoSinal, Veredito};
 
 /// Um caso de cada variante de [`Veredito`] (e de cada sinal em "piorou").
@@ -129,7 +129,6 @@ const FONTES: &[(&str, &str)] = &[
     ("jogos.rs", include_str!("jogos.rs")),
     ("boas_vindas.rs", include_str!("boas_vindas.rs")),
     ("estado.rs", include_str!("estado.rs")),
-    ("avancado.rs", include_str!("avancado.rs")),
     ("saude.rs", include_str!("saude.rs")),
 ];
 
@@ -156,17 +155,13 @@ fn tela_principal() -> Vec<String> {
     for n in [0, 1, 2, 12] {
         v.push(inicio::melhorias_frase(n));
         v.push(inicio::aplicadas(n));
-        v.push(inicio::inicializacao_novos(n));
-        v.push(jogos::encontrados(n));
         v.push(jogos::faca_ajustes(n.max(1)));
     }
     v.push(inicio::piorou_titulo(inicio::MOTIVO_POUCO_ESPACO));
-    v.push(inicio::espaco_livre(12_000_000_000, true));
     v.push(saude::espaco(8_000_000_000, true));
     for (n, m) in [(0, 0), (1, 0), (2, 1), (0, 3)] {
         v.push(saude::inicializacao(n, m));
     }
-    v.push(inicio::espaco_livre(210_000_000_000, false));
     v.push(estado::jogo_aberto(""));
     v.push(jogos::passo(1, "No menu Vídeo, ligue \"Baixa latência\"."));
     v
@@ -189,27 +184,6 @@ fn r_ui_03_sem_siglas_na_tela_principal() {
         for j in JARGAO {
             assert!(!minusculo.contains(j), "jargão {j:?} em {t:?}");
         }
-    }
-}
-
-#[test]
-fn r_ui_03_avancado_explica_siglas() {
-    // Toda sigla do Avançado vem acompanhada de explicação na mesma frase.
-    for (sigla, extenso) in [
-        ("GPU", "Placa de vídeo"),
-        ("VRAM", "memória de vídeo"),
-        ("VRR", "sincronismo adaptável"),
-        ("FPS", "quadros por segundo"),
-        ("ReBAR", "Resizable BAR"),
-    ] {
-        let achou = avancado::TODOS
-            .iter()
-            .find(|t| palavras(t).any(|p| p == sigla))
-            .unwrap_or_else(|| panic!("sigla {sigla} sem texto no Avançado"));
-        assert!(
-            achou.contains(extenso),
-            "{sigla} sem {extenso:?}: {achou:?}"
-        );
     }
 }
 
@@ -315,9 +289,6 @@ fn frases_curtas_na_tela_principal() {
             assert!(n <= MAX_FRASE, "frase com {n} caracteres: {frase:?}");
         }
     }
-    for t in avancado::TODOS {
-        assert!(t.chars().count() <= 100, "rótulo longo no Avançado: {t:?}");
-    }
 }
 
 #[test]
@@ -333,10 +304,5 @@ fn plurais() {
     assert_eq!(
         jogos::status(StatusJogo::FacaAjustes { quantidade: 2 }),
         "Faça 2 ajustes no jogo"
-    );
-    assert_eq!(jogos::encontrados(4), "Encontramos 4 jogos neste PC.");
-    assert_eq!(
-        inicio::espaco_livre(12_400_000_000, true),
-        "Restam 12 GB no disco do Windows."
     );
 }
