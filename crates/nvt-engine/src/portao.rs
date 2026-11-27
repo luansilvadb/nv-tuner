@@ -1,5 +1,4 @@
-//! Portão único de gravação no DRS (T-02; F1-06 e F1-07 de
-//! `docs/spec/competitivo.md`).
+//! Portão único de gravação no DRS (T-02; F1-06 e F1-07).
 //!
 //! Toda chamada que altera o driver (`criar_perfil`, `criar_aplicacao`,
 //! `gravar_setting`, `remover_setting`, `salvar`) exige uma [`Licenca`], e a

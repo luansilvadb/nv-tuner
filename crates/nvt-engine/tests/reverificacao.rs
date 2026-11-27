@@ -1,5 +1,5 @@
-//! Regressões da reverificação adversarial (commit `c20974c`,
-//! `docs/revisao-v0.1.md`, seção "Reverificação"). Cada teste reproduz o
+//! Regressões da reverificação adversarial (commit `c20974c`).
+//! Cada teste reproduz o
 //! cenário do relatório e afirma o comportamento corrigido. Só `DriverFalso`.
 
 mod comum;

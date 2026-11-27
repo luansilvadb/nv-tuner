@@ -4,7 +4,7 @@
 //! configurações no perfil global e nos perfis de aplicativo. Todo `unsafe`
 //! do projeto relacionado ao driver deve ficar confinado neste crate.
 //!
-//! Especificação: `docs/pesquisa/nvapi-drs.md`. Pontos principais:
+//! Pontos principais:
 //!
 //! - [`NvApi::load`] carrega a DLL e chama `NvAPI_Initialize`; `Drop` chama `NvAPI_Unload`.
 //! - [`Session::open`] cria e carrega a sessão DRS; `Drop` a destrói sem gravar.

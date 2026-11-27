@@ -6,7 +6,7 @@
 //! serve só para impor tempos limite e para que um sinal de parada
 //! interrompa esperas — coisas que a E/S síncrona de pipes não oferece.
 //!
-//! Segurança (ver `docs/ipc.md`):
+//! Segurança:
 //! - DACL protegida: nega tudo a `NT AUTHORITY\NETWORK`; SYSTEM e
 //!   Administradores com acesso total; usuários autenticados apenas com
 //!   leitura/escrita de dados (sem `FILE_CREATE_PIPE_INSTANCE`, para que não

@@ -1,4 +1,4 @@
-//! Fase competitiva 1 no núcleo (spec `docs/spec/competitivo.md` §7):
+//! Fase competitiva 1 no núcleo:
 //! `limite_vrr`, condições de VRR e de jogo curado, regras do driver revistas,
 //! avisos de G-SYNC/VRR e orientações por jogo.
 

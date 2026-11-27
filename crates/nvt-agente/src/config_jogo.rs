@@ -1,5 +1,5 @@
-//! Configuração de arquivo de jogo no agente (Fase 3, `docs/spec/fase3-plano.md`
-//! L2-b e L2-c; `docs/spec/competitivo.md` §9.2 e §3).
+//! Configuração de arquivo de jogo no agente (Fase 3, L2-b e L2-c).
+//!
 //!
 //! O agente resolve os caminhos do catálogo (`[[arquivo]]` de `regras/jogos.toml`)
 //! com os direitos do próprio usuário, lê os valores, faz o backup imutável antes da

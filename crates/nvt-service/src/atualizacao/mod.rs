@@ -1,4 +1,4 @@
-//! Atualização automática no serviço (spec `docs/spec/atualizacao.md` §9.2).
+//! Atualização automática no serviço.
 //!
 //! [`Atualizador`] executa a máquina de estados pura de `nvt_atualizacao::estado`
 //! (§7) e aplica os [`Efeito`]s na ordem devolvida; se `Persistir` falhar, os

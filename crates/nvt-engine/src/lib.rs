@@ -19,7 +19,7 @@
 //! devolve [`ErroEngine::Adiada`] sem tocar no driver.
 //!
 //! O acesso ao driver passa pelo trait [`DriverStore`]: [`DrsReal`] (NVAPI) e
-//! [`DriverFalso`] (memória, para testes). Detalhes em `docs/engine.md`.
+//! [`DriverFalso`] (memória, para testes).
 
 mod aviso;
 mod deteccao;

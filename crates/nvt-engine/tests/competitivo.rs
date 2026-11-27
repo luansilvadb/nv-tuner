@@ -1,4 +1,4 @@
-//! Fase competitiva 1 no motor (spec `docs/spec/competitivo.md` §7): refresh e
+//! Fase competitiva 1 no motor: refresh e
 //! VRR na detecção (F1-01/F1-02), fatos da base curada (F1-03/F1-04), jogo em
 //! execução (F1-09), energia por jogo com reversão do global (F1-11),
 //! orientações (F1-12) e avisos (F1-15).

@@ -1,4 +1,4 @@
-//! Configuração de jogo (fase 3, `docs/spec/fase3-plano.md` D10): tipos dos
+//! Configuração de jogo (fase 3, D10): tipos dos
 //! destinos de jogo, catálogo `[[arquivo]]`/`[[regra]]` de `regras/jogos.toml`
 //! (schema 2) e avaliação das regras `config_jogo`, sem E/S.
 //!

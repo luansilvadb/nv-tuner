@@ -1,5 +1,5 @@
 //! `nvt-assinar`: ferramenta do mantenedor/CI para a atualização automática
-//! (docs/spec/atualizacao.md §6.2, §8.7, §11.2, §11.3, Q11). Nunca é empacotada no MSI.
+//! (Q11). Nunca é empacotada no MSI.
 //!
 //! - `gerar-chave --publica <arq.pub> --secreta <arq.key>`
 //! - `assinar --versao X.Y.Z --msi <arq>` (chave secreta só de `NV_TUNER_MINISIGN_KEY`)

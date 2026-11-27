@@ -1,6 +1,5 @@
 //! Falha fechada da lista de processos (portão e detecção), jogo de exe
-//! desconhecido aberto na primeira varredura (F1-09) e teste de aceite A7
-//! (spec `docs/spec/competitivo.md` §7.8 item 7).
+//! desconhecido aberto na primeira varredura (F1-09) e teste de aceite A7.
 
 mod comum;
 

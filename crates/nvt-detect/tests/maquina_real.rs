@@ -1,7 +1,7 @@
 //! Varredura da máquina real (somente leitura). Roda só com `--ignored`:
 //! `cargo test -p nvt-detect -- --ignored --nocapture`.
 //!
-//! Espera os dois jogos medidos em `docs/pesquisa/deteccao.md`.
+//! Espera os dois jogos medidos na pesquisa de detecção.
 
 use nvt_detect::{
     ApiGrafica, DetectedGame, GameTraits, Launcher, ServicosSistema, analisar_jogo,

@@ -43,7 +43,7 @@
                         Manufacturer="nv-tuner contributors" />
 
     <!--
-      Atualização automática (docs/spec/atualizacao.md §11.1): o serviço roda
+      Atualização automática: o serviço roda
       'msiexec /i <msi> /qn /norestart' como SYSTEM. Sem mudança de sequência:
       MajorUpgrade (afterInstallValidate) remove a versão antiga antes de
       instalar a nova; as restaurações ficam condicionadas a NOT

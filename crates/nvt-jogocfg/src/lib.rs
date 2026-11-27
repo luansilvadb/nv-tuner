@@ -1,5 +1,5 @@
 //! Edição preservadora de bytes de arquivos de configuração de jogos
-//! (docs/spec/competitivo.md §9.2, F3-01 e F3-04 a F3-12).
+//! (F3-01 e F3-04 a F3-12).
 //!
 //! - [`codificacao`]: UTF-8 com/sem BOM e UTF-16LE com BOM, regravados na mesma codificação.
 //! - [`ini`] e [`vdf`]: editores que trocam só os bytes do valor alvo.

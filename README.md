@@ -53,22 +53,7 @@ nenhuma sigla técnica nas telas principais.
 - **Modo de demonstração:** `nvt-ui --demonstracao <cenário>` abre a interface
   com dados fictícios fixos, sem serviço e sem ler a máquina (cenários
   `otimizado`, `melhorias`, `piorou`, `jogo-aberto`, `desligado`, `atualizado`,
-  `sem-servico`, `primeira-vez` e `saude`). É o que gera as capturas abaixo.
-
-<p align="center">
-  <img src="docs/ui-capturas/inicio-otimizado.png" width="720" alt="Início com o PC otimizado">
-</p>
-
-<p align="center">
-  <img src="docs/ui-capturas/inicio-melhorias.png" width="720" alt="Início com melhorias recomendadas">
-</p>
-
-<p align="center">
-  <img src="docs/ui-capturas/jogos.png" width="720" alt="Tela Jogos">
-</p>
-
-Outras capturas (boas-vindas, jogo aberto, ajustes desligados, Avançado) ficam
-em [`docs/ui-capturas/`](docs/ui-capturas/).
+  `sem-servico`, `primeira-vez` e `saude`).
 
 ## Saúde do PC
 
@@ -90,10 +75,6 @@ detectados, nunca desativados, editados ou removidos**: o botão **Abrir
 inicialização** abre a página do próprio Windows (Configurações > Aplicativos >
 Inicialização), e fica bloqueado com jogo aberto. O app não grava caminhos
 completos nem linhas de comando desses programas.
-
-<p align="center">
-  <img src="docs/ui-capturas/inicio-saude.png" width="720" alt="Seção Saúde do PC no Início">
-</p>
 
 **Limpeza de temporários:** já existe no código, mas está **desligada nesta
 versão**. Quando for ligada, depois de validada em laboratório, ela vai apagar
@@ -345,9 +326,6 @@ Plataforma: somente Windows com GPU NVIDIA. Licença: [MIT](LICENSE).
 | Manutenção | `nvt-manutencao` | Limpeza segura de temporários (modo fixo por compilação: desligada nas releases, simulação no build de teste) |
 | Medição | `nvt-medicao` | Gravação de partidas (ETW Present e NVML), só no build de teste; fora das releases |
 | Interface | `nvt-ui` | Aplicativo do usuário, sem privilégios |
-
-Detalhes em [`docs/arquitetura.md`](docs/arquitetura.md).
-
 ## Roteiro
 
 - **v0.1** — FFI DRS, capacidades, detecção de jogos, motor de regras, serviço,

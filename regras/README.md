@@ -9,8 +9,6 @@ do driver NVIDIA (global e por jogo). Lidas e validadas pelo crate
 | `settings.toml` | Catálogo de settings: nome simbólico → ID DRS e valores aceitos (também é a lista permitida do serviço) |
 | `base.toml` | Regras base: baseline global, sincronismo conforme a preferência do usuário e override de DLSS |
 
-Formato, semântica do avaliador e como contribuir: [`docs/regras.md`](../docs/regras.md).
-
 ## Princípios
 
 - Regras são dados, não código: revisáveis em PR e testáveis isoladamente.

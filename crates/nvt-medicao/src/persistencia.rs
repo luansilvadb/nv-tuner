@@ -262,7 +262,7 @@ impl Armazem {
         }
     }
 
-    /// "Apagar todas as partidas" (Avançado).
+    /// Ação de apagar todas as partidas do histórico.
     pub fn apagar_todas(&self) -> io::Result<()> {
         for r in self.listar()? {
             self.remover(r.id)?;

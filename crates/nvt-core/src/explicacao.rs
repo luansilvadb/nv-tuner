@@ -1,7 +1,6 @@
 //! Explicação por jogo: o que o plano aplica no perfil de cada jogo, o que
 //! deixou de aplicar e por quê (motivos estruturados), e o que o jogo herda
 //! do perfil global. O texto em pt-BR é gerado pela UI a partir dos motivos.
-//! Semântica em `docs/regras.md`, “Explicação por jogo”.
 
 use std::collections::BTreeMap;
 

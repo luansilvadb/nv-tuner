@@ -1,5 +1,5 @@
 //! Regras declarativas carregadas de arquivos TOML (pasta `regras/` na raiz
-//! do repositório). Formato e semântica: `docs/regras.md`.
+//! do repositório).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

@@ -1,6 +1,5 @@
 //! Avaliador: cruza capacidades, fatos e preferências com as regras e
-//! resolve conflitos de forma determinística. Semântica completa em
-//! `docs/regras.md`.
+//! resolve conflitos de forma determinística.
 //!
 //! Ordem de decisão para cada par (alvo, setting):
 //! 1. preferência direta do usuário (ex.: `limite_fps`);

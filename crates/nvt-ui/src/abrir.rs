@@ -1,5 +1,5 @@
 //! Abre a página de inicialização das Configurações do Windows (decisão D3,
-//! R-S-04, `docs/spec/interface-e-saude.md`).
+//! R-S-04).
 //!
 //! Exceção auditada em `crates/nvt-core/tests/proibicoes.rs`: este é o único
 //! arquivo do workspace com `ShellExecuteW`, numa única chamada, com o URI

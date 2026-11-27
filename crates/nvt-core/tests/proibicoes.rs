@@ -1,4 +1,4 @@
-//! T-01 (docs/spec/competitivo.md §3 e §5): nenhum crate de produção chama as APIs
+//! T-01: nenhum crate de produção chama as APIs
 //! proibidas pelas regras anticheat N1/N2.
 //!
 //! O teste percorre `crates/*/src/**/*.rs` e procura cada termo proibido como palavra
@@ -49,7 +49,7 @@ const PROIBIDOS: &[&str] = &[
     "ShellExecuteExW",
     "ShellExecuteExA",
     "WinExec",
-    // §8.3 (docs/spec/interface-e-saude.md): sessão ETW só no módulo de medição.
+    // Sessão ETW só no módulo de medição.
     "StartTraceW",
     "EnableTraceEx2",
     "OpenTraceW",
@@ -66,7 +66,7 @@ const PROIBIDOS: &[&str] = &[
     "FileDispositionInfoEx",
 ];
 
-/// Exceções exatas (docs/spec/atualizacao.md §9.6, U-29): (arquivo relativo à raiz,
+/// Exceções exatas (U-29): (arquivo relativo à raiz,
 /// termo, linhas com ocorrência). Fora desta lista, qualquer ocorrência falha; no arquivo
 /// listado, contagem diferente (a mais ou a menos) falha quando o arquivo existe.
 const PERMITIDOS: &[(&str, &str, usize)] = &[
@@ -80,7 +80,7 @@ const PERMITIDOS: &[(&str, &str, usize)] = &[
         "CreateProcessAsUserW",
         1,
     ),
-    // D3 (docs/spec/interface-e-saude.md): abrir `ms-settings:startupapps` (L4), numa
+    // D3: abrir `ms-settings:startupapps` (L4), numa
     // única chamada; a constante literal é conferida em `abrir_usa_so_a_constante...`.
     ("crates/nvt-ui/src/abrir.rs", "ShellExecuteW", 1),
     // §8.3: sessão ETW da medição, uma linha por termo (contagens fixadas no L5).
@@ -438,7 +438,7 @@ fn nenhuma_api_proibida_em_codigo_de_producao() {
     let relatorio = conferir(&achados, &existentes, PERMITIDOS);
     assert!(
         relatorio.is_empty(),
-        "T-01 (docs/spec/competitivo.md §3, N1/N2): {} ocorrência(s) de API proibida em \
+        "T-01 (N1/N2): {} ocorrência(s) de API proibida em \
          código de produção:\n{}\n",
         relatorio.len(),
         relatorio.join("\n")

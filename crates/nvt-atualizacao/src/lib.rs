@@ -1,4 +1,4 @@
-//! Núcleo puro da atualização automática do nv-tuner (`docs/spec/atualizacao.md`).
+//! Núcleo puro da atualização automática do nv-tuner.
 //!
 //! Sem Windows, sem rede e sem E/S: só funções sobre bytes e estruturas. O serviço
 //! (`nvt-service::atualizacao`) e a ferramenta `nvt-assinar` usam o mesmo verificador

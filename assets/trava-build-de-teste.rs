@@ -1,4 +1,4 @@
-// Trava das features de build de teste (docs/spec/interface-e-saude.md §8.4),
+// Trava das features de build de teste,
 // incluída pelos build.rs de nvt-medicao e nvt-manutencao com `include!`.
 //
 // Com a feature ligada, o build exige `NVT_BUILD_DE_TESTE=1` e recusa CI

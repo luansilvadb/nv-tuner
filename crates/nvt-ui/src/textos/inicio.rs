@@ -158,8 +158,7 @@ pub fn veredito(v: &Veredito) -> TextoVeredito {
 // Resultados das ações do Início (L2) --------------------------------------
 pub const PARA_VOLTAR_ATRAS: &str = "Para voltar atrás, use Desfazer tudo.";
 pub const NENHUMA_APLICADA: &str = "Não havia melhorias para aplicar agora.";
-pub const RECOMENDADAS_AUSENTE: &str =
-    "Esta versão ainda não aplica tudo de uma vez. Escolha uma a uma no Avançado.";
+pub const RECOMENDADAS_AUSENTE: &str = "Esta versão ainda não aplica tudo de uma vez.";
 pub const RECURSO_AUSENTE: &str = "Esta versão do nv-tuner ainda não faz isso.";
 pub const VOLTAR_ADIADO: &str = "Os ajustes voltam quando o jogo fechar.";
 pub const AGUARDE: &str = "Só um instante…";

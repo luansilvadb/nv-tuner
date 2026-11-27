@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  Gera o BUILD DE TESTE local do mantenedor (docs/spec/interface-e-saude.md D1, D1a, §8.4).
+  Gera o BUILD DE TESTE local do mantenedor.
 
 .DESCRIPTION
   NÃO É PARA USUÁRIOS. Compila em release nvt-service, nvt-agente e nvt-ui com a feature

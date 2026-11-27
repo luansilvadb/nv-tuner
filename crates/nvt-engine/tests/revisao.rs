@@ -1,4 +1,4 @@
-//! Regressões dos achados da revisão adversarial da v0.1 (`docs/revisao-v0.1.md`).
+//! Regressões dos achados da revisão adversarial da v0.1.
 //! Cada teste reproduz a prova original e afirma o comportamento corrigido.
 
 mod comum;

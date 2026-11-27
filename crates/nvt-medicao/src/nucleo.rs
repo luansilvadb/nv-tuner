@@ -1,7 +1,7 @@
 //! Núcleo puro da medição (R-M-05, R-M-06): recebe timestamps de Present de **um** PID e
 //! produz amostras por segundo e o resumo da partida. Nenhuma API do sistema.
 //!
-//! Definições (docs/pesquisa/saude-medicao.md §5):
+//! Definições:
 //! - frametime: diferença entre timestamps de `Present_Start` consecutivos do mesmo PID
 //!   (equivale ao `MsBetweenPresents` do PresentMon);
 //! - engasgo: frametime > [`FATOR_ENGASGO`] x mediana móvel dos últimos

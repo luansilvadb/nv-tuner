@@ -9,7 +9,6 @@
 //! - [`pipe`] (somente Windows): servidor para o serviço e cliente
 //!   bloqueante para a UI sobre `\\.\pipe\nv-tuner`.
 //!
-//! Detalhes do protocolo e da política de segurança: `docs/ipc.md`.
 
 pub mod config_jogo;
 mod erro;

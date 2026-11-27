@@ -1,4 +1,4 @@
-//! Partidas (docs/spec/interface-e-saude.md §4.5, §7.4, §8.2), só com `medicao-partidas`.
+//! Partidas, só com `medicao-partidas`.
 //!
 //! Com a feature, uma thread própria ([`ThreadPartidas`]) observa a lista de processos
 //! (`TH32CS_SNAPPROCESS`, nenhum handle para o jogo), detecta início e fim de partida dos

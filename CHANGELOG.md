@@ -9,6 +9,10 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
+### Corrigido
+
+- No **Início**, o aviso de que esta versão ainda não aplica todas as recomendações de uma vez não manda mais o usuário para a tela Avançado, que não existe mais.
+
 ## [0.4.0] - 2026-11-27
 
 *Visual novo no estilo Material 3*
@@ -72,7 +76,7 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - Grupos **Inicialização** e **Manutenção** no Avançado.
 - Crate **`nvt-manutencao`**: limpeza segura de temporários (`%TEMP%` pelo agente, `C:\Windows\Temp` pelo serviço), só arquivos com 7 dias ou mais, sem seguir links, sem jogo aberto nem instalação em andamento, no máximo uma passada por dia. **Desligada nesta versão**; quando ligada, só libera espaço em disco.
 - A gravação do desempenho das partidas (tela **Partidas**) **não está nesta release**: existe só num build de teste interno.
-- Modo de demonstração da interface (`nvt-ui --demonstracao <cenário>`), com dados fictícios, usado nas capturas de `docs/ui-capturas/`.
+- Modo de demonstração da interface (`nvt-ui --demonstracao <cenário>`), com dados fictícios, usado nas capturas da interface.
 
 ### Alterado
 

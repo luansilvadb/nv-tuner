@@ -2,7 +2,7 @@
 //!
 //! Único componente que grava no driver. Aplica o plano (só regras estáveis)
 //! com snapshot original antes da primeira mudança, vigia o DRS para tratar
-//! deriva, e atende a UI pelo named pipe. Detalhes: `docs/servico.md`.
+//! deriva, e atende a UI pelo named pipe.
 
 #[cfg(not(windows))]
 compile_error!("nvt-service só existe para Windows");

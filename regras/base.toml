@@ -1,4 +1,4 @@
-# Regras base do nv-tuner. Formato e semântica: docs/regras.md.
+# Regras base do nv-tuner.
 #
 # Evidências vêm do laboratório do projeto (RTX 2060 SUPER/Turing, driver
 # 621.40, monitor 1080p 240 Hz, PresentMon 2.6.0, 3 capturas de 60 s por
@@ -201,7 +201,7 @@ jogo_dlss = true
 
 # Ada e Blackwell têm FP8 nos Tensor Cores: a regra não falha por engano,
 # a GPU simplesmente não precisa do ajuste. Jogo sem DLSS e GPU sem Tensor
-# Cores já têm motivo padrão (docs/regras.md).
+# Cores já têm motivo padrão.
 [regra.motivo_quando_nao_aplica]
 arquitetura = { ada = "arquitetura_nao_precisa", blackwell = "arquitetura_nao_precisa" }
 
@@ -227,7 +227,7 @@ jogo_dlss = true
 
 # Ada e Blackwell têm FP8 nos Tensor Cores: a regra não falha por engano,
 # a GPU simplesmente não precisa do ajuste. Jogo sem DLSS e GPU sem Tensor
-# Cores já têm motivo padrão (docs/regras.md).
+# Cores já têm motivo padrão.
 [regra.motivo_quando_nao_aplica]
 arquitetura = { ada = "arquitetura_nao_precisa", blackwell = "arquitetura_nao_precisa" }
 

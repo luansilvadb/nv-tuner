@@ -1,4 +1,4 @@
-//! Saúde do PC no serviço (`docs/spec/interface-e-saude.md` §4.3, §4.4, §7, §8.1).
+//! Saúde do PC no serviço.
 //!
 //! - Uma thread própria ([`ThreadSaude`]) lê os sinais de máquina (a cada 10 min) e os
 //!   programas de inicialização da máquina (a cada 6 h), fora do atendimento do pipe, e

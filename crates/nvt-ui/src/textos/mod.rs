@@ -559,7 +559,7 @@ pub fn orientacao_ou_codigo(codigo: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Atualização automática (docs/spec/atualizacao.md U-42, U-47, U-48)
+// Atualização automática (U-42, U-47, U-48)
 // ---------------------------------------------------------------------------
 
 pub const ATUALIZADO_REABRA_TITULO: &str = "O nv-tuner foi atualizado";

@@ -1,5 +1,4 @@
 # Base curada de jogos competitivos do nv-tuner.
-# Formato e semântica: docs/spec/competitivo.md §7.3.
 #
 # Campos:
 #   id                   kebab-case, único
@@ -11,14 +10,12 @@
 #   config               edicao | opcoes_inicializacao | orientar | proibido (fase 3)
 #   orientacoes          códigos de §7.3 (o texto fica na UI)
 #
-# Schema 2 (fase 3, docs/spec/fase3-plano.md): [[arquivo]] lista os arquivos de
+# Schema 2 (fase 3): [[arquivo]] lista os arquivos de
 # configuração do usuário que o agente pode editar, com cada chave e os valores
 # ou a faixa do menu (F3-02). Chave `a_confirmar = true` nunca é gravada: a
 # carga recusa regra que a use. [[regra]] (escopo config_jogo) são todas
 # experimentais (D9) e só valem com Aceitar. Jogos com config orientar/proibido
-# não podem ter [[arquivo]] nem regra (erro de carga). Pesquisa e fontes:
-# docs/pesquisa/fase3-confirmacoes.md.
-#
+# não podem ter [[arquivo]] nem regra (erro de carga).#
 # Itens marcados com "# a confirmar" estão por verificar em máquina real (§11).
 
 versao_schema = 2

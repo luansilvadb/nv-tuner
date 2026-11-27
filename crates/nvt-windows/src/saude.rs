@@ -1,4 +1,4 @@
-//! Leituras de saúde do PC, somente leitura (`docs/spec/interface-e-saude.md` §4.3, §7.2, §7.3).
+//! Leituras de saúde do PC, somente leitura.
 //!
 //! Os traits [`LeitorInicio`], [`LeitorSinaisMaquina`] e [`LeitorSinaisSessao`] só têm
 //! métodos de leitura: não existe caminho de escrita nesta camada. A fachada real

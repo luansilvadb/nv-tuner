@@ -1,4 +1,4 @@
-//! DTOs de saúde do PC e de partidas (v8, `docs/spec/interface-e-saude.md` §7).
+//! DTOs de saúde do PC e de partidas (v8).
 //!
 //! Nada aqui carrega caminho, linha de comando, título de janela, nome de
 //! usuário, SID ou identificador de conta: programas de inicialização viajam

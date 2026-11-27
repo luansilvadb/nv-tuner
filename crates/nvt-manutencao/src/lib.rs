@@ -1,5 +1,5 @@
-//! Limpeza segura de temporários (docs/spec/interface-e-saude.md §4.4, R-L-02 a R-L-07 e
-//! R-L-09; docs/pesquisa/saude-manutencao.md).
+//! Limpeza segura de temporários (R-L-02 a R-L-07 e
+//! R-L-09).
 //!
 //! A passada é pura: o sistema de arquivos, a exclusão, o relógio, o portão de jogo, a
 //! detecção de instalação e a política de frequência são injetados. O adaptador Windows

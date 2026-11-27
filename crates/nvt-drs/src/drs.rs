@@ -4,7 +4,7 @@
 //! ([`Session::set_setting`], [`Session::delete_setting`], [`Session::create_profile`] etc.)
 //! só mudam a cópia em memória; nada chega ao disco sem [`Session::save`]. Se o driver
 //! recusar a gravação por privilégio, `save` devolve [`Error::PrivilegeRequired`]; no
-//! 621.40 ele grava mesmo sem administrador (ver `docs/pesquisa/nvapi-drs.md`, seção 9).
+//! 621.40 ele grava mesmo sem administrador.
 
 use std::fmt;
 use std::marker::PhantomData;

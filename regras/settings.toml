@@ -6,13 +6,10 @@
 #
 # Origem dos IDs e valores: NvApiDriverSettings.h (NVAPI) e o Reference.xml /
 # CustomSettingNames.xml do NVIDIA Profile Inspector 3.0.2.1 (MIT), conferidos
-# no laboratório contra o DRS real (driver 621.40). Referência completa:
-# docs/pesquisa/settings-referencia.json.
-#
+# no laboratório contra o DRS real (driver 621.40).#
 # Campos: nome (snake_case), id, descricao, valores (nome = valor),
 # faixa opcional { min, max } para números livres e governada_por opcional
-# (preferências do usuário que mandam nesta setting). Formato: docs/regras.md.
-
+# (preferências do usuário que mandam nesta setting).
 versao_schema = 1
 
 # ── Sincronismo ──────────────────────────────────────────────────────────────

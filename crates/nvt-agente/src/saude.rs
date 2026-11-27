@@ -1,4 +1,4 @@
-//! Saúde na sessão do usuário (docs/spec/interface-e-saude.md §4.3, §4.4, R-S-02, R-S-07,
+//! Saúde na sessão do usuário (R-S-02, R-S-07,
 //! R-L-01, R-L-05 a R-L-07).
 //!
 //! Leituras somente leitura (inicialização e sinais da sessão) e a passada de limpeza do

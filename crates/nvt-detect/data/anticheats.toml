@@ -1,4 +1,4 @@
-# Indícios de anticheat (dados, não código) — ver docs/pesquisa/deteccao.md, seção 3.5.
+# Indícios de anticheat (dados, não código).
 #
 # Campos (todos opcionais, exceto nome/kernel):
 #   pastas            = nomes de pasta dentro da instalação do jogo (sem diferenciar maiúsculas)

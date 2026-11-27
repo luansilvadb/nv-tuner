@@ -1,4 +1,4 @@
-//! Medição de partidas (docs/spec/interface-e-saude.md §4.5, R-M), só em build de teste.
+//! Medição de partidas (R-M), só em build de teste.
 //!
 //! - [`nucleo`]: agregação pura de Presents (frametime, FPS, engasgo, 1% low, histograma,
 //!   amostras por segundo e resumo da partida), testável sem ETW.

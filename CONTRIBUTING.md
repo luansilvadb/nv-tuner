@@ -5,11 +5,12 @@ pull requests pequenos e focados são bem-vindos.
 
 ## Propor uma regra
 
-As regras ficam em [`regras/`](regras/) e o formato está em
-[`docs/regras.md`](docs/regras.md) (seção “Como contribuir com uma regra”).
+As regras ficam em [`regras/`](regras/). Antes de propor uma, leia
+[`regras/README.md`](regras/README.md) e os arquivos `regras/*.toml`.
 Resumo:
 
-1. **Formato.** Siga o esquema de `docs/regras.md`; settings novas entram em
+1. **Formato.** Siga o formato das regras existentes em `regras/*.toml`
+   (os campos estão descritos nos comentários do topo de `regras/jogos.toml` e `regras/settings.toml`); settings novas entram em
    `regras/settings.toml` com ID e valores de fonte verificável (NVAPI
    `NvApiDriverSettings.h` ou NVIDIA Profile Inspector).
 2. **Evidência medida.** `motivo` e `evidencia` são obrigatórios. Evidência
@@ -44,7 +45,7 @@ português do Brasil, com acentuação correta.
 ## Chave de assinatura
 
 A atualização automática só instala o que foi assinado com a chave Minisign do
-projeto (`docs/spec/atualizacao.md` §5.5, §6.2 e §11). A chave pública fica no
+projeto. A chave pública fica no
 repositório, em [`instalador/nv-tuner-minisign.pub`](instalador/nv-tuner-minisign.pub),
 e é embutida nos binários por `include_str!`; a secreta fica só no secret
 `NV_TUNER_MINISIGN_KEY` do Environment `release` e em backup offline.
@@ -141,7 +142,7 @@ quem tem versão anterior instala essa à mão uma vez (bootstrap).
   **reinstalar à mão em todas as máquinas**: não há caminho automático.
 - Vazamento: faça a rotação abaixo o quanto antes; não há revogação online.
 
-### Rotação (`docs/spec/atualizacao.md` §5.5)
+### Rotação
 
 1. Gere a chave nova offline (`gerar-chave` em outra pasta) e faça backup.
 2. Publique a versão **N** assinada pela chave **antiga** (secret ainda antigo),

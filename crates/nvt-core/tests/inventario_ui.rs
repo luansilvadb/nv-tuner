@@ -1,4 +1,4 @@
-//! R-UI-08 (docs/spec/interface-e-saude.md §4.1): o redesenho não pode perder função da
+//! R-UI-08: o redesenho não pode perder função da
 //! UI v0.2.0.
 //!
 //! Forma verificável: cada `Requisicao` que a UI v0.2.0 envia ao serviço (levantamento do

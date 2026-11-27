@@ -1,4 +1,4 @@
-//! Candidatos a exe principal (heurísticas de `docs/pesquisa/deteccao.md`, 3.1).
+//! Candidatos a exe principal (heurísticas).
 //!
 //! O cruzamento com o DRS (passo 2 do documento) é feito depois, na integração
 //! com `nvt-drs`; aqui ficam o metadado do launcher e as heurísticas locais.

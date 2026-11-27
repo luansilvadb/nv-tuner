@@ -125,7 +125,7 @@ pub struct Estado {
     pub autonomia_pausada: bool,
 }
 
-/// Estado da atualização automática (v6, `docs/spec/atualizacao.md` §10).
+/// Estado da atualização automática (v6).
 /// DTO próprio do protocolo, independente dos tipos do núcleo.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

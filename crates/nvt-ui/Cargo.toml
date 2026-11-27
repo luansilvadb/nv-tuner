@@ -14,7 +14,7 @@ nvt-ipc.workspace = true
 nvt-core.workspace = true
 nvt-drs.workspace = true
 nvt-engine.workspace = true
-# GPUI + gpui-component (ver docs/pesquisa/gpui-windows.md). Versão exata:
+# GPUI + gpui-component. Versão exata:
 # gpui-kit 0.11.0 fixa gpui-pre =0.3.14.
 gpui-kit = "=0.11.0"
 serde_json.workspace = true

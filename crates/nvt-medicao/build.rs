@@ -1,4 +1,4 @@
-//! Trava da feature `medicao-partidas` (docs/spec/interface-e-saude.md §8.4, item 1).
+//! Trava da feature `medicao-partidas`.
 //! O custo de FPS só vale medido em build otimizado, por isso o release não é bloqueado.
 
 include!("../../assets/trava-build-de-teste.rs");

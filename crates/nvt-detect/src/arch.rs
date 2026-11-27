@@ -187,7 +187,7 @@ fn nome_indica_gtx(gpu_name: &str) -> bool {
 
 /// Converte arquitetura/implementação/nome em fatos de hardware.
 ///
-/// Regras (ver `docs/pesquisa/deteccao.md`, seção 1):
+/// Regras:
 /// - `0x160` com TU116/TU117 ou nome "GTX": Turing sem Tensor Cores, sem DLSS;
 /// - `> 0x1B0`: herda da Blackwell, mas `mfg = false` e `avisar_usuario = true`;
 /// - IDs fora da tabela (pré-RTX, datacenter, buracos): "sem DLSS".

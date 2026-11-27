@@ -2,7 +2,7 @@
 //!
 //! Processo comum (sem administrador). Fala com o serviço pelo named pipe
 //! numa thread de fundo; sem serviço, entra no modo de visualização
-//! (cálculo local somente leitura). Telas e fluxo: `docs/ui.md`.
+//! (cálculo local somente leitura).
 //!
 //! Opções:
 //!

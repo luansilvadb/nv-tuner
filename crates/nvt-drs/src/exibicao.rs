@@ -6,7 +6,7 @@
 //! - `NvAPI_Disp_GetVRRInfo(displayId)` dá `bIsVRRPossible` e `bIsVRREnabled`.
 //!
 //! Não usa APIs Win32 de modo de vídeo: o serviço roda na sessão 0, sem área de trabalho
-//! interativa (`docs/spec/competitivo.md`, 6.4, F1-01, F1-02 e 11, item 18).
+//! interativa (F1-01, F1-02).
 //!
 //! [`ler_exibicao_principal`] nunca falha nem entra em pânico: qualquer erro vira `None`.
 //! A fonte é a trait [`FonteExibicao`], implementada por [`NvApi`] e por [`FonteFalsa`]

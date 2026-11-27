@@ -1,4 +1,4 @@
-//! Fase 3 no núcleo (L1-b de `docs/spec/fase3-plano.md`): tipos de destino
+//! Fase 3 no núcleo (L1-b): tipos de destino
 //! de jogo, catálogo `[[arquivo]]`/`[[regra]]` de `regras/jogos.toml`, avaliação
 //! das regras `config_jogo` (F3-02, D9) e F3-13 (DRS `limite_fps = off`).
 
