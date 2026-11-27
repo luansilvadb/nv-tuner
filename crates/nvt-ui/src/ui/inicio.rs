@@ -374,7 +374,7 @@ pub(super) fn resumo_jogos(
 fn icone(v: &Veredito) -> IconName {
     match v {
         Veredito::Otimizado | Veredito::NadaAFazer => IconName::CircleCheck,
-        Veredito::Melhorias { .. } | Veredito::Verificando => IconName::Info,
+        Veredito::Melhorias { .. } | Veredito::Verificando | Veredito::Iniciando => IconName::Info,
         Veredito::Piorou(_) => IconName::TriangleAlert,
         Veredito::Indisponivel(_) | Veredito::SemPlacaNvidia => IconName::CircleX,
         Veredito::AjustesDesligados => IconName::Undo2,
@@ -474,9 +474,10 @@ pub(super) enum TomVeredito {
 pub(super) fn tom(v: &Veredito) -> TomVeredito {
     match v {
         Veredito::Otimizado | Veredito::NadaAFazer => TomVeredito::Bom,
-        Veredito::Melhorias { .. } | Veredito::Verificando | Veredito::AjustesDesligados => {
-            TomVeredito::Destaque
-        }
+        Veredito::Melhorias { .. }
+        | Veredito::Verificando
+        | Veredito::Iniciando
+        | Veredito::AjustesDesligados => TomVeredito::Destaque,
         Veredito::Piorou(_) | Veredito::EsperandoJogo | Veredito::Indisponivel(_) => {
             TomVeredito::Atencao
         }
@@ -883,6 +884,37 @@ mod testes {
         assert!(!texto.frase.contains("services.msc"));
         let b = botoes(&veredito(&f, None), &f);
         assert!(!b.desfazer && !b.voltar);
+    }
+
+    #[test]
+    fn servico_iniciando_ou_sem_resposta_mostra_diagnostico_sem_acoes() {
+        for (f, titulo) in [
+            (
+                Fatos {
+                    servico_iniciando: true,
+                    ..pronto()
+                },
+                "Iniciando o nv-tuner…",
+            ),
+            (
+                Fatos {
+                    servico_sem_resposta: true,
+                    ..pronto()
+                },
+                "O nv-tuner não está respondendo",
+            ),
+        ] {
+            let v = veredito(&f, None);
+            assert_eq!(t::veredito(&v).titulo, titulo);
+            assert_eq!(
+                botoes(&v, &f),
+                Botoes {
+                    aplicar: None,
+                    desfazer: false,
+                    voltar: false
+                }
+            );
+        }
     }
 
     #[test]

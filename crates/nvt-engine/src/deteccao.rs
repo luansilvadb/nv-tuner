@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use nvt_core::{
     Api, Arquitetura, BaseJogos, Capabilities, EstadoVrr, GameFacts, IdJogo, JogoCurado, Versao,
 };
+use nvt_detect::facts::AnaliseAdiada;
 use nvt_detect::{
     ANTICHEAT_SO_DURANTE_JOGO, AnaliseJogo, ApiGrafica, Confianca, DetectedGame, FalhaScanner,
     FonteProcessos, GameTraits, ProcessosDoSistema, ServicosSistema,
@@ -192,6 +193,9 @@ pub struct ResultadoDeteccao {
     pub jogos: Vec<JogoEntrada>,
     /// Scanners que falharam e jogos sem exe principal.
     pub avisos: Vec<String>,
+    /// Jogos adiados apenas por esta ser a primeira passada com lista legível
+    /// e nenhum processo vigiado aberto.
+    pub adiadas_primeira_passada: Vec<String>,
     /// Processos vigiados em execução (exes dos jogos, processos protegidos
     /// da base e anticheats que só existem durante o jogo), na grafia vigiada.
     pub processos_em_execucao: Vec<String>,
@@ -244,6 +248,13 @@ fn adicionar_sem_repetir(lista: &mut Vec<String>, nome: &str) {
     }
 }
 
+fn aviso_exe_desconhecido(j: &DetectedGame) -> String {
+    format!(
+        "{}: análise adiada (exe desconhecido com jogo possivelmente aberto)",
+        j.nome
+    )
+}
+
 impl DetectorJogos {
     /// Detector sobre a base dada, sem memória.
     pub fn new(base: BaseJogos) -> Self {
@@ -281,6 +292,29 @@ impl DetectorJogos {
         servicos: &ServicosSistema,
         processos: &P,
     ) -> ResultadoDeteccao {
+        self.detectar_passada(jogos, falhas, servicos, processos, false)
+    }
+
+    /// Detecção local com uma nova passada quando o único motivo do
+    /// adiamento foi a primeira leitura da lista de processos.
+    pub fn detectar_jogos_local<P: FonteProcessos + ?Sized>(
+        &mut self,
+        jogos: &[DetectedGame],
+        falhas: &[FalhaScanner],
+        servicos: &ServicosSistema,
+        processos: &P,
+    ) -> ResultadoDeteccao {
+        self.detectar_passada(jogos, falhas, servicos, processos, true)
+    }
+
+    fn detectar_passada<P: FonteProcessos + ?Sized>(
+        &mut self,
+        jogos: &[DetectedGame],
+        falhas: &[FalhaScanner],
+        servicos: &ServicosSistema,
+        processos: &P,
+        local: bool,
+    ) -> ResultadoDeteccao {
         let mut avisos: Vec<String> = falhas
             .iter()
             .map(|f| format!("scanner {} falhou: {}", f.launcher, f.erro))
@@ -306,65 +340,133 @@ impl DetectorJogos {
                 adicionar_sem_repetir(&mut vigiados, &n.to_string_lossy());
             }
         }
-        // Falha fechada: sem a lista não se sabe o que está aberto, então
-        // nenhuma pasta é lida.
-        let (rodando, lista_ok) = match processos.ler() {
-            Ok(ps) => (nvt_detect::em_execucao(&ps, &vigiados), true),
-            Err(e) => {
-                avisos.push(format!(
-                    "{e}: pastas de jogos não lidas nesta varredura (fatos anteriores)"
-                ));
-                (Vec::new(), false)
-            }
-        };
-        // Jogo de exe desconhecido (sem exe anterior, sem exe da base pelo
-        // AppID, sem exe indicado) não é reconhecível entre os processos: só
-        // tem a pasta lida numa varredura com a lista lida, sem nenhum
-        // processo vigiado aberto e depois de uma varredura anterior.
-        let le_desconhecidos = lista_ok && rodando.is_empty() && self.ja_varreu;
-
         let mut saida = Vec::new();
         let mut novos = BTreeMap::new();
-        for (j, (chave, exes)) in jogos.iter().zip(conhecidos) {
-            let exe_desconhecido = exes.is_empty() && exe_indicado(j).is_none();
-            if !lista_ok || (exe_desconhecido && !le_desconhecidos) {
-                match self.entrada_sem_leitura(j, &chave, &exes) {
-                    Some(mut e) => {
-                        e.id_jogo = casar_na_base(&self.base, &e).map(|c| c.id.clone());
-                        novos.insert(chave, e.clone());
-                        saida.push(e);
-                    }
-                    None => avisos.push(format!(
-                        "{}: análise adiada (exe desconhecido com jogo possivelmente aberto)",
-                        j.nome
-                    )),
-                }
-                continue;
-            }
-            let entrada = match nvt_detect::analisar_jogo_se_fechado(j, servicos, &exes, &rodando) {
-                AnaliseJogo::Analisado(t) => match jogo_de_traits(j, &t) {
-                    Some(e) => e,
-                    None => {
-                        avisos.push(format!("{}: exe principal não encontrado", j.nome));
-                        continue;
-                    }
-                },
-                AnaliseJogo::EmExecucao { exes: abertos } => {
-                    self.entrada_em_execucao(j, &chave, &exes, &abertos)
+        let mut adiadas = Vec::new();
+        let mut encontrados = Vec::new();
+        let mut lista_processos_indisponivel = false;
+        let mut pendentes: Vec<_> = (0..jogos.len()).collect();
+
+        loop {
+            // Falha fechada: sem a lista não se sabe o que está aberto.
+            let lista = match processos.ler() {
+                Ok(ps) => Some(ps),
+                Err(e) => {
+                    lista_processos_indisponivel = true;
+                    avisos.push(format!(
+                        "{e}: pastas de jogos não lidas nesta varredura (fatos anteriores)"
+                    ));
+                    None
                 }
             };
-            let mut entrada = entrada;
-            entrada.id_jogo = casar_na_base(&self.base, &entrada).map(|c| c.id.clone());
-            novos.insert(chave, entrada.clone());
-            saida.push(entrada);
+            let rodando = lista
+                .as_ref()
+                .map_or_else(Vec::new, |ps| nvt_detect::em_execucao(ps, &vigiados));
+            for exe in &rodando {
+                adicionar_sem_repetir(&mut encontrados, exe);
+            }
+            // Só enumera jogos de exe desconhecido após uma lista legível
+            // anterior e quando nenhum processo vigiado está em execução.
+            let le_desconhecidos = rodando.is_empty() && self.ja_varreu;
+            for indice in pendentes {
+                let j = &jogos[indice];
+                let (chave, exes) = &conhecidos[indice];
+                let exe_desconhecido = exes.is_empty() && exe_indicado(j).is_none();
+                let analise = match &lista {
+                    Some(ps) if !exe_desconhecido || le_desconhecidos => {
+                        Some(nvt_detect::facts::analisar_com_lista_de_processos(
+                            j, servicos, exes, ps, processos, local,
+                        ))
+                    }
+                    Some(_) if rodando.is_empty() && !self.ja_varreu => {
+                        adiadas.push(indice);
+                        continue;
+                    }
+                    _ => None,
+                };
+                let entrada = match analise {
+                    Some(Ok(AnaliseJogo::Analisado(t))) => {
+                        let Some(e) = jogo_de_traits(j, &t) else {
+                            avisos.push(format!("{}: exe principal não encontrado", j.nome));
+                            continue;
+                        };
+                        e
+                    }
+                    Some(Ok(AnaliseJogo::EmExecucao { exes: abertos })) => {
+                        for exe in &abertos {
+                            adicionar_sem_repetir(&mut encontrados, exe);
+                        }
+                        let confirmados = nvt_detect::facts::jogo_em_execucao(j, exes, &abertos);
+                        if confirmados.is_empty() {
+                            // Um nome descoberto no disco basta para bloquear a leitura.
+                            // O snapshot não informa o caminho do processo.
+                            avisos.push(aviso_exe_desconhecido(j));
+                            let Some(entrada) = self.entrada_sem_leitura(j, chave, exes) else {
+                                continue;
+                            };
+                            entrada
+                        } else {
+                            self.entrada_em_execucao(j, chave, exes, &confirmados)
+                        }
+                    }
+                    Some(Err(AnaliseAdiada::ListagemIncompleta)) => {
+                        avisos.push(format!(
+                            "{}: análise adiada (listagem de arquivos incompleta)",
+                            j.nome
+                        ));
+                        continue;
+                    }
+                    Some(Err(AnaliseAdiada::ProcessosIndisponiveis(e))) => {
+                        lista_processos_indisponivel = true;
+                        avisos.push(format!("{}: análise adiada ({e})", j.nome));
+                        let Some(entrada) = self.entrada_sem_leitura(j, chave, exes) else {
+                            continue;
+                        };
+                        entrada
+                    }
+                    None => {
+                        let Some(entrada) = self.entrada_sem_leitura(j, chave, exes) else {
+                            avisos.push(aviso_exe_desconhecido(j));
+                            continue;
+                        };
+                        entrada
+                    }
+                };
+                let mut entrada = entrada;
+                entrada.id_jogo = casar_na_base(&self.base, &entrada).map(|c| c.id.clone());
+                novos.insert(chave.clone(), entrada.clone());
+                saida.push((indice, entrada));
+            }
+            self.ja_varreu |= lista.is_some();
+            if !local
+                || adiadas.is_empty()
+                || !encontrados.is_empty()
+                || lista_processos_indisponivel
+            {
+                break;
+            }
+            for (_, entrada) in &saida {
+                if !entrada.exe.is_empty() {
+                    adicionar_sem_repetir(&mut vigiados, &entrada.exe);
+                }
+            }
+            pendentes = std::mem::take(&mut adiadas);
+        }
+        for &indice in &adiadas {
+            avisos.push(aviso_exe_desconhecido(&jogos[indice]));
         }
         self.anteriores = novos;
-        self.ja_varreu |= lista_ok;
+        saida.sort_by_key(|(indice, _)| *indice);
         ResultadoDeteccao {
-            jogos: saida,
+            jogos: saida.into_iter().map(|(_, entrada)| entrada).collect(),
             avisos,
-            processos_em_execucao: rodando,
-            lista_processos_indisponivel: !lista_ok,
+            adiadas_primeira_passada: if encontrados.is_empty() {
+                adiadas.into_iter().map(|i| jogos[i].nome.clone()).collect()
+            } else {
+                Vec::new()
+            },
+            processos_em_execucao: encontrados,
+            lista_processos_indisponivel,
         }
     }
 
@@ -396,7 +498,11 @@ impl DetectorJogos {
     /// do jogo da base com o mesmo AppID.
     fn exes_conhecidos(&self, j: &DetectedGame) -> Vec<String> {
         let mut exes = Vec::new();
-        if let Some(a) = self.anteriores.get(&chave_cache(j)) {
+        if let Some(a) = self
+            .anteriores
+            .get(&chave_cache(j))
+            .filter(|a| !a.exe.is_empty())
+        {
             adicionar_sem_repetir(&mut exes, &a.exe);
         }
         if let Some(appid) = j.steam_appid() {
@@ -465,6 +571,25 @@ pub fn detectar_jogos_da_maquina() -> ResultadoDeteccao {
         .get_or_insert_with(DetectorJogos::embutido)
         .detectar(&ProcessosDoSistema)
 }
+
+/// Varre as bibliotecas no modo local, com nova passada quando o detector
+/// ainda não tinha uma lista legível de processos.
+pub fn detectar_jogos_da_maquina_local() -> ResultadoDeteccao {
+    let mut guarda = DETECTOR_LOCAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let rel = nvt_detect::varrer_bibliotecas();
+    guarda
+        .get_or_insert_with(DetectorJogos::embutido)
+        .detectar_jogos_local(
+            &rel.jogos,
+            &rel.falhas,
+            &ServicosSistema::ler(),
+            &ProcessosDoSistema,
+        )
+}
+
+static DETECTOR_LOCAL: Mutex<Option<DetectorJogos>> = Mutex::new(None);
 
 /// Varre as bibliotecas desta máquina (somente leitura). Devolve os jogos com
 /// exe principal e avisos (scanners que falharam, jogos sem exe). Jogos em

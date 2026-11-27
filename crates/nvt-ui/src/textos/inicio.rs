@@ -1,6 +1,6 @@
 //! Tela Início (§5.3): veredito, botões, jogos e saúde do PC.
 
-use crate::modelo::{TipoSinal, Veredito};
+use crate::modelo::{MotivoIndisponivel, TipoSinal, Veredito};
 
 /// Título e frase de apoio do veredito.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +14,10 @@ pub const TITULO: &str = "Início";
 // Vereditos fixos ----------------------------------------------------------
 pub const VERIFICANDO_TITULO: &str = "Verificando o PC…";
 pub const VERIFICANDO_FRASE: &str = "Isso leva só alguns segundos.";
+pub const INICIANDO_TITULO: &str = "Iniciando o nv-tuner…";
+pub const INICIANDO_FRASE: &str = "Isso leva só alguns instantes depois de ligar o PC.";
+pub const SEM_RESPOSTA_TITULO: &str = "O nv-tuner não está respondendo";
+pub const SEM_RESPOSTA_FRASE: &str = "Reinicie o PC. Se continuar assim, reinstale o nv-tuner.";
 pub const INDISPONIVEL_TITULO: &str = "O nv-tuner não está ativo neste PC";
 pub const INDISPONIVEL_FRASE: &str = "Reinstale o nv-tuner para que ele volte a cuidar do PC.";
 pub const SEM_PLACA_TITULO: &str = "Não encontramos uma placa de vídeo NVIDIA";
@@ -82,6 +86,10 @@ pub const LIMPEZA_CAMINHO: &str = "Para ligar: Configurações > Sistema > Armaz
 /// Todas as frases fixas da tela, para os testes de linguagem.
 pub const TODOS: &[&str] = &[
     TITULO,
+    INICIANDO_TITULO,
+    INICIANDO_FRASE,
+    SEM_RESPOSTA_TITULO,
+    SEM_RESPOSTA_FRASE,
     INDISPONIVEL_TITULO,
     INDISPONIVEL_FRASE,
     SEM_PLACA_TITULO,
@@ -180,6 +188,10 @@ pub(crate) fn motivo(sinal: TipoSinal) -> &'static str {
 pub fn veredito(v: &Veredito) -> TextoVeredito {
     let (titulo, frase): (String, String) = match v {
         Veredito::Verificando => (VERIFICANDO_TITULO.into(), VERIFICANDO_FRASE.into()),
+        Veredito::Iniciando => (INICIANDO_TITULO.into(), INICIANDO_FRASE.into()),
+        Veredito::Indisponivel(MotivoIndisponivel::ServicoSemResposta) => {
+            (SEM_RESPOSTA_TITULO.into(), SEM_RESPOSTA_FRASE.into())
+        }
         Veredito::Indisponivel(_) => (INDISPONIVEL_TITULO.into(), INDISPONIVEL_FRASE.into()),
         Veredito::SemPlacaNvidia => (SEM_PLACA_TITULO.into(), SEM_PLACA_FRASE.into()),
         Veredito::AjustesDesligados => (PAUSADO_TITULO.into(), PAUSADO_FRASE.into()),

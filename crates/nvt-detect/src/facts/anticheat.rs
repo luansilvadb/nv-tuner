@@ -68,6 +68,18 @@ pub fn detectar(
     exige_vanguard: bool,
     servicos: &ServicosSistema,
 ) -> Vec<FatoAnticheat> {
+    detectar_verificado(listagem, exige_vanguard, servicos, &mut || {
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|impossivel| match impossivel {})
+}
+
+pub(super) fn detectar_verificado<E>(
+    listagem: &Listagem,
+    exige_vanguard: bool,
+    servicos: &ServicosSistema,
+    verificar: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Vec<FatoAnticheat>, E> {
     let mut out = Vec::new();
     for e in &tabela().anticheat {
         let mut fortes = Vec::new();
@@ -104,6 +116,7 @@ pub fn detectar(
                 .iter()
                 .filter(|a| a.nome.eq_ignore_ascii_case(&dd.arquivo))
             {
+                verificar()?;
                 if let Ok(v) = pe::versao(&a.caminho) {
                     let texto = format!(
                         "{} {}",
@@ -151,7 +164,7 @@ pub fn detectar(
             evidencias,
         });
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ pub mod arquivos;
 pub mod exe;
 pub mod pe;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::model::DetectedGame;
@@ -193,30 +194,39 @@ fn api_por_vizinhos(
     None
 }
 
-fn dll_nvidia(listagem: &Listagem, nome: &str) -> Option<DllNvidia> {
+fn dll_nvidia<E>(
+    listagem: &Listagem,
+    nome: &str,
+    verificar: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Option<DllNvidia>, E> {
     listagem
         .arquivos
         .iter()
         .filter(|a| a.nome == nome)
-        .map(|a| DllNvidia {
-            caminho: a.caminho.clone(),
-            versao: pe::versao(&a.caminho).ok().and_then(|v| v.versao),
-        })
-        // Várias cópias: fica a de maior versão.
-        .max_by(|x, y| {
-            pe::comparar_versoes(
-                x.versao.as_deref().unwrap_or("0"),
-                y.versao.as_deref().unwrap_or("0"),
-            )
+        .try_fold(None, |melhor, a| {
+            verificar()?;
+            let dll = DllNvidia {
+                caminho: a.caminho.clone(),
+                versao: pe::versao(&a.caminho).ok().and_then(|v| v.versao),
+            };
+            Ok(melhor.into_iter().chain([dll]).max_by(|x, y| {
+                pe::comparar_versoes(
+                    x.versao.as_deref().unwrap_or("0"),
+                    y.versao.as_deref().unwrap_or("0"),
+                )
+            }))
         })
 }
 
-fn dlss(listagem: &Listagem) -> Fato<FatosDlss> {
+fn dlss<E>(
+    listagem: &Listagem,
+    verificar: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Fato<FatosDlss>, E> {
     let mut f = FatosDlss {
-        super_resolution: dll_nvidia(listagem, "nvngx_dlss.dll"),
-        ray_reconstruction: dll_nvidia(listagem, "nvngx_dlssd.dll"),
-        frame_generation: dll_nvidia(listagem, "nvngx_dlssg.dll"),
-        deep_dvc: dll_nvidia(listagem, "nvngx_deepdvc.dll"),
+        super_resolution: dll_nvidia(listagem, "nvngx_dlss.dll", verificar)?,
+        ray_reconstruction: dll_nvidia(listagem, "nvngx_dlssd.dll", verificar)?,
+        frame_generation: dll_nvidia(listagem, "nvngx_dlssg.dll", verificar)?,
+        deep_dvc: dll_nvidia(listagem, "nvngx_deepdvc.dll", verificar)?,
         ..Default::default()
     };
     for a in &listagem.arquivos {
@@ -231,7 +241,8 @@ fn dlss(listagem: &Listagem) -> Fato<FatosDlss> {
         }
     }
     f.streamline_modulos.sort();
-    f.streamline_versao = dll_nvidia(listagem, "sl.interposer.dll").and_then(|d| d.versao);
+    f.streamline_versao =
+        dll_nvidia(listagem, "sl.interposer.dll", verificar)?.and_then(|d| d.versao);
     let evid = match &f.super_resolution {
         Some(d) => format!(
             "nvngx_dlss.dll {}",
@@ -240,7 +251,7 @@ fn dlss(listagem: &Listagem) -> Fato<FatosDlss> {
         None => "nenhum nvngx_dlss.dll na instalação".into(),
     };
     // Ausência em disco é forte para DLSS (a DLL precisa ser distribuída com o jogo).
-    Fato::new(f, Confianca::Alta, evid)
+    Ok(Fato::new(f, Confianca::Alta, evid))
 }
 
 fn reflex(listagem: &Listagem) -> Fato<bool> {
@@ -350,12 +361,100 @@ pub fn analisar_se_fechado<S: AsRef<str>, T: AsRef<str>>(
     }
 }
 
+/// Motivo para adiar a análise protegida.
+#[derive(Debug)]
+pub enum AnaliseAdiada {
+    ListagemIncompleta,
+    ProcessosIndisponiveis(crate::ListaIndisponivel),
+}
+
+/// Usa a lista inicial para evitar tocar na pasta de um jogo conhecido em
+/// execução. Enumera metadados e renova a lista antes de abrir cada arquivo.
+pub fn analisar_com_lista_de_processos(
+    jogo: &DetectedGame,
+    servicos: &ServicosSistema,
+    exes_conhecidos: &[String],
+    processos: &[crate::Processo],
+    fonte: &(impl crate::FonteProcessos + ?Sized),
+    exigir_listagem_completa: bool,
+) -> Result<AnaliseJogo, AnaliseAdiada> {
+    let nomes: Vec<_> = processos.iter().map(|p| p.nome.as_str()).collect();
+    let exes = jogo_em_execucao(jogo, exes_conhecidos, &nomes);
+    if !exes.is_empty() {
+        return Ok(AnaliseJogo::EmExecucao { exes });
+    }
+
+    let listagem = if exigir_listagem_completa {
+        arquivos::listar_para_verificar_processos(jogo.pasta_instalacao())
+    } else {
+        arquivos::listar(jogo.pasta_instalacao())
+    };
+    let vigiados: HashSet<_> = exes_conhecidos_do_jogo(jogo, exes_conhecidos)
+        .into_iter()
+        .map(|n| n.to_lowercase())
+        .chain(
+            listagem
+                .arquivos
+                .iter()
+                .filter(|a| a.nome.ends_with(".exe"))
+                .map(|a| a.nome.clone()),
+        )
+        .collect();
+    let verificar = || {
+        let lista = fonte
+            .ler()
+            .map_err(|e| Interrupcao::Adiada(AnaliseAdiada::ProcessosIndisponiveis(e)))?;
+        let mut exes: Vec<_> = lista
+            .into_iter()
+            .map(|p| p.nome.to_lowercase())
+            .filter(|nome| vigiados.contains(nome))
+            .collect();
+        exes.sort_unstable();
+        exes.dedup();
+        if exes.is_empty() {
+            Ok(())
+        } else {
+            Err(Interrupcao::EmExecucao(exes))
+        }
+    };
+
+    let analisar = || {
+        verificar()?;
+        if exigir_listagem_completa && listagem.truncada {
+            return Err(Interrupcao::Adiada(AnaliseAdiada::ListagemIncompleta));
+        }
+        analisar_listagem_verificada(jogo, &listagem, servicos, verificar)
+    };
+    match analisar() {
+        Ok(t) => Ok(AnaliseJogo::Analisado(Box::new(t))),
+        Err(Interrupcao::EmExecucao(exes)) => Ok(AnaliseJogo::EmExecucao { exes }),
+        Err(Interrupcao::Adiada(motivo)) => Err(motivo),
+    }
+}
+
+enum Interrupcao {
+    EmExecucao(Vec<String>),
+    Adiada(AnaliseAdiada),
+}
+
 /// Igual a [`analisar`], a partir de uma listagem já feita.
 pub fn analisar_listagem(
     jogo: &DetectedGame,
     listagem: &Listagem,
     servicos: &ServicosSistema,
 ) -> GameTraits {
+    analisar_listagem_verificada(jogo, listagem, servicos, || {
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|impossivel| match impossivel {})
+}
+
+fn analisar_listagem_verificada<E>(
+    jogo: &DetectedGame,
+    listagem: &Listagem,
+    servicos: &ServicosSistema,
+    mut verificar: impl FnMut() -> Result<(), E>,
+) -> Result<GameTraits, E> {
     let candidatos = exe::candidatos(listagem, jogo.exe_indicado.as_deref());
     let principal = candidatos.first();
 
@@ -371,6 +470,7 @@ pub fn analisar_listagem(
                 .map(|(d, _)| d.to_string())
                 .unwrap_or_default();
         }
+        verificar()?;
         match pe::imports(&c.caminho) {
             Ok(imp) => {
                 let sistema = imp.dlls.iter().any(|d| {
@@ -391,17 +491,22 @@ pub fn analisar_listagem(
         .map(|(v, c, e)| Fato::new(Some(v), c, e))
         .unwrap_or_else(|| Fato::new(None, Confianca::Baixa, "nenhum indício de API"));
 
-    GameTraits {
+    Ok(GameTraits {
         exe_principal: principal.map(|c| c.caminho.clone()),
         candidatos_exe: candidatos,
         api,
         imports,
         imports_ofuscados: ofuscados,
-        dlss: dlss(listagem),
+        dlss: dlss(listagem, &mut verificar)?,
         reflex: reflex(listagem),
-        anticheats: anticheat::detectar(listagem, jogo.exige_vanguard, servicos),
+        anticheats: anticheat::detectar_verificado(
+            listagem,
+            jogo.exige_vanguard,
+            servicos,
+            &mut verificar,
+        )?,
         listagem_truncada: listagem.truncada,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -504,11 +609,16 @@ mod testes {
             ..Default::default()
         };
         assert!(reflex(&l).valor);
-        let d = dlss(&l).valor;
+        let d = dlss(&l, &mut || Ok::<_, ()>(())).unwrap().valor;
         assert!(d.presente());
         assert_eq!(d.streamline_modulos, vec!["interposer", "reflex"]);
         let vazio = Listagem::default();
         assert!(!reflex(&vazio).valor);
-        assert!(!dlss(&vazio).valor.presente());
+        assert!(
+            !dlss(&vazio, &mut || Ok::<_, ()>(()))
+                .unwrap()
+                .valor
+                .presente()
+        );
     }
 }

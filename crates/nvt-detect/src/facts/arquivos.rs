@@ -41,14 +41,32 @@ pub struct Listagem {
 }
 
 pub fn listar(raiz: &Path) -> Listagem {
+    listar_impl(raiz, false)
+}
+
+/// Lista metadados sem abrir o conteúdo dos arquivos. Falhas e limites de
+/// percurso impedem usar a listagem para descartar executáveis em execução.
+pub(super) fn listar_para_verificar_processos(raiz: &Path) -> Listagem {
+    listar_impl(raiz, true)
+}
+
+fn listar_impl(raiz: &Path, exigir_completa: bool) -> Listagem {
     let mut l = Listagem::default();
     let mut pilha: Vec<(PathBuf, String, usize)> = vec![(raiz.to_path_buf(), String::new(), 0)];
     while let Some((dir, rel, prof)) = pilha.pop() {
         let Ok(rd) = std::fs::read_dir(&dir) else {
+            l.truncada |= exigir_completa;
             continue;
         };
-        for e in rd.flatten() {
-            let Ok(ft) = e.file_type() else { continue };
+        for e in rd {
+            let Ok(e) = e else {
+                l.truncada |= exigir_completa;
+                continue;
+            };
+            let Ok(ft) = e.file_type() else {
+                l.truncada |= exigir_completa;
+                continue;
+            };
             let nome = e.file_name().to_string_lossy().to_lowercase();
             let rel_e = if rel.is_empty() {
                 nome.clone()
@@ -62,6 +80,8 @@ pub fn listar(raiz: &Path) -> Listagem {
                 l.pastas.push(rel_e.clone());
                 if prof + 1 < PROFUNDIDADE_MAX {
                     pilha.push((e.path(), rel_e, prof + 1));
+                } else {
+                    l.truncada |= exigir_completa;
                 }
             } else if ft.is_file() {
                 if l.arquivos.len() >= ARQUIVOS_MAX {

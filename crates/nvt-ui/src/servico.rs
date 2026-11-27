@@ -1,21 +1,31 @@
 //! Thread de fundo que conversa com o serviço (cliente IPC bloqueante) e,
-//! quando ele está ausente, monta o modo de visualização local.
+//! quando ele não responde, monta o modo de visualização local.
 //!
 //! A UI envia [`Comando`]s e recebe [`Evento`]s por canais; nada aqui roda
 //! na thread da janela.
 
+use std::io::{self, ErrorKind};
+use std::mem::size_of;
+use std::ptr::{null, null_mut};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use nvt_ipc::{ErroIpc, Requisicao, Resposta};
+use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SERVICE_DOES_NOT_EXIST};
+use windows_sys::Win32::System::Services::*;
+use windows_sys::Win32::System::SystemInformation::GetTickCount64;
 
 use crate::local;
-use crate::modelo::{Comando, Dados, Desfecho, Evento, grupos_do_plano, upgrade_detectado};
+use crate::modelo::{
+    Comando, Conexao, Dados, Desfecho, Evento, grupos_do_plano, upgrade_detectado,
+};
 use crate::textos;
 
 /// Intervalo entre tentativas de conexão no modo de visualização.
 const RECONEXAO: Duration = Duration::from_secs(3);
+const JANELA_BOOT: Duration = Duration::from_secs(300);
+const PRAZO_INICIANDO: Duration = Duration::from_secs(60);
 /// Intervalo de atualização automática com o serviço conectado.
 const ATUALIZACAO: Duration = Duration::from_secs(15);
 /// Entradas do histórico pedidas ao serviço.
@@ -47,11 +57,7 @@ pub fn iniciar(pipe: String) -> Canal {
 
 /// Falha ao falar com o serviço.
 enum Falha {
-    /// Serviço ausente (ou não confiável/incompatível): modo de visualização.
-    /// Com versão de protocolo diferente, traz a instrução de atualizar.
-    Ausente(Option<String>),
-    /// Erro de transporte com o serviço presente.
-    Comunicacao(String),
+    Ipc(ErroIpc),
     /// Erro de negócio (o serviço recusou).
     Recusa(String),
 }
@@ -64,13 +70,173 @@ fn saude_da_resposta(r: Resposta) -> Option<nvt_ipc::Saude> {
     }
 }
 
-fn falha_de(e: ErroIpc) -> Falha {
+fn mensagem_ipc(e: &ErroIpc) -> String {
     match e {
-        ErroIpc::ServicoIndisponivel | ErroIpc::ServidorNaoConfiavel => Falha::Ausente(None),
         ErroIpc::VersaoIncompativel { recebida, esperada } => {
-            Falha::Ausente(Some(textos::versao_incompativel(recebida, esperada)))
+            textos::versao_incompativel(*recebida, *esperada)
         }
-        outro => Falha::Comunicacao(textos::erro_comunicacao(&outro.to_string())),
+        ErroIpc::ServidorNaoConfiavel => {
+            textos::erro_comunicacao(&ErroIpc::ServicoIndisponivel.to_string())
+        }
+        outro => textos::erro_comunicacao(&outro.to_string()),
+    }
+}
+
+enum ConsultaScm {
+    Ausente,
+    Falhou,
+    Instalado {
+        estado: u32,
+        inicio: u32,
+        saida: u32,
+    },
+}
+
+/// Mantém a primeira observação elegível até o IPC voltar a responder.
+fn classificar(
+    falha: &Falha,
+    scm: ConsultaScm,
+    uptime: Duration,
+    primeira: Option<Instant>,
+    agora: Instant,
+) -> (Conexao, Option<Instant>) {
+    let ConsultaScm::Instalado {
+        estado,
+        inicio,
+        saida,
+    } = scm
+    else {
+        return (
+            if matches!(scm, ConsultaScm::Ausente) {
+                Conexao::Visualizacao
+            } else {
+                Conexao::SemResposta
+            },
+            primeira,
+        );
+    };
+    let recuperavel = match falha {
+        Falha::Ipc(ErroIpc::ServicoIndisponivel) => true,
+        Falha::Ipc(ErroIpc::Io(e)) => e.kind() == ErrorKind::TimedOut,
+        _ => false,
+    };
+    let subindo = matches!(estado, SERVICE_START_PENDING | SERVICE_RUNNING)
+        || (estado == SERVICE_STOPPED
+            && inicio == SERVICE_AUTO_START
+            && saida == 0
+            && uptime < JANELA_BOOT);
+    if recuperavel && subindo {
+        let primeira = primeira.unwrap_or(agora);
+        if agora.duration_since(primeira) < PRAZO_INICIANDO {
+            return (Conexao::Iniciando, Some(primeira));
+        }
+    }
+    (Conexao::SemResposta, primeira)
+}
+
+struct HandleScm(SC_HANDLE);
+
+impl Drop for HandleScm {
+    fn drop(&mut self) {
+        // SAFETY: o handle válido pertence a este objeto.
+        unsafe { CloseServiceHandle(self.0) };
+    }
+}
+
+fn consultar_scm() -> ConsultaScm {
+    // SAFETY: ponteiros nulos selecionam o SCM local e o banco padrão.
+    let scm = unsafe { OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT) };
+    if scm.is_null() {
+        return ConsultaScm::Falhou;
+    }
+    let scm = HandleScm(scm);
+    let nome: Vec<u16> = "nvt-service".encode_utf16().chain([0]).collect();
+    // SAFETY: handle válido e nome terminado em zero.
+    let servico = unsafe {
+        OpenServiceW(
+            scm.0,
+            nome.as_ptr(),
+            SERVICE_QUERY_STATUS | SERVICE_QUERY_CONFIG,
+        )
+    };
+    if servico.is_null() {
+        return if io::Error::last_os_error().raw_os_error()
+            == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32)
+        {
+            ConsultaScm::Ausente
+        } else {
+            ConsultaScm::Falhou
+        };
+    }
+    let servico = HandleScm(servico);
+    let mut status = SERVICE_STATUS_PROCESS::default();
+    let mut tamanho = 0;
+    // SAFETY: buffer gravável do tamanho e alinhamento da estrutura pedida.
+    if unsafe {
+        QueryServiceStatusEx(
+            servico.0,
+            SC_STATUS_PROCESS_INFO,
+            (&mut status as *mut SERVICE_STATUS_PROCESS).cast(),
+            size_of::<SERVICE_STATUS_PROCESS>() as u32,
+            &mut tamanho,
+        )
+    } == 0
+    {
+        return ConsultaScm::Falhou;
+    }
+    tamanho = 0;
+    // SAFETY: a chamada com buffer nulo obtém o tamanho necessário.
+    unsafe { QueryServiceConfigW(servico.0, null_mut(), 0, &mut tamanho) };
+    if io::Error::last_os_error().raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32)
+        || (tamanho as usize) < size_of::<QUERY_SERVICE_CONFIGW>()
+    {
+        return ConsultaScm::Falhou;
+    }
+    // A estrutura contém ponteiros, então o buffer precisa de alinhamento de palavra.
+    let mut buffer = vec![0usize; (tamanho as usize).div_ceil(size_of::<usize>())];
+    let config = buffer.as_mut_ptr().cast::<QUERY_SERVICE_CONFIGW>();
+    // SAFETY: buffer alinhado e gravável com pelo menos o tamanho informado.
+    if unsafe { QueryServiceConfigW(servico.0, config, tamanho, &mut tamanho) } == 0 {
+        return ConsultaScm::Falhou;
+    }
+    ConsultaScm::Instalado {
+        estado: status.dwCurrentState,
+        // SAFETY: a chamada bem-sucedida inicializou a estrutura no buffer.
+        inicio: unsafe { (*config).dwStartType },
+        saida: status.dwWin32ExitCode,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Espera {
+    Bloquear,
+    Aguardar(Duration),
+    Atualizar,
+}
+
+fn proxima_espera(
+    encerrado: bool,
+    servico: bool,
+    ultima_tentativa: Option<Instant>,
+    prazo_iniciando: Option<Instant>,
+    agora: Instant,
+) -> Espera {
+    if encerrado {
+        return Espera::Bloquear;
+    }
+    if servico {
+        return Espera::Aguardar(ATUALIZACAO);
+    }
+    let reconexao = ultima_tentativa.map_or(RECONEXAO, |t| {
+        (t + RECONEXAO).saturating_duration_since(agora)
+    });
+    let espera = prazo_iniciando.map_or(reconexao, |prazo| {
+        reconexao.min(prazo.saturating_duration_since(agora))
+    });
+    if espera.is_zero() {
+        Espera::Atualizar
+    } else {
+        Espera::Aguardar(espera)
     }
 }
 
@@ -78,6 +244,8 @@ struct Trabalhador {
     pipe: String,
     eventos: Sender<Evento>,
     servico: bool,
+    conexao_local: Conexao,
+    primeira_elegivel: Option<Instant>,
     ultima_tentativa: Option<Instant>,
     /// Último estado lido do serviço (para reconhecer a queda num upgrade).
     ultimo_estado: Option<nvt_ipc::Estado>,
@@ -94,6 +262,8 @@ impl Trabalhador {
             pipe,
             eventos,
             servico: false,
+            conexao_local: Conexao::Conectando,
+            primeira_elegivel: None,
             ultima_tentativa: None,
             ultimo_estado: None,
             encerrado: false,
@@ -110,7 +280,25 @@ impl Trabalhador {
     fn executar(mut self, comandos: &Receiver<Comando>) {
         self.atualizar(true);
         loop {
-            let espera = if self.servico { ATUALIZACAO } else { RECONEXAO };
+            let espera = match proxima_espera(
+                self.encerrado,
+                self.servico,
+                self.ultima_tentativa,
+                self.prazo_iniciando(),
+                Instant::now(),
+            ) {
+                Espera::Bloquear => {
+                    while let Ok(c) = comandos.recv() {
+                        self.tratar(c);
+                    }
+                    break;
+                }
+                Espera::Aguardar(espera) => espera,
+                Espera::Atualizar => {
+                    self.atualizar(false);
+                    continue;
+                }
+            };
             match comandos.recv_timeout(espera) {
                 Ok(c) => self.tratar(c),
                 Err(RecvTimeoutError::Timeout) => self.atualizar(false),
@@ -121,9 +309,19 @@ impl Trabalhador {
 
     /// Uma requisição numa conexão nova (o servidor atende em sequência).
     fn requisitar(&self, req: &Requisicao) -> Result<Resposta, Falha> {
-        let cfg = nvt_ipc::pipe::ConfigCliente::default();
-        let mut c = nvt_ipc::pipe::Cliente::conectar(&self.pipe, &cfg).map_err(falha_de)?;
-        match c.requisitar(req).map_err(falha_de)? {
+        let mut cfg = nvt_ipc::pipe::ConfigCliente::default();
+        if let Some(restante) = self.tempo_iniciando() {
+            // Conexão, envio e leitura dividem o tempo que resta.
+            let limite = restante / 3;
+            if limite.is_zero() {
+                return Err(Falha::Ipc(io::Error::from(ErrorKind::TimedOut).into()));
+            }
+            cfg.timeout_conexao = cfg.timeout_conexao.min(limite);
+            cfg.timeout_escrita = cfg.timeout_escrita.min(limite);
+            cfg.timeout_leitura = cfg.timeout_leitura.min(limite);
+        }
+        let mut c = nvt_ipc::pipe::Cliente::conectar(&self.pipe, &cfg).map_err(Falha::Ipc)?;
+        match c.requisitar(req).map_err(Falha::Ipc)? {
             Resposta::Erro { codigo, mensagem } => {
                 Err(Falha::Recusa(textos::erro_servico(codigo, &mensagem)))
             }
@@ -170,12 +368,39 @@ impl Trabalhador {
         })
     }
 
+    fn prazo_iniciando(&self) -> Option<Instant> {
+        self.primeira_elegivel
+            .filter(|_| self.conexao_local == Conexao::Iniciando)
+            .map(|t| t + PRAZO_INICIANDO)
+    }
+
+    fn tempo_iniciando(&self) -> Option<Duration> {
+        self.prazo_iniciando()
+            .map(|prazo| prazo.saturating_duration_since(Instant::now()))
+    }
+
+    fn diagnostico_local(&self, agora: Instant) -> Conexao {
+        if self.prazo_iniciando().is_some_and(|prazo| prazo <= agora) {
+            Conexao::SemResposta
+        } else {
+            self.conexao_local
+        }
+    }
+
+    fn mudar_conexao_local(&mut self, conexao: Conexao) {
+        if self.conexao_local != conexao {
+            self.conexao_local = conexao;
+            self.enviar(Evento::Conexao(conexao));
+        }
+    }
+
     /// Atualiza os dados. No modo de visualização, só tenta reconectar a
     /// cada [`RECONEXAO`]; o cálculo local é refeito apenas quando `forcar`.
     fn atualizar(&mut self, forcar: bool) {
         if self.encerrado {
             return;
         }
+        self.mudar_conexao_local(self.diagnostico_local(Instant::now()));
         if !self.servico
             && !forcar
             && self
@@ -184,30 +409,46 @@ impl Trabalhador {
         {
             return;
         }
-        self.ultima_tentativa = Some(Instant::now());
         let resultado = self.buscar();
+        self.ultima_tentativa = Some(Instant::now());
         if self.upgrade(&resultado) {
             self.encerrado = true;
             self.servico = false;
             self.enviar(Evento::Atualizado);
             return;
         }
-        if let Err(Falha::Ausente(m)) = &resultado {
-            self.enviar(Evento::Incompativel(m.clone()));
-        }
         match resultado {
             Ok(mut d) => {
                 d.saude = self.saude_atual(forcar);
+                self.primeira_elegivel = None;
+                self.conexao_local = Conexao::Conectando;
                 self.servico = true;
                 self.ultimo_estado = d.estado.clone();
                 self.enviar(Evento::Servico(d));
             }
-            Err(Falha::Ausente(_)) | Err(Falha::Comunicacao(_)) | Err(Falha::Recusa(_))
-                if !self.servico && !forcar =>
-            {
-                // Continua no modo de visualização; tenta de novo depois.
+            Err(falha) => {
+                let scm = match &falha {
+                    Falha::Ipc(e @ ErroIpc::VersaoIncompativel { .. }) => {
+                        self.enviar(Evento::Incompativel(Some(mensagem_ipc(e))));
+                        ConsultaScm::Falhou
+                    }
+                    Falha::Ipc(ErroIpc::ServicoIndisponivel | ErroIpc::ServidorNaoConfiavel) => {
+                        self.enviar(Evento::Incompativel(None));
+                        consultar_scm()
+                    }
+                    _ => consultar_scm(),
+                };
+                // SAFETY: a função não recebe argumentos nem acessa buffers.
+                let uptime = Duration::from_millis(unsafe { GetTickCount64() });
+                let (conexao, primeira) =
+                    classificar(&falha, scm, uptime, self.primeira_elegivel, Instant::now());
+                self.primeira_elegivel = primeira;
+                if self.servico || forcar {
+                    self.modo_visualizacao(conexao, local::calcular);
+                } else {
+                    self.mudar_conexao_local(conexao);
+                }
             }
-            Err(_) => self.modo_visualizacao(),
         }
     }
 
@@ -221,7 +462,7 @@ impl Trabalhador {
         match self.requisitar(&Requisicao::ObterSaude) {
             Ok(r) => self.saude = saude_da_resposta(r),
             Err(Falha::Recusa(_)) => self.saude = None,
-            Err(Falha::Ausente(_) | Falha::Comunicacao(_)) => {}
+            Err(Falha::Ipc(_)) => {}
         }
         self.saude_lida = Some(Instant::now());
         self.saude.clone()
@@ -237,8 +478,8 @@ impl Trabalhador {
                 .estado
                 .as_ref()
                 .is_some_and(|e| upgrade_detectado(None, Some(e), versao)),
-            Err(Falha::Ausente(Some(_))) if self.servico => true,
-            Err(Falha::Ausente(_) | Falha::Comunicacao(_)) if self.servico => {
+            Err(Falha::Ipc(ErroIpc::VersaoIncompativel { .. })) if self.servico => true,
+            Err(Falha::Ipc(_)) if self.servico => {
                 upgrade_detectado(self.ultimo_estado.as_ref(), None, versao)
             }
             Err(_) => false,
@@ -246,9 +487,34 @@ impl Trabalhador {
     }
 
     /// Calcula os dados localmente, somente leitura.
-    fn modo_visualizacao(&mut self) {
+    fn modo_visualizacao(
+        &mut self,
+        conexao: Conexao,
+        calcular: impl FnOnce() -> Result<Dados, String>,
+    ) {
         self.servico = false;
-        self.enviar(Evento::Visualizacao(local::calcular()));
+        self.mudar_conexao_local(conexao);
+        self.mudar_conexao_local(self.diagnostico_local(Instant::now()));
+        let dados = if let Some(prazo) = self.prazo_iniciando() {
+            // O diagnóstico precisa vencer mesmo com a leitura local em andamento.
+            thread::scope(|escopo| {
+                let (terminou, aguardar) = mpsc::channel::<()>();
+                let eventos = self.eventos.clone();
+                escopo.spawn(move || {
+                    let restante = prazo.saturating_duration_since(Instant::now());
+                    if aguardar.recv_timeout(restante) == Err(RecvTimeoutError::Timeout) {
+                        let _ = eventos.send(Evento::Conexao(Conexao::SemResposta));
+                    }
+                });
+                let dados = calcular();
+                drop(terminou);
+                dados
+            })
+        } else {
+            calcular()
+        };
+        self.conexao_local = self.diagnostico_local(Instant::now());
+        self.enviar(Evento::Visualizacao(self.conexao_local, dados));
     }
 
     fn tratar(&mut self, c: Comando) {
@@ -265,7 +531,7 @@ impl Trabalhador {
             }
             Comando::Reescanear if !self.servico => {
                 self.enviar(Evento::Ocupado(c.clone()));
-                self.modo_visualizacao();
+                self.modo_visualizacao(self.conexao_local, local::calcular);
                 self.concluir(c, Ok(Desfecho::Feito));
                 return;
             }
@@ -322,10 +588,8 @@ impl Trabalhador {
         self.enviar(Evento::Ocupado(c.clone()));
         let resultado = match self.requisitar(&req) {
             Ok(r) => Ok(Desfecho::da_resposta(&r)),
-            Err(Falha::Recusa(m)) | Err(Falha::Comunicacao(m)) => Err(m),
-            Err(Falha::Ausente(m)) => Err(m.unwrap_or_else(|| {
-                textos::erro_comunicacao(&ErroIpc::ServicoIndisponivel.to_string())
-            })),
+            Err(Falha::Recusa(m)) => Err(m),
+            Err(Falha::Ipc(e)) => Err(mensagem_ipc(&e)),
         };
         let reescaneou = matches!(c, Comando::Reescanear);
         if matches!(c, Comando::MarcarInicioVisto { .. }) {
@@ -436,9 +700,9 @@ pub fn executar_inicio(acao: AcaoInicio) -> Result<RespostaInicio, FalhaInicio> 
 }
 
 fn falha_inicio(e: ErroIpc) -> FalhaInicio {
-    match falha_de(e) {
-        Falha::Ausente(None) => FalhaInicio::SemServico,
-        Falha::Ausente(Some(m)) | Falha::Comunicacao(m) | Falha::Recusa(m) => FalhaInicio::Outra(m),
+    match e {
+        ErroIpc::ServicoIndisponivel | ErroIpc::ServidorNaoConfiavel => FalhaInicio::SemServico,
+        outro => FalhaInicio::Outra(mensagem_ipc(&outro)),
     }
 }
 
@@ -456,6 +720,248 @@ pub fn requisitar(req: &Requisicao) -> Result<Resposta, FalhaInicio> {
 mod testes_inicio {
     use super::*;
     use nvt_ipc::CodigoErro;
+
+    #[test]
+    fn estado_terminal_bloqueia_sem_sondar() {
+        let agora = Instant::now();
+        assert_eq!(
+            proxima_espera(true, false, Some(agora - RECONEXAO), Some(agora), agora),
+            Espera::Bloquear
+        );
+    }
+
+    #[test]
+    fn prazo_vencido_e_processado_uma_vez() {
+        let agora = Instant::now();
+        let (tx, rx) = mpsc::channel();
+        let mut trabalhador = Trabalhador::new(String::new(), tx);
+        trabalhador.conexao_local = Conexao::Iniciando;
+        trabalhador.primeira_elegivel = Some(agora - PRAZO_INICIANDO);
+        trabalhador.ultima_tentativa = Some(agora);
+        let espera = |t: &Trabalhador| {
+            proxima_espera(false, false, t.ultima_tentativa, t.prazo_iniciando(), agora)
+        };
+
+        assert_eq!(espera(&trabalhador), Espera::Atualizar);
+        trabalhador.atualizar(false);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Evento::Conexao(Conexao::SemResposta))
+        ));
+        assert_eq!(espera(&trabalhador), Espera::Aguardar(RECONEXAO));
+    }
+
+    #[test]
+    fn publica_queda_antes_de_calcular_dados_locais() {
+        let (tx, rx) = mpsc::channel();
+        let mut trabalhador = Trabalhador::new(String::new(), tx);
+        trabalhador.servico = true;
+        let mut ui = crate::modelo::EstadoUi::new(crate::modelo::Tela::VisaoGeral);
+        ui.aplicar(Evento::Servico(Dados::default()));
+        assert!(ui.pode_escrever());
+
+        trabalhador.modo_visualizacao(Conexao::SemResposta, || {
+            let evento = rx.try_recv().expect("diagnóstico antes do cálculo");
+            assert!(matches!(evento, Evento::Conexao(Conexao::SemResposta)));
+            ui.aplicar(evento);
+            assert!(!ui.pode_escrever());
+            Ok(Dados::default())
+        });
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Evento::Visualizacao(Conexao::SemResposta, Ok(_)))
+        ));
+    }
+
+    #[test]
+    fn calculo_local_longo_reavalia_prazo_e_reconecta_sem_espera() {
+        let inicio = Instant::now();
+        let fim = inicio + PRAZO_INICIANDO + RECONEXAO;
+        let (tx, _) = mpsc::channel();
+        let mut trabalhador = Trabalhador::new(String::new(), tx);
+        trabalhador.conexao_local = Conexao::Iniciando;
+        trabalhador.primeira_elegivel = Some(inicio);
+        trabalhador.ultima_tentativa = Some(inicio);
+
+        assert_eq!(trabalhador.diagnostico_local(inicio), Conexao::Iniciando);
+        trabalhador.conexao_local = trabalhador.diagnostico_local(fim);
+        assert_eq!(trabalhador.conexao_local, Conexao::SemResposta);
+        assert_eq!(
+            proxima_espera(
+                false,
+                false,
+                trabalhador.ultima_tentativa,
+                trabalhador.prazo_iniciando(),
+                fim,
+            ),
+            Espera::Atualizar
+        );
+    }
+
+    #[test]
+    fn diagnostico_do_scm_por_falha_e_prazo() {
+        let ausente = Falha::Ipc(ErroIpc::ServicoIndisponivel);
+        let timeout = Falha::Ipc(io::Error::from(ErrorKind::TimedOut).into());
+        let io = Falha::Ipc(io::Error::from(ErrorKind::PermissionDenied).into());
+        let inseguro = Falha::Ipc(ErroIpc::ServidorNaoConfiavel);
+        let recusado = Falha::Recusa(String::new());
+        let servico = |estado, inicio, saida| ConsultaScm::Instalado {
+            estado,
+            inicio,
+            saida,
+        };
+        let automatico = |estado| servico(estado, SERVICE_AUTO_START, 0);
+        let agora = Instant::now();
+        let antes_boot = JANELA_BOOT - Duration::from_millis(1);
+        let antes_prazo = PRAZO_INICIANDO - Duration::from_millis(1);
+        use Conexao::{Iniciando, SemResposta, Visualizacao};
+
+        for (nome, falha, scm, uptime, decorrido, esperado) in [
+            (
+                "ausência confirmada",
+                &ausente,
+                ConsultaScm::Ausente,
+                JANELA_BOOT,
+                None,
+                Visualizacao,
+            ),
+            (
+                "ausência com outro erro IPC",
+                &io,
+                ConsultaScm::Ausente,
+                JANELA_BOOT,
+                None,
+                Visualizacao,
+            ),
+            (
+                "consulta falhou",
+                &ausente,
+                ConsultaScm::Falhou,
+                antes_boot,
+                None,
+                SemResposta,
+            ),
+            (
+                "start pending",
+                &ausente,
+                automatico(SERVICE_START_PENDING),
+                JANELA_BOOT,
+                None,
+                Iniciando,
+            ),
+            (
+                "running com timeout",
+                &timeout,
+                automatico(SERVICE_RUNNING),
+                JANELA_BOOT,
+                None,
+                Iniciando,
+            ),
+            (
+                "parado automático antes de 300 s",
+                &ausente,
+                automatico(SERVICE_STOPPED),
+                antes_boot,
+                None,
+                Iniciando,
+            ),
+            (
+                "parado automático aos 300 s",
+                &ausente,
+                automatico(SERVICE_STOPPED),
+                JANELA_BOOT,
+                Some(antes_prazo),
+                SemResposta,
+            ),
+            (
+                "parado com erro",
+                &ausente,
+                servico(SERVICE_STOPPED, SERVICE_AUTO_START, 1),
+                antes_boot,
+                None,
+                SemResposta,
+            ),
+            (
+                "parado manual",
+                &ausente,
+                servico(SERVICE_STOPPED, SERVICE_DEMAND_START, 0),
+                antes_boot,
+                None,
+                SemResposta,
+            ),
+            (
+                "parado desabilitado",
+                &ausente,
+                servico(SERVICE_STOPPED, SERVICE_DISABLED, 0),
+                antes_boot,
+                None,
+                SemResposta,
+            ),
+            (
+                "stop pending",
+                &ausente,
+                automatico(SERVICE_STOP_PENDING),
+                antes_boot,
+                None,
+                SemResposta,
+            ),
+            (
+                "erro de E/S",
+                &io,
+                automatico(SERVICE_RUNNING),
+                antes_boot,
+                None,
+                SemResposta,
+            ),
+            (
+                "pipe não confiável",
+                &inseguro,
+                automatico(SERVICE_RUNNING),
+                antes_boot,
+                None,
+                SemResposta,
+            ),
+            (
+                "recusa do serviço",
+                &recusado,
+                automatico(SERVICE_RUNNING),
+                antes_boot,
+                None,
+                SemResposta,
+            ),
+            (
+                "antes de 60 s",
+                &ausente,
+                automatico(SERVICE_RUNNING),
+                JANELA_BOOT,
+                Some(antes_prazo),
+                Iniciando,
+            ),
+            (
+                "aos 60 s",
+                &ausente,
+                automatico(SERVICE_RUNNING),
+                JANELA_BOOT,
+                Some(PRAZO_INICIANDO),
+                SemResposta,
+            ),
+            (
+                "depois de 60 s",
+                &ausente,
+                automatico(SERVICE_RUNNING),
+                JANELA_BOOT,
+                Some(PRAZO_INICIANDO + RECONEXAO),
+                SemResposta,
+            ),
+        ] {
+            let primeira = decorrido.map(|d| agora - d);
+            let (conexao, observacao) = classificar(falha, scm, uptime, primeira, agora);
+            assert_eq!(conexao, esperado, "{nome}");
+            let observacao_esperada = primeira.or((esperado == Iniciando).then_some(agora));
+            assert_eq!(observacao, observacao_esperada, "{nome}");
+        }
+    }
 
     #[test]
     fn saude_so_de_resposta_valida() {

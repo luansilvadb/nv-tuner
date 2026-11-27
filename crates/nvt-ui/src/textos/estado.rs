@@ -6,6 +6,8 @@ use crate::modelo::LinhaEstado;
 
 pub const PROTOCOLO_INCOMPATIVEL: &str =
     "O nv-tuner foi atualizado. Feche esta janela e abra de novo.";
+pub const SERVICO_INICIANDO: &str = "Iniciando o nv-tuner… Mostrando só informações.";
+pub const SERVICO_SEM_RESPOSTA: &str = "O nv-tuner não está respondendo. Mostrando só informações.";
 pub const SERVICO_AUSENTE: &str = "O nv-tuner não está ativo neste PC. Mostrando só informações.";
 pub const ATUALIZACAO_CONCLUIDA: &str = "O nv-tuner foi atualizado.";
 pub const ATUALIZACAO_PENDENTE: &str =
@@ -29,6 +31,8 @@ pub fn jogo_aberto(nome: &str) -> String {
 pub fn texto(linha: &LinhaEstado) -> String {
     match linha {
         LinhaEstado::ProtocoloIncompativel => PROTOCOLO_INCOMPATIVEL.to_owned(),
+        LinhaEstado::ServicoIniciando => SERVICO_INICIANDO.to_owned(),
+        LinhaEstado::ServicoSemResposta => SERVICO_SEM_RESPOSTA.to_owned(),
         LinhaEstado::ServicoAusente => SERVICO_AUSENTE.to_owned(),
         LinhaEstado::AtualizacaoConcluida => ATUALIZACAO_CONCLUIDA.to_owned(),
         LinhaEstado::JogoAberto { nome } => jogo_aberto(nome.as_deref().unwrap_or("")),

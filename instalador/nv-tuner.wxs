@@ -190,13 +190,12 @@
                       Vital="yes">
         <!-- Subcomando explícito 'service': entrada do SCM no nvt-service (sem subcomando faz o mesmo). -->
         <!--
-          Início automático atrasado (tabela MsiServiceConfig, Windows Installer 5.0).
-          O WiX emite o aviso WIX1149 (o SDK antigo diz que "pode não funcionar como
-          esperado"); a Util não oferece DelayedAutoStart, então fica o nativo.
-          Conferir com 'sc qc nvt-service' no teste em VM (START_TYPE AUTO_START (DELAYED)).
+          Início automático sem atraso: a interface abre no login e precisa encontrar o serviço já no ar.
+          Se o driver/NVAPI ainda estiver indisponível, o serviço tenta de novo a cada 60 s.
+          O atualizador aguarda de 5 a 15 min antes da primeira consulta.
         -->
 
-        <ServiceConfig DelayedAutoStart="yes" OnInstall="yes" OnReinstall="yes" />
+        <ServiceConfig DelayedAutoStart="no" OnInstall="yes" OnReinstall="yes" />
         <!--
           Recuperação em falha (custom action da WixToolset.Util, recomendada pelo
           WiX em vez de MsiServiceConfigFailureActions): reinicia na 1ª, 2ª e nas falhas subsequentes

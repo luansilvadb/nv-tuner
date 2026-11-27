@@ -48,6 +48,19 @@ pub fn ler_compartilhado(caminho: &Path) -> Result<Vec<u8>, ErroPe> {
     ler_com_limite(caminho, LIMITE_LEITURA, |_| {})
 }
 
+#[cfg(feature = "instrumentar-aberturas-pe")]
+thread_local! {
+    static ABERTURAS: std::cell::RefCell<Vec<std::path::PathBuf>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+/// Recolhe as aberturas de conteúdo efetuadas na thread do teste.
+#[cfg(feature = "instrumentar-aberturas-pe")]
+pub fn recolher_aberturas() -> Vec<std::path::PathBuf> {
+    ABERTURAS.with(|aberturas| aberturas.take())
+}
+
 /// Núcleo de [`ler_compartilhado`]; `durante` roda com o handle ainda aberto
 /// (usado nos testes de compartilhamento).
 fn ler_com_limite(
@@ -60,6 +73,8 @@ fn ler_com_limite(
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .open(caminho)
         .map_err(|e| ErroPe::Io(e.to_string()))?;
+    #[cfg(feature = "instrumentar-aberturas-pe")]
+    ABERTURAS.with(|aberturas| aberturas.borrow_mut().push(caminho.to_path_buf()));
     let tamanho = arquivo
         .metadata()
         .map_err(|e| ErroPe::Io(e.to_string()))?

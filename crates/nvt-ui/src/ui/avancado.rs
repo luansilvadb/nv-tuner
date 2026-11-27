@@ -227,9 +227,12 @@ impl Janela {
         );
 
         let status = match self.ui.conexao {
+            _ if self.ui.incompativel.is_some() => t::CONEXAO_VISUALIZACAO,
             Conexao::Conectando => t::CONEXAO_CONECTANDO,
             Conexao::Servico => t::CONEXAO_SERVICO,
             Conexao::Visualizacao => t::CONEXAO_VISUALIZACAO,
+            Conexao::Iniciando => t::estado::SERVICO_INICIANDO,
+            Conexao::SemResposta => t::estado::SERVICO_SEM_RESPOSTA,
         };
         let ultima = estado
             .and_then(|e| e.ultima_aplicacao.as_ref())

@@ -33,7 +33,8 @@ mod store;
 pub use aviso::{Aviso, CodigoAviso, NivelAviso};
 pub use deteccao::{
     DetectorJogos, JogoEntrada, ResultadoDeteccao, capacidades, capacidades_com_exibicao,
-    casar_na_base, detectar_jogos_da_maquina, fatos_do_jogo, jogo_de_traits, jogos_da_maquina,
+    casar_na_base, detectar_jogos_da_maquina, detectar_jogos_da_maquina_local, fatos_do_jogo,
+    jogo_de_traits, jogos_da_maquina,
 };
 pub use engine::{
     AcaoReversao, Aplicacao, ClasseDeriva, Deriva, Diff, Divergencia, Engine, JogoIgnorado,

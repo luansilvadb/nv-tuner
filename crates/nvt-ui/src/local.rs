@@ -1,8 +1,7 @@
 //! Modo de visualização: pipeline local **somente leitura**.
 //!
-//! Usado quando o serviço não está em execução (e, nos dois modos, para
-//! listar os jogos, que o protocolo não transporta). Três travas garantem que
-//! nada seja gravado:
+//! Usado quando a interface não consegue falar com o serviço. Três travas
+//! garantem que nada seja gravado:
 //!
 //! 1. só [`Engine::planejar`] e [`Engine::verificar_deriva`] são chamados —
 //!    nunca `aplicar`, `tratar_deriva`, `restaurar` nem `definir_preferencias`;
@@ -158,7 +157,7 @@ pub fn calcular() -> Result<Dados, String> {
     }
     let engine = Engine::new(SomenteLeitura(store), armazem)
         .map_err(|e| textos::erro_local(&e.to_string()))?;
-    let (entradas, _) = nvt_engine::jogos_da_maquina();
+    let entradas = nvt_engine::detectar_jogos_da_maquina_local().jogos;
     let diff = engine
         .planejar(&entradas)
         .map_err(|e| textos::erro_local(&e.to_string()))?;

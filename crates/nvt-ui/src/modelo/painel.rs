@@ -50,6 +50,8 @@ pub struct Fatos {
     pub protocolo_incompativel: bool,
     /// Serviço ausente (modo de visualização, somente leitura).
     pub servico_ausente: bool,
+    pub servico_iniciando: bool,
+    pub servico_sem_resposta: bool,
     /// Primeira resposta ainda não chegou.
     pub conectando: bool,
     /// Há placa NVIDIA (`None` = ainda não se sabe).
@@ -92,6 +94,8 @@ impl Fatos {
         Fatos {
             protocolo_incompativel: ui.incompativel.is_some(),
             servico_ausente: ui.conexao == Conexao::Visualizacao,
+            servico_iniciando: ui.conexao == Conexao::Iniciando,
+            servico_sem_resposta: ui.conexao == Conexao::SemResposta,
             conectando: ui.conexao == Conexao::Conectando,
             placa_nvidia: estado.map(|e| e.gpu.is_some()),
             ajustes_desligados: servico && estado.is_some_and(|e| e.autonomia_pausada),
@@ -114,6 +118,7 @@ impl Fatos {
 pub enum MotivoIndisponivel {
     ProtocoloIncompativel,
     ServicoAusente,
+    ServicoSemResposta,
 }
 
 /// O único veredito do Início (R-UI-02).
@@ -121,6 +126,7 @@ pub enum MotivoIndisponivel {
 pub enum Veredito {
     /// Primeira resposta ainda não chegou.
     Verificando,
+    Iniciando,
     Indisponivel(MotivoIndisponivel),
     SemPlacaNvidia,
     /// Botão "Voltar a ajustar" (envia `AplicarAgora`).
@@ -156,6 +162,12 @@ pub fn veredito(f: &Fatos, saude: Option<&Saude>) -> Veredito {
     if f.servico_ausente {
         return Veredito::Indisponivel(MotivoIndisponivel::ServicoAusente);
     }
+    if f.servico_iniciando {
+        return Veredito::Iniciando;
+    }
+    if f.servico_sem_resposta {
+        return Veredito::Indisponivel(MotivoIndisponivel::ServicoSemResposta);
+    }
     if f.conectando {
         return Veredito::Verificando;
     }
@@ -190,6 +202,8 @@ pub fn veredito(f: &Fatos, saude: Option<&Saude>) -> Veredito {
 pub enum LinhaEstado {
     ProtocoloIncompativel,
     ServicoAusente,
+    ServicoIniciando,
+    ServicoSemResposta,
     AtualizacaoConcluida,
     /// `None` = não se sabe qual jogo (lista de processos indisponível).
     JogoAberto {
@@ -206,12 +220,15 @@ pub fn linha_estado_visivel(f: &Fatos, v: Option<&Veredito>) -> Option<LinhaEsta
     let repetida = matches!(
         (&l, v),
         (
-            LinhaEstado::ServicoAusente | LinhaEstado::ProtocoloIncompativel,
+            LinhaEstado::ServicoAusente
+                | LinhaEstado::ServicoSemResposta
+                | LinhaEstado::ProtocoloIncompativel,
             Some(Veredito::Indisponivel(_)),
-        ) | (
-            LinhaEstado::JogoAberto { .. },
-            Some(Veredito::EsperandoJogo)
-        )
+        ) | (LinhaEstado::ServicoIniciando, Some(Veredito::Iniciando))
+            | (
+                LinhaEstado::JogoAberto { .. },
+                Some(Veredito::EsperandoJogo)
+            )
     );
     (!repetida).then_some(l)
 }
@@ -222,6 +239,10 @@ pub fn linha_estado(f: &Fatos) -> Option<LinhaEstado> {
         Some(LinhaEstado::ProtocoloIncompativel)
     } else if f.servico_ausente {
         Some(LinhaEstado::ServicoAusente)
+    } else if f.servico_iniciando {
+        Some(LinhaEstado::ServicoIniciando)
+    } else if f.servico_sem_resposta {
+        Some(LinhaEstado::ServicoSemResposta)
     } else if f.atualizacao_concluida {
         Some(LinhaEstado::AtualizacaoConcluida)
     } else if f.esperando_jogo {
@@ -384,9 +405,31 @@ mod testes {
                 Veredito::Indisponivel(M::ServicoAusente),
             ),
             (
+                "serviço iniciando vence sem placa",
+                Fatos {
+                    servico_iniciando: true,
+                    placa_nvidia: Some(false),
+                    ..pronto()
+                },
+                Some(&s),
+                Veredito::Iniciando,
+            ),
+            (
+                "serviço sem resposta vence sem placa",
+                Fatos {
+                    servico_sem_resposta: true,
+                    placa_nvidia: Some(false),
+                    ..pronto()
+                },
+                Some(&s),
+                Veredito::Indisponivel(M::ServicoSemResposta),
+            ),
+            (
                 "protocolo incompatível vence tudo",
                 Fatos {
                     protocolo_incompativel: true,
+                    servico_iniciando: true,
+                    servico_sem_resposta: true,
                     servico_ausente: true,
                     ..pronto()
                 },
@@ -476,6 +519,26 @@ mod testes {
                     ..tudo.clone()
                 },
                 Some(LinhaEstado::ServicoAusente),
+            ),
+            (
+                "iniciando",
+                Fatos {
+                    protocolo_incompativel: false,
+                    servico_ausente: false,
+                    servico_iniciando: true,
+                    ..tudo.clone()
+                },
+                Some(LinhaEstado::ServicoIniciando),
+            ),
+            (
+                "sem resposta",
+                Fatos {
+                    protocolo_incompativel: false,
+                    servico_ausente: false,
+                    servico_sem_resposta: true,
+                    ..tudo.clone()
+                },
+                Some(LinhaEstado::ServicoSemResposta),
             ),
             (
                 "atualizado",

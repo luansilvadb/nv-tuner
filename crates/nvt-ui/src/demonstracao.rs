@@ -29,7 +29,7 @@ use nvt_ipc::{
     Sinal, SituacaoInicio, TipoSinal, ValorSinal,
 };
 
-use crate::modelo::{Comando, Dados, Desfecho, Evento, grupos_do_plano};
+use crate::modelo::{Comando, Conexao, Dados, Desfecho, Evento, grupos_do_plano};
 use crate::servico::{AcaoInicio, Canal, FalhaInicio, RespostaInicio};
 
 /// Cenários de demonstração.
@@ -42,6 +42,8 @@ pub enum Cenario {
     Desligado,
     Atualizado,
     SemServico,
+    ServicoIniciando,
+    ServicoSemResposta,
     PrimeiraVez,
     /// Saúde em dia, programas novos na inicialização e limpeza em simulação.
     Saude,
@@ -59,6 +61,8 @@ impl Cenario {
         Cenario::Desligado,
         Cenario::Atualizado,
         Cenario::SemServico,
+        Cenario::ServicoIniciando,
+        Cenario::ServicoSemResposta,
         Cenario::PrimeiraVez,
         Cenario::Saude,
         #[cfg(feature = "medicao-partidas")]
@@ -75,6 +79,8 @@ impl Cenario {
             Cenario::Desligado => "desligado",
             Cenario::Atualizado => "atualizado",
             Cenario::SemServico => "sem-servico",
+            Cenario::ServicoIniciando => "servico-iniciando",
+            Cenario::ServicoSemResposta => "servico-sem-resposta",
             Cenario::PrimeiraVez => "primeira-vez",
             Cenario::Saude => "saude",
             #[cfg(feature = "medicao-partidas")]
@@ -141,9 +147,18 @@ pub fn iniciar(c: Cenario) -> Canal {
     }
 }
 
+fn conexao_local(c: Cenario) -> Option<Conexao> {
+    match c {
+        Cenario::SemServico => Some(Conexao::Visualizacao),
+        Cenario::ServicoIniciando => Some(Conexao::Iniciando),
+        Cenario::ServicoSemResposta => Some(Conexao::SemResposta),
+        _ => None,
+    }
+}
+
 fn evento_dados(c: Cenario, d: Dados) -> Evento {
-    if c == Cenario::SemServico {
-        Evento::Visualizacao(Ok(d))
+    if let Some(conexao) = conexao_local(c) {
+        Evento::Visualizacao(conexao, Ok(d))
     } else {
         Evento::Servico(d)
     }
@@ -163,7 +178,7 @@ fn executar(c: Cenario, comandos: &Receiver<Comando>, eventos: &Sender<Evento>) 
 
 /// Resposta simulada a um comando (pura; testada).
 pub fn responder(c: Cenario, d: &mut Dados, cmd: Comando) -> Vec<Evento> {
-    let resultado = if c == Cenario::SemServico && cmd.escreve() {
+    let resultado = if conexao_local(c).is_some() && cmd.escreve() {
         Err(crate::textos::SO_COM_SERVICO.to_owned())
     } else {
         if let Some(e) = d.estado.as_mut() {
@@ -202,7 +217,7 @@ pub fn responder(c: Cenario, d: &mut Dados, cmd: Comando) -> Vec<Evento> {
 
 /// Resultado simulado das ações do Início.
 pub fn executar_inicio(c: Cenario, acao: AcaoInicio) -> Result<RespostaInicio, FalhaInicio> {
-    if c == Cenario::SemServico {
+    if conexao_local(c).is_some() {
         return Err(FalhaInicio::SemServico);
     }
     let adiada = c == Cenario::JogoAberto;
@@ -780,7 +795,7 @@ pub fn dados(c: Cenario) -> Dados {
 #[cfg(test)]
 mod testes {
     use super::*;
-    use crate::modelo::{Conexao, EstadoUi, Fatos, Tela, Veredito, veredito};
+    use crate::modelo::{EstadoUi, Fatos, MotivoIndisponivel, Tela, Veredito, veredito};
 
     fn ui(c: Cenario) -> EstadoUi {
         let mut ui = EstadoUi::new(Tela::VisaoGeral);
@@ -841,14 +856,17 @@ mod testes {
                 Cenario::Piorou => matches!(v, Veredito::Piorou(TipoSinal::EspacoLivre)),
                 Cenario::JogoAberto => v == Veredito::EsperandoJogo,
                 Cenario::Desligado => v == Veredito::AjustesDesligados,
-                Cenario::SemServico => matches!(v, Veredito::Indisponivel(_)),
+                Cenario::SemServico => {
+                    v == Veredito::Indisponivel(MotivoIndisponivel::ServicoAusente)
+                }
+                Cenario::ServicoIniciando => v == Veredito::Iniciando,
+                Cenario::ServicoSemResposta => {
+                    v == Veredito::Indisponivel(MotivoIndisponivel::ServicoSemResposta)
+                }
             };
             assert!(ok, "{c:?}: {v:?}");
             assert_eq!(ui.dados.jogos.len(), 5);
-            assert_eq!(
-                ui.conexao == Conexao::Visualizacao,
-                c == Cenario::SemServico
-            );
+            assert_eq!(ui.conexao, conexao_local(c).unwrap_or(Conexao::Servico));
         }
         assert!(ui(Cenario::Atualizado).aviso_atualizado().is_some());
     }

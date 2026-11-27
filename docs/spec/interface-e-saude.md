@@ -114,10 +114,10 @@ roteiro de §10.
 | ID | Requisito | Teste |
 |---|---|---|
 | R-UI-01 | Navegação lateral com três itens visíveis no build normal: Início, Jogos, Avançado (ícones Lucide distintos e visíveis). No build de teste, um quarto item "Partidas". | Teste de modelo: `Tela::visiveis()` por cfg. |
-| R-UI-02 | Início mostra exatamente um veredito, calculado por função pura `veredito(&Estado, Option<&Saude>) -> Veredito`, com prioridade: indisponível (serviço ausente ou protocolo incompatível) > sem placa NVIDIA ("Não encontramos uma placa de vídeo NVIDIA") > pausado após Desfazer tudo ("Os ajustes estão desligados", botão "Voltar a ajustar", que envia `AplicarAgora`) > esperando o jogo ("Há mudanças esperando o jogo fechar") > piorou > melhorias > otimizado (inclui "nada a fazer": "Não há nada a ajustar neste PC agora."). Atualização e agente ausente ficam só na linha de estado. Sem saúde (`None`), "piorou" nunca é escolhido. | Tabela de casos em `modelo` cobrindo cada entrada. |
+| R-UI-02 | Início mostra exatamente um veredito, calculado por função pura `veredito(&Fatos, Option<&Saude>) -> Veredito`, com prioridade de protocolo incompatível > diagnóstico da conexão (iniciando, ausência confirmada ou sem resposta) > sem placa NVIDIA ("Não encontramos uma placa de vídeo NVIDIA") > pausado após Desfazer tudo ("Os ajustes estão desligados", botão "Voltar a ajustar", que envia `AplicarAgora`) > esperando o jogo ("Há mudanças esperando o jogo fechar") > piorou > melhorias > otimizado (inclui "nada a fazer": "Não há nada a ajustar neste PC agora."). Atualização e agente ausente ficam só na linha de estado. Sem saúde (`None`), "piorou" nunca é escolhido. | Tabela de casos em `modelo` cobrindo cada entrada. |
 | R-UI-03 | Nenhuma sigla na tela principal (Início, Jogos, boas-vindas). Lista de siglas proibidas (GPU, VRAM, DLSS, VRR, G-SYNC, FPS, BAR, DRS, HAGS, MPO, SID, IPC, ETW, MSI, CPU, RAM, SSD). No Avançado podem aparecer com o nome por extenso na primeira ocorrência. | Teste que varre as constantes de `textos/inicio.rs`, `textos/jogos.rs`, `textos/boas_vindas.rs`. Exceção: nome do jogo e marca "NVIDIA". |
 | R-UI-04 | Nenhum emoji em texto nem em recurso. | Teste: nenhum caractere fora de BMP nem nos blocos de símbolo (U+2600–U+27BF, U+1F000+) em `textos/`. |
-| R-UI-05 | Estados (serviço ausente, protocolo incompatível, jogo aberto, atualização, agente ausente) aparecem numa única **linha de estado** no topo do conteúdo, uma por vez, por prioridade, com no máximo uma ação. Nenhum alerta repetido de várias linhas. | Teste de modelo `linha_estado()`: prioridade e um único resultado. |
+| R-UI-05 | Estados (protocolo incompatível, serviço iniciando, ausente ou sem resposta, jogo aberto, atualização, agente ausente) aparecem numa única **linha de estado** no topo do conteúdo, uma por vez, por prioridade, com no máximo uma ação. Nenhum alerta repetido de várias linhas. | Teste de modelo `linha_estado()`: prioridade e um único resultado. |
 | R-UI-06 | Botão "Aplicar melhorias recomendadas" aparece só se houver experimental aplicável; desabilitado com motivo na própria linha (não só tooltip) com serviço ausente. Com jogo aberto continua habilitado e a resposta `adiada` vira "As melhorias serão aplicadas quando o jogo fechar." (R-AR-02). Depois do clique, o Início mostra "Aplicamos N melhorias. Para voltar atrás, use Desfazer tudo." Sem diálogo de confirmação: a ação é reversível. | Teste de modelo. Lab: clique aceita todas e aplica. |
 | R-UI-07 | "Desfazer tudo" pede confirmação em linguagem simples e envia `RestaurarOriginal`. | Teste de modelo do diálogo; o caminho IPC já é coberto. |
 | R-UI-08 | Tudo que a v0.2.0 faz continua acessível no Avançado: Visão técnica (sistema, capacidades, conformidade, deriva), Mudanças por perfil com Aceitar/Retirar e Destravar, Windows (o que o app fez, reverter, experimentais, diagnóstico), Arquivo do jogo e reversão por chave, Preferências técnicas, Histórico técnico, Restaurar original, Reescanear jogos, Verificar atualização. | Teste de inventário: cada `Requisicao` enviada pela UI v0.2.0 tem um ponto de chamada alcançável a partir de uma `Tela` (lista em teste). |
@@ -126,7 +126,7 @@ roteiro de §10.
 | R-UI-11 | Escala tipográfica fixa: título de página 28, veredito 20 semibold, título de cartão 15 semibold, corpo 14, legenda 12. Cartões usam `SettingPage`/`SettingGroup`/`SettingItem` do gpui-component. | Revisão visual por capturas (Lab-UI). |
 | R-UI-12 | Jogos mostra por jogo: nome, um status ("Otimizado", "Faça 2 ajustes no jogo", "Aguardando o jogo fechar") e detalhe ao clicar; nada de API, versão de DLSS, perfil ou anticheat na lista. O detalhe técnico tem link "Ver no Avançado". | Teste de modelo `status_jogo()`. |
 | R-UI-13 | Capturas de referência novas em `docs/ui-capturas/` para cada tela e cada estado da linha. | Lab-UI. |
-| R-UI-14 | Modo de visualização (sem serviço) continua somente leitura e passa a dizer, no Início: "O nv-tuner não está ativo neste PC" + "Reinstale o nv-tuner para que ele volte a cuidar do PC". Sem `services.msc`. | Teste de texto. |
+| R-UI-14 | Modo de visualização usa dados locais somente leitura e reconecta a cada 3 s. Após falha de IPC, a consulta ao SCM distingue serviço iniciando ("Iniciando o nv-tuner…" / "Isso leva só alguns instantes depois de ligar o PC.", com visual informativo), ausência confirmada ("O nv-tuner não está ativo neste PC" / "Reinstale o nv-tuner para que ele volte a cuidar do PC.") e serviço sem resposta ("O nv-tuner não está respondendo" / "Reinicie o PC. Se continuar assim, reinstale o nv-tuner."). Protocolo incompatível e detecção de upgrade têm precedência. Sem `services.msc`. | Teste de texto. |
 
 ### 4.2 Aplicar recomendadas (R-AR)
 
@@ -216,11 +216,23 @@ Linha de estado (uma por vez, por prioridade):
 | Prioridade | Estado | Texto | Ação |
 |---|---|---|---|
 | 1 | Protocolo incompatível | "O nv-tuner foi atualizado. Feche esta janela e abra de novo." | nenhuma |
+| 2 | Serviço iniciando | "Iniciando o nv-tuner… Mostrando só informações." | nenhuma |
 | 2 | Serviço ausente | "O nv-tuner não está ativo neste PC. Mostrando só informações." | nenhuma |
+| 2 | Serviço sem resposta | "O nv-tuner não está respondendo. Mostrando só informações." | nenhuma |
 | 3a | Atualização concluída (versão mudou desde a última abertura; some ao trocar de tela) | "O nv-tuner foi atualizado." | nenhuma |
 | 3 | Jogo aberto | "<Nome do jogo> está aberto. As mudanças esperam o jogo fechar." | nenhuma |
 | 4 | Atualização pronta ou instalando (falha não aparece aqui) | "Uma atualização do nv-tuner será instalada quando nenhum jogo estiver aberto." | nenhuma |
 | 5 | Agente ausente | "Parte dos ajustes do Windows está pausada até você entrar de novo no Windows." | nenhuma |
+
+Os diagnósticos de conexão da prioridade 2 são mutuamente exclusivos. A
+ausência exige `ERROR_SERVICE_DOES_NOT_EXIST` do SCM. Pipe indisponível ou
+timeout indica inicialização se o serviço estiver em `START_PENDING` ou
+`RUNNING`, ou se estiver `STOPPED` com início automático, código de saída
+Win32 zero e menos de 300 s desde o boot. A partir de 60 s da primeira
+observação elegível na sequência de falhas, ou quando a condição de
+inicialização deixar de valer, o diagnóstico passa a serviço sem resposta.
+Os demais casos, inclusive falhas na consulta ao SCM, também indicam serviço
+sem resposta. A reconexão bem-sucedida encerra a sequência de falhas.
 
 Códigos de falha (HTTP, assinatura, 3010) só aparecem em Avançado > Atualização.
 
@@ -251,7 +263,9 @@ Início
   "Há melhorias disponíveis" / "3 ajustes podem deixar seus jogos mais leves."
         [ Aplicar melhorias recomendadas ]  [ Desfazer tudo ]
   "Algo piorou: pouco espaço livre" / "Restam 12 GB no disco do Windows."
-  "O nv-tuner não está ativo" / "Reinstale o nv-tuner para que ele volte a cuidar do PC."
+  "O nv-tuner não está ativo neste PC" / "Reinstale o nv-tuner para que ele volte a cuidar do PC."
+  "Iniciando o nv-tuner…" / "Isso leva só alguns instantes depois de ligar o PC."
+  "O nv-tuner não está respondendo" / "Reinicie o PC. Se continuar assim, reinstale o nv-tuner."
   "Há mudanças esperando o jogo fechar" / "Nada é mexido enquanto você joga."
   "Os ajustes estão desligados" / "Você pediu para desfazer tudo."  [ Voltar a ajustar ]
   "Não encontramos uma placa de vídeo NVIDIA" / "O nv-tuner só ajusta PCs com placa NVIDIA."

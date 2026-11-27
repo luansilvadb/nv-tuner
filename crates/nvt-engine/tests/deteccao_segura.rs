@@ -4,10 +4,14 @@
 
 mod comum;
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use nvt_core::BaseJogos;
-use nvt_detect::{DetectedGame, Launcher, ProcessosFalsos, ServicosSistema};
+use nvt_detect::facts::pe::recolher_aberturas;
+use nvt_detect::{
+    DetectedGame, FonteProcessos, Launcher, Processo, ProcessosFalsos, ServicosSistema,
+};
 use nvt_engine::{
     Armazem, DetectorJogos, DriverFalso, Engine, ErroEngine, JogoEntrada, LISTA_INDISPONIVEL,
     Portao,
@@ -163,7 +167,259 @@ fn jogo_de_exe_desconhecido_nao_e_lido_na_primeira_varredura_mesmo_sem_processo(
         &ProcessosFalsos::com_nomes(&["explorer.exe"]),
     );
     assert!(r.jogos.is_empty());
+    assert_eq!(r.adiadas_primeira_passada, ["Jogo Indie"]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deteccao_local_encontra_jogo_fora_da_base_em_uma_chamada() {
+    let dir = preparar_pasta("local-fechado");
+    let mut det = DetectorJogos::embutido();
+    let r = det.detectar_jogos_local(
+        &[jogo_fora_da_base(&dir)],
+        &[],
+        &ServicosSistema::default(),
+        &ProcessosFalsos::com_nomes(&["explorer.exe"]),
+    );
+    assert_eq!(r.jogos.len(), 1, "{:?}", r.avisos);
+    assert_eq!(r.jogos[0].exe, "Indie.exe");
+    assert!(r.jogos[0].dlss.is_some());
+    assert!(r.avisos.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn deteccao_local_nao_le_arquivos_de_jogo_aberto_fora_da_base() {
+    struct JogoIniciadoEntrePassadas(Cell<bool>);
+
+    impl FonteProcessos for JogoIniciadoEntrePassadas {
+        fn processos(&self) -> Vec<Processo> {
+            if self.0.replace(true) {
+                vec![Processo::new("INDIE.EXE", 1, 0)]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    let dir = preparar_pasta("local-aberto");
+    let jogos = [jogo_fora_da_base(&dir)];
+    let servicos = ServicosSistema::default();
+    let mut det = DetectorJogos::embutido();
+    let r = det.detectar_jogos_local(
+        &jogos,
+        &[],
+        &servicos,
+        &JogoIniciadoEntrePassadas(Cell::new(false)),
+    );
+    assert!(r.jogos.is_empty(), "{:?}", r.jogos);
+    assert_eq!(r.processos_em_execucao, ["indie.exe"]);
+    assert!(recolher_aberturas().is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn deteccao_aborta_quando_o_jogo_abre_antes_de_ler_conteudo() {
+    struct JogoIniciadoNaLeitura {
+        chamadas: Cell<usize>,
+        inicia_na: usize,
+    }
+
+    impl FonteProcessos for JogoIniciadoNaLeitura {
+        fn processos(&self) -> Vec<Processo> {
+            let chamada = self.chamadas.get() + 1;
+            self.chamadas.set(chamada);
+            if chamada == self.inicia_na {
+                vec![Processo::new("INDIE.EXE", 1, 0)]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    let dir = preparar_pasta("local-corrida");
+    std::fs::write(dir.join("sl.interposer.dll"), b"MZ").unwrap();
+    std::fs::write(dir.join("coreinit.dll"), b"MZ").unwrap();
+    let jogos = [jogo_fora_da_base(&dir)];
+    let servicos = ServicosSistema::default();
+
+    let arquivos = [
+        "Indie.exe",
+        "nvngx_dlss.dll",
+        "sl.interposer.dll",
+        "coreinit.dll",
+    ]
+    .map(|nome| dir.join(nome));
+    // 1-2: passadas do motor. 3: pós-enumeração. 4-7: guardas de cada PE.
+    for inicia_na in 3_usize..=7 {
+        let fonte = JogoIniciadoNaLeitura {
+            chamadas: Cell::new(0),
+            inicia_na,
+        };
+        let r = DetectorJogos::embutido().detectar_jogos_local(&jogos, &[], &servicos, &fonte);
+        assert!(r.jogos.is_empty(), "captura {inicia_na}");
+        assert_eq!(r.processos_em_execucao, ["indie.exe"]);
+        assert_eq!(fonte.chamadas.get(), inicia_na, "verificou após abortar");
+        assert_eq!(
+            recolher_aberturas(),
+            arquivos[..inicia_na.saturating_sub(4)],
+            "abertura sem guarda na captura {inicia_na}"
+        );
+    }
+
+    let mut conhecido = jogos[0].clone();
+    conhecido.exe_indicado = Some(dir.join("Indie.exe"));
+    let fonte = JogoIniciadoNaLeitura {
+        chamadas: Cell::new(0),
+        inicia_na: 4, // primeira DLL no caminho do serviço
+    };
+    let r = DetectorJogos::embutido().detectar_jogos(&[conhecido], &[], &servicos, &fonte);
+    assert!(r.jogos[0].em_execucao);
+    assert!(r.jogos[0].dlss.is_none());
+    assert_eq!(fonte.chamadas.get(), 4);
+    assert_eq!(
+        recolher_aberturas(),
+        arquivos[..1],
+        "DLL aberta sem guarda no serviço"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn deteccao_local_omite_jogos_quando_listagem_truncada() {
+    let com_exe = preparar_pasta("local-truncado-parcial");
+    let sem_exe = preparar_pasta("local-truncado-sem-exe");
+    std::fs::remove_file(sem_exe.join("Indie.exe")).unwrap();
+    for dir in [&com_exe, &sem_exe] {
+        let limite = nvt_detect::facts::arquivos::PROFUNDIDADE_MAX;
+        let profunda = (0..limite).fold(dir.clone(), |pasta, _| pasta.join("d"));
+        std::fs::create_dir_all(profunda).unwrap();
+    }
+    let jogos = [jogo_fora_da_base(&com_exe), jogo_fora_da_base(&sem_exe)];
+    for fonte in [
+        ProcessosFalsos::com_nomes(&[]),
+        ProcessosFalsos::com_nomes(&["Indie.exe"]),
+    ] {
+        let r = DetectorJogos::embutido().detectar_jogos_local(
+            &jogos,
+            &[],
+            &ServicosSistema::default(),
+            &fonte,
+        );
+        assert!(r.jogos.is_empty(), "{:?}", r.jogos);
+        assert_eq!(
+            r.avisos
+                .iter()
+                .filter(|a| a.contains("análise adiada"))
+                .count(),
+            2
+        );
+        assert!(recolher_aberturas().is_empty());
+    }
+    for dir in [com_exe, sem_exe] {
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn servico_adia_leitura_sem_promover_processo_de_nome_nao_confirmado() {
+    let dir = preparar_pasta("servico-homonimo");
+    std::fs::write(dir.join("Helper.exe"), b"MZ").unwrap();
+    let mut jogo = jogo_fora_da_base(&dir);
+    let servicos = ServicosSistema::default();
+    let fonte = ProcessosFalsos::com_nomes(&["Helper.exe"]);
+
+    let mut det = DetectorJogos::embutido();
+    det.detectar_jogos(std::slice::from_ref(&jogo), &[], &servicos, &fonte);
+    let r = det.detectar_jogos(std::slice::from_ref(&jogo), &[], &servicos, &fonte);
+    assert!(r.jogos.is_empty());
+    assert_eq!(r.processos_em_execucao, ["helper.exe"]);
+    assert!(recolher_aberturas().is_empty());
+
+    jogo.exe_indicado = Some(dir.join("Indie.exe"));
+    let r = det.detectar_jogos(&[jogo], &[], &servicos, &fonte);
+    assert_eq!(r.jogos.len(), 1);
+    assert_eq!(r.jogos[0].exe, "Indie.exe");
+    assert!(!r.jogos[0].em_execucao);
+    assert!(recolher_aberturas().is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn deteccao_local_repete_apenas_jogos_adiados() {
+    #[derive(Default)]
+    struct RemoverDllNaPassadaSeguinte {
+        chamadas: Cell<usize>,
+        remover: Option<(usize, PathBuf)>,
+    }
+
+    impl FonteProcessos for RemoverDllNaPassadaSeguinte {
+        fn processos(&self) -> Vec<Processo> {
+            let chamada = self.chamadas.get() + 1;
+            self.chamadas.set(chamada);
+            if let Some((quando, dll)) = &self.remover
+                && chamada == *quando
+            {
+                std::fs::remove_file(dll).unwrap();
+            }
+            Vec::new()
+        }
+    }
+
+    let pasta_conhecida = preparar_pasta("local-sem-repetir-conhecido");
+    let pasta_adiada = preparar_pasta("local-sem-repetir-adiado");
+    let mut conhecido = DetectedGame::new(Launcher::Steam, "Conhecido", &pasta_conhecida);
+    conhecido.exe_indicado = Some(pasta_conhecida.join("Indie.exe"));
+    let servicos = ServicosSistema::default();
+    let contagem = RemoverDllNaPassadaSeguinte::default();
+    let primeira = DetectorJogos::embutido().detectar_jogos_local(
+        std::slice::from_ref(&conhecido),
+        &[],
+        &servicos,
+        &contagem,
+    );
+    assert!(primeira.jogos[0].dlss.is_some());
+
+    let dll = pasta_conhecida.join("nvngx_dlss.dll");
+    let fonte = RemoverDllNaPassadaSeguinte {
+        chamadas: Cell::new(0),
+        remover: Some((contagem.chamadas.get() + 1, dll.clone())),
+    };
+    let r = DetectorJogos::embutido().detectar_jogos_local(
+        &[conhecido, jogo_fora_da_base(&pasta_adiada)],
+        &[],
+        &servicos,
+        &fonte,
+    );
+    assert!(!dll.exists(), "a segunda passada não ocorreu");
+    assert_eq!(r.jogos.len(), 2, "{:?}", r.avisos);
+    assert_eq!(r.jogos[0], primeira.jogos[0]);
+    assert!(r.jogos[1].dlss.is_some());
+    assert!(r.avisos.is_empty());
+
+    std::fs::remove_dir_all(pasta_conhecida).unwrap();
+    std::fs::remove_dir_all(pasta_adiada).unwrap();
+}
+
+#[test]
+fn deteccao_local_mantem_adiamento_quando_nao_pode_verificar_processos() {
+    let dir = preparar_pasta("local-adiado");
+    for processos in [
+        ProcessosFalsos::falhando(),
+        ProcessosFalsos::com_nomes(&["cs2.exe"]),
+    ] {
+        let mut det = DetectorJogos::embutido();
+        let r = det.detectar_jogos_local(
+            &[jogo_fora_da_base(&dir)],
+            &[],
+            &ServicosSistema::default(),
+            &processos,
+        );
+        assert!(r.jogos.is_empty());
+        assert!(r.adiadas_primeira_passada.is_empty());
+        assert!(r.avisos.iter().any(|a| a.contains("análise adiada")));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 // ── A7 (§7.8 item 7) ────────────────────────────────────────────────────────

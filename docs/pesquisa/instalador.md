@@ -1,7 +1,7 @@
 # Instalador MSI — spike
 
 Pesquisa e protótipo de 2026-11-25. Objetivo: validar que um MSI instala `nvt-ui.exe`
-(sem admin no uso) e `nvt-service.exe` (serviço LocalSystem, início automático atrasado),
+(sem admin no uso) e `nvt-service.exe` (serviço LocalSystem, início automático sem atraso),
 cria o atalho no Menu Iniciar e `%ProgramData%\nv-tuner` com ACL própria, e para/remove o
 serviço na desinstalação. **O MSI foi gerado e validado (ICE), mas não foi executado.**
 
@@ -68,7 +68,7 @@ só aceita `major.minor.build`). Saída: `target\dist\nv-tuner-<versão>-x64.msi
   `AVISOS-DE-TERCEIROS.txt`, `Apache-2.0.txt`.
 - **Serviço** `nvt-service` (nome exibido "nv-tuner (serviço)", com descrição): `ownProcess`, `auto`,
   conta LocalSystem, `Vital`, argumento `service` (entrada explícita do SCM).
-  - Início automático **atrasado**: tabela `MsiServiceConfig` (ConfigType 3). O WiX emite o
+  - Início automático **sem atraso**: tabela `MsiServiceConfig` (ConfigType 3). O WiX emite o
     aviso WIX1149 ("pode não funcionar como esperado", herdado do SDK antigo); a Util não
     oferece DelayedAutoStart. Conferir com `sc qc nvt-service` no teste em VM.
   - **Recuperação em falha** via `util:ServiceConfig` (custom action `Wix4SchedServiceConfig`):
@@ -103,7 +103,7 @@ só aceita `major.minor.build`). Saída: `target\dist\nv-tuner-<versão>-x64.msi
 - `wix build` OK (único aviso: WIX1149, explicado acima); `wix msi validate` (ICE) sem erros nem avisos.
 - MSI de 811 008 bytes com os binários placeholder (`cargo build --release -p nvt-service -p nvt-ui`,
   compilados antes de surgir `crates/nvt-engine` sem alvo, que hoje quebra o workspace).
-- Tabelas conferidas no MSI (leitura via `WindowsInstaller.Installer`, sem instalar):
+- Tabelas conferidas no MSI original do protótipo (leitura via `WindowsInstaller.Installer`, sem instalar):
   `ServiceInstall`, `ServiceControl`, `MsiServiceConfig` (`nvt-service | 5 | 3 | 1`),
   `Wix4ServiceConfig` (`restart|restart|none`, 1 dia, 5 s), `MsiLockPermissionsEx` (SDDL acima),
   `Shortcut`, `LaunchCondition`, CA `RestaurarPerfilOriginal` (seq. 1899, antes de `StopServices` 1900).
@@ -118,9 +118,11 @@ só aceita `major.minor.build`). Saída: `target\dist\nv-tuner-<versão>-x64.msi
 2. Decidir o padrão de `RESTAURAR_PERFIL` (ou criar um diálogo de desinstalação perguntando;
    a desinstalação pelo "Aplicativos instalados" não passa propriedades, então o padrão vale para
    quase todos os usuários).
-3. Testar em VM descartável: instalação, `sc qc`/`sc qfailure nvt-service`, `icacls
-   %ProgramData%\nv-tuner`, atalho, upgrade (versão maior), downgrade bloqueado, desinstalação
-   com e sem `RESTAURAR_PERFIL=1`, `msiexec /l*v` dos logs.
+3. Conferir a linha `nvt-service | 5 | 3 | 0` na tabela `MsiServiceConfig` do novo MSI via
+   `WindowsInstaller.Installer` em modo somente leitura. Em VM descartável, conferir que
+   `sc qc nvt-service` mostra `AUTO_START` sem `(DELAYED)` na instalação limpa e no upgrade por cima
+   (versão maior). Verificar também `sc qfailure nvt-service`, `icacls %ProgramData%\nv-tuner`, atalho,
+   downgrade bloqueado, desinstalação com e sem `RESTAURAR_PERFIL=1` e logs com `msiexec /l*v`.
 4. Ícone (`Icon` + `ARPPRODUCTICON`) e `ARPURLINFOABOUT` quando houver repositório público.
 5. Avisos de terceiros: gerar a lista das crates transitivas (`cargo about`/`cargo deny`) e
    reconferir anos de copyright e arquivos NOTICE de Zed/gpui-component antes do primeiro release.

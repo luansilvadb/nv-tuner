@@ -10,6 +10,8 @@ use crate::modelo::{LinhaEstado, MotivoIndisponivel, StatusJogo, TipoSinal, Vere
 fn casos_veredito() -> Vec<Veredito> {
     let mut v = vec![
         Veredito::Verificando,
+        Veredito::Iniciando,
+        Veredito::Indisponivel(MotivoIndisponivel::ServicoSemResposta),
         Veredito::Indisponivel(MotivoIndisponivel::ProtocoloIncompativel),
         Veredito::Indisponivel(MotivoIndisponivel::ServicoAusente),
         Veredito::SemPlacaNvidia,
@@ -46,14 +48,17 @@ fn variante_veredito(v: &Veredito) -> usize {
         Veredito::Melhorias { .. } => 6,
         Veredito::Otimizado => 7,
         Veredito::NadaAFazer => 8,
+        Veredito::Iniciando => 9,
     }
 }
-const VARIANTES_VEREDITO: usize = 9;
+const VARIANTES_VEREDITO: usize = 10;
 
 fn casos_linha(jogo: Option<&str>) -> Vec<LinhaEstado> {
     vec![
         LinhaEstado::ProtocoloIncompativel,
         LinhaEstado::ServicoAusente,
+        LinhaEstado::ServicoIniciando,
+        LinhaEstado::ServicoSemResposta,
         LinhaEstado::AtualizacaoConcluida,
         LinhaEstado::JogoAberto {
             nome: jogo.map(str::to_owned),
@@ -71,9 +76,11 @@ fn variante_linha(l: &LinhaEstado) -> usize {
         LinhaEstado::JogoAberto { .. } => 3,
         LinhaEstado::AtualizacaoPendente => 4,
         LinhaEstado::AgenteAusente => 5,
+        LinhaEstado::ServicoIniciando => 6,
+        LinhaEstado::ServicoSemResposta => 7,
     }
 }
-const VARIANTES_LINHA: usize = 6;
+const VARIANTES_LINHA: usize = 8;
 
 fn casos_status(ajustes: usize) -> Vec<StatusJogo> {
     vec![
@@ -233,6 +240,27 @@ fn r_ui_14_visualizacao_sem_services_msc() {
         v.frase,
         "Reinstale o nv-tuner para que ele volte a cuidar do PC."
     );
+    for (veredito, linha, titulo, frase, status) in [
+        (
+            Veredito::Iniciando,
+            LinhaEstado::ServicoIniciando,
+            "Iniciando o nv-tuner…",
+            "Isso leva só alguns instantes depois de ligar o PC.",
+            "Iniciando o nv-tuner… Mostrando só informações.",
+        ),
+        (
+            Veredito::Indisponivel(MotivoIndisponivel::ServicoSemResposta),
+            LinhaEstado::ServicoSemResposta,
+            "O nv-tuner não está respondendo",
+            "Reinicie o PC. Se continuar assim, reinstale o nv-tuner.",
+            "O nv-tuner não está respondendo. Mostrando só informações.",
+        ),
+    ] {
+        let texto = inicio::veredito(&veredito);
+        assert_eq!(texto.titulo, titulo);
+        assert_eq!(texto.frase, frase);
+        assert_eq!(estado::texto(&linha), status);
+    }
     let t = estado::SERVICO_AUSENTE;
     assert!(!t.contains("services.msc"), "{t:?}");
     assert!(!t.contains('\n'), "aviso de várias linhas: {t:?}");

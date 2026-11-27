@@ -63,14 +63,18 @@ impl Tela {
 }
 
 /// Situação da conexão com o serviço.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Conexao {
     /// Primeira tentativa ainda em andamento.
     Conectando,
     /// Serviço respondendo.
     Servico,
-    /// Serviço ausente: dados calculados localmente, somente leitura.
+    /// Ausência confirmada: dados locais somente leitura.
     Visualizacao,
+    /// Serviço iniciando: dados locais somente leitura.
+    Iniciando,
+    /// Serviço sem resposta: dados locais somente leitura.
+    SemResposta,
 }
 
 /// Uma linha da tela de mudanças.
@@ -270,8 +274,10 @@ impl Desfecho {
 pub enum Evento {
     /// O serviço respondeu; dados completos.
     Servico(Dados),
-    /// Serviço ausente; dados locais somente leitura (ou erro ao calculá-los).
-    Visualizacao(Result<Dados, String>),
+    /// Diagnóstico e dados locais somente leitura (ou erro ao calculá-los).
+    Visualizacao(Conexao, Result<Dados, String>),
+    /// Mudança no diagnóstico com os mesmos dados locais.
+    Conexao(Conexao),
     /// Serviço com versão de protocolo diferente (mensagem com a instrução
     /// de atualizar) ou `None` quando deixa de valer.
     Incompativel(Option<String>),
@@ -539,11 +545,11 @@ impl EstadoUi {
                     self.rascunho = self.preferencias_atuais();
                 }
             }
-            Evento::Visualizacao(r) => {
+            Evento::Visualizacao(conexao, r) => {
                 let rascunho_limpo = !self.rascunho_alterado();
                 // Uma operação pendente não termina mais: o serviço caiu.
                 self.ocupado = None;
-                self.conexao = Conexao::Visualizacao;
+                self.conexao = conexao;
                 match r {
                     Ok(d) => {
                         self.dados = d;
@@ -558,6 +564,7 @@ impl EstadoUi {
                     self.rascunho = self.preferencias_atuais();
                 }
             }
+            Evento::Conexao(conexao) => self.conexao = conexao,
             Evento::Incompativel(m) => self.incompativel = m,
             Evento::Atualizado => {
                 self.atualizado = true;
@@ -894,7 +901,10 @@ mod testes {
     fn escrita_so_com_servico_ocioso() {
         let mut ui = EstadoUi::new(Tela::VisaoGeral);
         assert!(!ui.pode_escrever(), "conectando");
-        ui.aplicar(Evento::Visualizacao(Ok(Dados::default())));
+        ui.aplicar(Evento::Visualizacao(
+            Conexao::Visualizacao,
+            Ok(Dados::default()),
+        ));
         assert_eq!(ui.conexao, Conexao::Visualizacao);
         assert!(!ui.pode_escrever());
         assert!(!ui.pode_executar(&Comando::AplicarAgora));
@@ -917,11 +927,39 @@ mod testes {
     }
 
     #[test]
+    fn diagnostico_muda_sem_trocar_dados_locais_ate_reconectar() {
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        ui.aplicar(Evento::Visualizacao(
+            Conexao::Iniciando,
+            Err("sem driver".into()),
+        ));
+        for conexao in [
+            Conexao::Iniciando,
+            Conexao::SemResposta,
+            Conexao::Visualizacao,
+        ] {
+            ui.aplicar(Evento::Conexao(conexao));
+            assert_eq!(ui.conexao, conexao);
+            assert_eq!(ui.erro_local.as_deref(), Some("sem driver"));
+            assert!(!ui.pode_escrever());
+            assert!(!ui.pode_executar(&Comando::AplicarAgora));
+            assert!(ui.pode_executar(&Comando::Reescanear));
+        }
+        ui.aplicar(Evento::Servico(Dados::default()));
+        assert_eq!(ui.conexao, Conexao::Servico);
+        assert!(ui.erro_local.is_none());
+        assert!(ui.pode_escrever());
+    }
+
+    #[test]
     fn queda_do_servico_libera_operacao_pendente() {
         let mut ui = EstadoUi::new(Tela::VisaoGeral);
         ui.aplicar(Evento::Servico(Dados::default()));
         ui.aplicar(Evento::Ocupado(Comando::AplicarAgora));
-        ui.aplicar(Evento::Visualizacao(Err("sem driver".into())));
+        ui.aplicar(Evento::Visualizacao(
+            Conexao::Visualizacao,
+            Err("sem driver".into()),
+        ));
         assert_eq!(ui.ocupado, None);
         assert_eq!(ui.erro_local.as_deref(), Some("sem driver"));
         assert!(!ui.pode_escrever());
@@ -988,10 +1026,13 @@ mod testes {
     #[test]
     fn jogos_vem_do_servico_ou_do_calculo_local() {
         let mut ui = EstadoUi::new(Tela::Jogos);
-        ui.aplicar(Evento::Visualizacao(Ok(Dados {
-            jogos: vec![jogo("local", ResumoJogo::default())],
-            ..Default::default()
-        })));
+        ui.aplicar(Evento::Visualizacao(
+            Conexao::Visualizacao,
+            Ok(Dados {
+                jogos: vec![jogo("local", ResumoJogo::default())],
+                ..Default::default()
+            }),
+        ));
         assert_eq!(ui.jogos()[0].nome, "local");
         ui.aplicar(Evento::Servico(Dados {
             jogos: vec![
@@ -1168,7 +1209,10 @@ mod testes {
         assert!(m.contains("Atualize o nv-tuner"));
         assert!(textos::versao_incompativel(1, 2).contains("mais antigo"));
         ui.aplicar(Evento::Incompativel(Some(m.clone())));
-        ui.aplicar(Evento::Visualizacao(Ok(Dados::default())));
+        ui.aplicar(Evento::Visualizacao(
+            Conexao::Visualizacao,
+            Ok(Dados::default()),
+        ));
         assert_eq!(ui.incompativel.as_deref(), Some(m.as_str()));
         ui.aplicar(Evento::Servico(Dados::default()));
         assert_eq!(ui.incompativel, None, "serviço compatível limpa o aviso");
@@ -1757,7 +1801,10 @@ mod testes {
         };
         assert!(ui.pode_executar(&reverter));
         assert!(ui.pode_executar(&aceite));
-        ui.aplicar(Evento::Visualizacao(Err("sem driver".into())));
+        ui.aplicar(Evento::Visualizacao(
+            Conexao::Visualizacao,
+            Err("sem driver".into()),
+        ));
         assert_eq!(ui.dados, Dados::default());
         assert!(!ui.restauracao_usuario_pendente());
         assert!(!ui.pode_executar(&reverter));
