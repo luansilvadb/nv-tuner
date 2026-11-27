@@ -9,6 +9,10 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
+## [0.3.1] - 2026-11-26
+
+*Serviço pronto no boot e diagnóstico correto*
+
 ### Alterado
 
 - O serviço do nv-tuner inicia junto com o Windows, sem a espera de cerca de dois minutos. Vale após instalar o novo MSI, inclusive por cima da versão anterior.
@@ -125,7 +129,8 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - **Interface em GPUI** com 6 telas em português e restauração do estado original.
 - Instalador MSI.
 
-[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.0...HEAD
+[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.0.2...v0.1.0
