@@ -579,6 +579,7 @@ impl EstadoUi {
             }
             Evento::Concluido { comando, resultado } => {
                 self.ocupado = None;
+                let falhou = resultado.is_err();
                 self.mensagem = match resultado {
                     Ok(Desfecho::Feito)
                         if comando == Comando::RestaurarOriginal
@@ -598,7 +599,13 @@ impl EstadoUi {
                     Ok(Desfecho::Adiado(a)) => Some((TipoMensagem::Adiada, textos::adiamento(&a))),
                     Err(e) => Some((TipoMensagem::Erro, e)),
                 };
-                if matches!(comando, Comando::DefinirPreferencias(_)) {
+                // Com salvamento automático o usuário pode escolher de novo
+                // enquanto o envio anterior corre: essa escolha nova não pode
+                // ser apagada. Só volta ao estado do serviço se nada mudou
+                // desde o envio, ou se o envio falhou.
+                if let Comando::DefinirPreferencias(enviadas) = &comando
+                    && (falhou || self.rascunho == *enviadas)
+                {
                     self.rascunho = self.preferencias_atuais();
                 }
                 if self.atualizado {
@@ -1003,6 +1010,31 @@ mod testes {
         ui.aplicar(Evento::Concluido {
             comando: Comando::DefinirPreferencias(ui.rascunho.clone()),
             resultado: Ok(Desfecho::Feito),
+        });
+        assert!(!ui.rascunho_alterado());
+    }
+
+    #[test]
+    fn escolha_feita_durante_o_envio_nao_se_perde() {
+        let mut ui = EstadoUi::new(Tela::VisaoGeral);
+        let prefs = preferencias_padrao();
+        ui.aplicar(Evento::Servico(Dados {
+            estado: Some(estado(prefs.clone())),
+            ..Default::default()
+        }));
+        ui.rascunho.qualidade = Qualidade::Desempenho;
+        let enviadas = ui.rascunho.clone();
+        // Nova escolha antes da resposta do envio anterior.
+        ui.rascunho.qualidade = Qualidade::Qualidade;
+        ui.aplicar(Evento::Concluido {
+            comando: Comando::DefinirPreferencias(enviadas.clone()),
+            resultado: Ok(Desfecho::Feito),
+        });
+        assert_eq!(ui.rascunho.qualidade, Qualidade::Qualidade);
+        // Falha devolve ao estado do serviço.
+        ui.aplicar(Evento::Concluido {
+            comando: Comando::DefinirPreferencias(enviadas),
+            resultado: Err("falhou".into()),
         });
         assert!(!ui.rascunho_alterado());
     }

@@ -1,5 +1,5 @@
 //! Seção Início (spec `interface-e-saude.md` §5.3, lote L2): veredito único,
-//! botões de ação, resumo dos jogos e saúde do PC (só com dados).
+//! botões de ação e saúde do PC.
 //!
 //! O estado próprio da tela (boas-vindas vista, ajustes desligados, ação em
 //! andamento e o último resultado) fica num `Global` do aplicativo, para não
@@ -7,26 +7,26 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{ButtonVariant, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{
+    ActiveTheme, Disableable, FocusableExt, Icon, Sizable, StyledExt, WindowExt, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::estrutura::Janela;
-use super::estrutura::{Secao, estado_vazio, icone_destaque, superficie};
+use super::estrutura::{icone_destaque, superficie};
+use super::movimento::recolhivel;
 use crate::abrir::{self, Bloqueio, FalhaAbrir};
 use crate::demonstracao;
 use crate::local;
-use crate::modelo::{
-    Conexao, Fatos, MotivoIndisponivel, StatusJogo, Veredito, status_jogo, veredito,
-};
+use crate::modelo::{Conexao, Fatos, MotivoIndisponivel, Veredito, veredito};
 use crate::servico::{self, AcaoInicio, FalhaInicio, RespostaInicio};
 use crate::tema::{self, EstadoBotao as _};
 use crate::textos::inicio as t;
 use crate::textos::jogos as tj;
 use crate::textos::saude::{self as ts, SecaoSaude};
-
-/// Jogos mostrados no resumo; o resto fica em "Ver todos".
-const JOGOS_NO_RESUMO: usize = 5;
 
 // ---------------------------------------------------------------------------
 // Modelo da tela (puro)
@@ -43,6 +43,7 @@ pub(super) enum Tom {
 /// Estado próprio do Início.
 #[derive(Debug, Clone, Default)]
 pub(super) struct EstadoInicio {
+    saude_aberta: bool,
     /// `None` = ainda não lido do disco.
     pub boas_vindas_vista: Option<bool>,
     pub ocupado: Option<AcaoInicio>,
@@ -354,21 +355,6 @@ fn secao_saude(s: &nvt_ipc::Saude, janela: &Janela, cx: &mut Context<Janela>) ->
     div().child(caixa.child(titulo).child(lista))
 }
 
-/// Resumo de Seus jogos: até `max` linhas (nome, status) e quantos sobram.
-pub(super) fn resumo_jogos(
-    jogos: impl IntoIterator<Item = (String, StatusJogo)>,
-    max: usize,
-) -> (Vec<(String, String)>, usize) {
-    let todos: Vec<_> = jogos.into_iter().collect();
-    let resto = todos.len().saturating_sub(max);
-    let linhas = todos
-        .into_iter()
-        .take(max)
-        .map(|(nome, s)| (nome, tj::status(s)))
-        .collect();
-    (linhas, resto)
-}
-
 fn icone(v: &Veredito) -> IconName {
     match v {
         Veredito::Otimizado | Veredito::NadaAFazer => IconName::CircleCheck,
@@ -402,7 +388,19 @@ fn executar(acao: AcaoInicio, cx: &mut Context<Janela>) {
     cx.spawn(async move |this, cx| {
         let r = tarefa.await;
         let _ = this.update(cx, |janela, cx| {
-            let pausa = cx.default_global::<EstadoInicio>().concluir(acao, &r);
+            let estado = cx.default_global::<EstadoInicio>();
+            let pausa = estado.concluir(acao, &r);
+            if acao != AcaoInicio::AplicarRecomendadas
+                && let Some((tom, texto)) = estado.resultado.take()
+            {
+                let tipo = match tom {
+                    Tom::Sucesso => crate::modelo::TipoMensagem::Sucesso,
+                    Tom::Informacao => crate::modelo::TipoMensagem::Adiada,
+                    Tom::Erro => crate::modelo::TipoMensagem::Erro,
+                };
+                janela.ui.mensagem = Some((tipo, texto));
+                janela.agendar_fechamento_mensagem(cx);
+            }
             if let (Some(p), Some(e)) = (pausa, janela.ui.dados.estado.as_mut()) {
                 e.autonomia_pausada = p;
             }
@@ -435,10 +433,105 @@ fn abrir_confirmacao(window: &mut Window, cx: &mut Context<Janela>) {
             .ok_variant(ButtonVariant::Danger)
             .cancel_text(c.cancelar)
             .on_ok(move |_, _, cx| {
-                let _ = janela.update(cx, |_, cx| executar(c.acao, cx));
+                let _ = janela.update(cx, |_, cx| {
+                    executar(c.acao, cx);
+                });
                 true
             })
     });
+}
+
+/// Liga/desliga da otimização (Material 3: estado binário é um switch, não
+/// um botão que muda de rótulo). Desligar pede a confirmação de "Desfazer
+/// tudo" (R-UI-07); ligar é imediato. `None` quando não há o que ligar nem
+/// desligar (ex.: nada aplicado ainda).
+pub(super) fn controle_otimizacao(
+    janela: &Janela,
+    window: &mut Window,
+    cx: &mut Context<Janela>,
+) -> Option<AnyElement> {
+    let fatos = janela.fatos();
+    let veredito = veredito(&fatos, janela.ui.saude().as_ref());
+    let botoes = botoes(&veredito, &fatos);
+    let ocupado = cx.default_global::<EstadoInicio>().ocupado;
+    let ligando = ocupado == Some(AcaoInicio::VoltarAAjustar);
+    let desligando = ocupado == Some(AcaoInicio::DesfazerTudo);
+    if !(botoes.voltar || botoes.desfazer || ligando || desligando) {
+        return None;
+    }
+    // Durante a operação o switch já mostra o estado pedido.
+    let ligada = ligando || (botoes.desfazer && !botoes.voltar && !desligando);
+    let pendente = janela.ui.restauracao_usuario_pendente();
+    let tema_ = cx.theme().clone();
+    // Foco como no switch de sincronismo: sem o anel padrão (que aparece
+    // até após clique com o mouse), só um contorno discreto via teclado.
+    let foco = window
+        .use_keyed_state("foco-otimizacao", cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone();
+    let foco_visivel = window.last_input_was_keyboard() && foco.contains_focused(window, cx);
+    let switch = Switch::new("otimizacao-ativa")
+        .focus_ring(false)
+        .cursor_pointer()
+        .color(tema::cor(tema::ACAO_VIOLETA))
+        .accessibility_label(t::OTIMIZACAO_AUTOMATICA)
+        .checked(ligada)
+        .disabled(ocupado.is_some())
+        .on_click(cx.listener(|_, ligar: &bool, window, cx| {
+            if *ligar {
+                executar(AcaoInicio::VoltarAAjustar, cx);
+            } else {
+                abrir_confirmacao(window, cx);
+            }
+        }));
+    Some(
+        h_flex()
+            .id("controle-otimizacao")
+            .h(px(tema::ALTURA_BUSCA))
+            .flex_shrink_0()
+            .gap(px(tema::ESP_3))
+            .pl(px(tema::ESP_4))
+            .pr(px(tema::ESP_3))
+            .rounded_full()
+            .bg(tema::cor(tema::FUNDO_CONTROLE))
+            .when(pendente, |v| {
+                v.tooltip(|window, cx| {
+                    Tooltip::new(crate::textos::RESTAURACAO_USUARIO_PENDENTE).build(window, cx)
+                })
+            })
+            .child(
+                h_flex()
+                    .gap(px(tema::ESP_2))
+                    .font_medium()
+                    .child(t::OTIMIZACAO_AUTOMATICA)
+                    .when(pendente, |v| {
+                        v.child(
+                            div()
+                                .size(px(tema::TAM_PONTO_STATUS + 1.))
+                                .rounded_full()
+                                .bg(tema_.warning),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .track_focus(&foco)
+                    .rounded_full()
+                    .border_1()
+                    .border_color(if foco_visivel {
+                        tema::cor(tema::BORDA_FOCO)
+                    } else {
+                        tema_.transparent
+                    })
+                    .on_mouse_down_out(move |_, window, cx| {
+                        if foco.contains_focused(window, cx) {
+                            window.blur(cx);
+                        }
+                    })
+                    .child(switch),
+            )
+            .into_any_element(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -520,7 +613,7 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
 
     let cartoes = [
         (
-            "LATÊNCIA DO SISTEMA",
+            "Latência do sistema",
             "2.4 ms",
             "−0.8 ms",
             "Reflex + Boost",
@@ -529,7 +622,7 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
             true,
         ),
         (
-            "FRAMETIMES & JITTER",
+            "Frametimes e jitter",
             "4.1 ms",
             "±0.18 ms",
             "Jitter",
@@ -538,7 +631,7 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
             false,
         ),
         (
-            "LATÊNCIA DO PERIFÉRICO",
+            "Latência do periférico",
             "0.8 ms",
             "1000 Hz",
             "Taxa de Polling",
@@ -547,7 +640,7 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
             false,
         ),
         (
-            "FILA DE RENDERIZAÇÃO",
+            "Fila de renderização",
             "0 frames",
             "",
             "Ultra Low Latency",
@@ -556,7 +649,7 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
             true,
         ),
         (
-            "DWM BYPASS LATENCY",
+            "Latência do DWM",
             "0.0 ms",
             "Direct Flip MPO",
             "Composição de Janela",
@@ -603,7 +696,6 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
                         };
                         superficie(tema)
                             .rounded(px(tema::RAIO_CARTAO_PAINEL))
-                            .border_color(tema::cor(tema::BORDA_SUAVE).opacity(0.55))
                             .min_h(px(tema::ALTURA_CARTAO_PAINEL))
                             .min_w_0()
                             .p(px(tema::ESP_4))
@@ -613,13 +705,7 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
                                 h_flex()
                                     .justify_between()
                                     .gap(px(tema::ESP_2))
-                                    .child(
-                                        div()
-                                            .font_family("Consolas")
-                                            .text_size(px(tema::TAM_LEGENDA))
-                                            .text_color(tema.muted_foreground)
-                                            .child(titulo),
-                                    )
+                                    .child(super::estrutura::rotulo(titulo, tema))
                                     .child(
                                         h_flex()
                                             .size(px(tema::ESP_6))
@@ -639,7 +725,6 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
                                     .items_baseline()
                                     .flex_wrap()
                                     .gap(px(tema::ESP_2))
-                                    .font_family("Consolas")
                                     .child(
                                         div()
                                             .font_semibold()
@@ -671,7 +756,6 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
                                     .child(div().text_color(tema.muted_foreground).child(rotulo))
                                     .child(
                                         div()
-                                            .font_family("Consolas")
                                             .text_color(if simulacao {
                                                 tema.foreground
                                             } else {
@@ -690,21 +774,34 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
         .into_any_element()
 }
 
-pub(super) fn recomendacoes(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
-    let estado = cx.global::<EstadoInicio>().clone();
+pub(super) fn recomendacoes(
+    janela: &Janela,
+    window: &mut Window,
+    cx: &mut Context<Janela>,
+) -> AnyElement {
+    let estado = cx.default_global::<EstadoInicio>().clone();
     let fatos = janela.fatos();
     // Saúde do PC: cache da thread de comunicação (`ObterSaude`); sem
     // resposta, a seção não aparece e "piorou" nunca vence.
-    let saude = janela.ui.dados.saude.clone();
+    let saude = janela
+        .ui
+        .dados
+        .saude
+        .as_ref()
+        .filter(|s| mostra_saude(Some(s)));
     let v = veredito(&fatos, janela.ui.saude().as_ref());
     let texto = t::veredito(&v);
     let b = botoes(&v, &fatos);
     let tema = cx.theme().clone();
     let ocupado = estado.ocupado;
-    let cor = cor_tom(tom(&v), &tema);
+    let otimizado_com_pausa = fatos.agente_ausente && v == Veredito::Otimizado;
+    let (icone, cor) = if otimizado_com_pausa {
+        (IconName::SlidersHorizontal, tema.info)
+    } else {
+        (icone(&v), cor_tom(tom(&v), &tema))
+    };
 
-    // Um só botão primário (aplicar ou voltar a ajustar); "Desfazer tudo"
-    // é a ação destrutiva, com estilo próprio e confirmação.
+    // A aplicação de recomendações fica junto do resumo dos ajustes.
     let mut acoes = h_flex().gap(px(tema::ESP_3)).items_center().flex_wrap();
     let mut motivo = None;
     if let Some(a) = b.aplicar {
@@ -726,33 +823,7 @@ pub(super) fn recomendacoes(janela: &Janela, cx: &mut Context<Janela>) -> AnyEle
                 .on_click(cx.listener(|_, _, _, cx| executar(AcaoInicio::AplicarRecomendadas, cx))),
         );
     }
-    if b.voltar {
-        acoes = acoes.child(
-            tema::botao_base("voltar-a-ajustar")
-                .primary()
-                .large()
-                .h(px(tema::ALTURA_BOTAO))
-                .label(t::BOTAO_VOLTAR_A_AJUSTAR)
-                .indisponivel(ocupado.is_some())
-                .loading(ocupado == Some(AcaoInicio::VoltarAAjustar))
-                .on_click(cx.listener(|_, _, _, cx| executar(AcaoInicio::VoltarAAjustar, cx))),
-        );
-    }
-    // "Desfazer tudo" fica fora do cartão: link neutro no rodapé; o estilo
-    // de atenção aparece só na confirmação.
-    let desfazer_el = b.desfazer.then(|| {
-        h_flex().child(
-            tema::botao_base("desfazer-tudo")
-                .ghost()
-                .small()
-                .text_color(tema.muted_foreground)
-                .label(t::LINK_DESFAZER_TUDO)
-                .indisponivel(ocupado.is_some())
-                .loading(ocupado == Some(AcaoInicio::DesfazerTudo))
-                .on_click(cx.listener(|_, _, window, cx| abrir_confirmacao(window, cx))),
-        )
-    });
-    let tem_acoes = b.aplicar.is_some() || b.voltar;
+    let tem_acoes = b.aplicar.is_some();
 
     let cor_resultado = |tom: Tom| match tom {
         Tom::Sucesso => tema.success,
@@ -765,10 +836,23 @@ pub(super) fn recomendacoes(janela: &Janela, cx: &mut Context<Janela>) -> AnyEle
             .text_color(tema.muted_foreground)
             .child(s)
     };
+    let saude_disponivel = saude.is_some() && !matches!(v, Veredito::Verificando);
+    let saude_el = recolhivel(
+        "detalhes-saude-otimizacao",
+        saude_disponivel && estado.saude_aberta,
+        window,
+        cx,
+        |_, cx| {
+            div()
+                .pt(px(tema::ESP_3))
+                .children(saude.map(|s| secao_saude(s, janela, cx)))
+                .into_any_element()
+        },
+    );
     let corpo = v_flex()
         .flex_1()
         .min_w_0()
-        .gap(px(tema::ESP_4))
+        .gap(px(tema::ESP_2))
         .child(
             v_flex()
                 .gap(px(tema::ESP_1))
@@ -776,16 +860,42 @@ pub(super) fn recomendacoes(janela: &Janela, cx: &mut Context<Janela>) -> AnyEle
                     div()
                         .text_size(px(tema::TAM_SUBTITULO))
                         .font_semibold()
-                        .child(texto.titulo),
+                        .child(if otimizado_com_pausa {
+                            "Otimização do sistema".into()
+                        } else {
+                            texto.titulo
+                        }),
                 )
-                .child(
-                    div()
-                        .text_size(px(tema::TAM_CORPO))
-                        .text_color(tema.muted_foreground)
-                        .child(texto.frase),
-                ),
+                .when(!otimizado_com_pausa, |d| {
+                    d.child(
+                        div()
+                            .text_size(px(tema::TAM_CORPO))
+                            .text_color(tema.muted_foreground)
+                            .child(texto.frase),
+                    )
+                }),
         )
         .when(tem_acoes, |c| c.child(acoes))
+        .when(fatos.agente_ausente && !b.voltar, |c| {
+            c.child(
+                h_flex()
+                    .items_start()
+                    .gap(px(tema::ESP_2))
+                    .child(
+                        Icon::new(IconName::Info)
+                            .size(px(tema::ESP_4))
+                            .flex_shrink_0()
+                            .text_color(tema::cor(tema::DESTAQUE)),
+                    )
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .text_size(px(tema::TAM_LEGENDA))
+                            .child(div().font_semibold().child(tj::AJUSTES_WINDOWS_PAUSADOS))
+                            .child(legenda(tj::RETOMAR_AJUSTES_WINDOWS)),
+                    ),
+            )
+        })
         .when_some(motivo, |c, m| c.child(legenda(m)))
         .when(ocupado.is_some(), |c| c.child(legenda(t::AGUARDE)))
         .when_some(estado.resultado.clone(), |c, (tom, m)| {
@@ -796,89 +906,46 @@ pub(super) fn recomendacoes(janela: &Janela, cx: &mut Context<Janela>) -> AnyEle
                     .child(m),
             )
         });
-    let veredito_el = superficie(&tema).id("veredito").p(px(tema::ESP_6)).child(
-        h_flex()
-            .gap(px(tema::ESP_6))
-            .items_start()
-            .child(icone_destaque(icone(&v), cor))
-            .child(corpo),
-    );
-
-    let esperando = fatos.esperando_jogo;
-    let (linhas, resto) = resumo_jogos(
-        janela
-            .ui
-            .jogos()
-            .iter()
-            .map(|j| (j.nome.clone(), status_jogo(j, esperando))),
-        JOGOS_NO_RESUMO,
-    );
-    let vazio = linhas.is_empty();
-    let lista = v_flex().children(linhas.into_iter().enumerate().map(|(i, (nome, status))| {
-        h_flex()
-            .justify_between()
-            .gap(px(tema::ESP_4))
-            .py(px(tema::ESP_3))
-            .when(i > 0, |d| d.border_t_1().border_color(tema.border))
-            .text_size(px(tema::TAM_CORPO))
-            .child(nome)
-            .child(div().text_color(tema.muted_foreground).child(status))
-    }));
-    let jogos_el = superficie(&tema)
+    superficie(&tema)
+        .id("veredito")
         .p(px(tema::ESP_4))
-        .gap(px(tema::ESP_2))
         .child(
             h_flex()
-                .justify_between()
-                .items_center()
-                .child(
-                    div()
-                        .text_size(px(tema::TAM_CORPO))
-                        .font_semibold()
-                        .child(t::SECAO_JOGOS),
-                )
-                .child(
-                    tema::botao_base("ver-todos-jogos")
-                        .ghost()
-                        .label(t::VER_TODOS)
-                        .on_click(cx.listener(|this, _, _, cx| this.ir_secao(Secao::Jogos, cx))),
-                ),
+                .gap(px(tema::ESP_3))
+                .items_start()
+                .child(icone_destaque(icone, cor))
+                .child(corpo),
         )
-        .when(vazio, |c| {
-            c.child(estado_vazio(
-                IconName::Gamepad2,
-                tj::NENHUM_JOGO,
-                None,
-                &tema,
-            ))
-        })
-        .when(!vazio, |c| c.child(lista))
-        .when(resto > 0, |c| {
-            c.child(legenda_dinamica(t::mais_jogos(resto), &tema))
-        });
-
-    v_flex()
-        .gap(px(tema::ESP_6))
-        .w_full()
-        .child(veredito_el)
-        .when(!matches!(v, Veredito::Verificando), |c| c.child(jogos_el))
-        .when(!matches!(v, Veredito::Verificando), |c| {
-            c.children(
-                saude
-                    .as_ref()
-                    .filter(|s| mostra_saude(Some(*s)))
-                    .map(|s| secao_saude(s, janela, cx)),
+        .when(saude_disponivel, |c| {
+            c.child(
+                h_flex()
+                    .justify_between()
+                    .flex_wrap()
+                    .gap(px(tema::ESP_2))
+                    .mt(px(tema::ESP_3))
+                    .pt(px(tema::ESP_2))
+                    .border_t_1()
+                    .border_color(tema.border)
+                    .child(
+                        tema::botao_base("detalhes-saude")
+                            .ghost()
+                            .small()
+                            .label("Saúde do PC")
+                            .icon(if estado.saude_aberta {
+                                IconName::ChevronUp
+                            } else {
+                                IconName::ChevronDown
+                            })
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                let estado = cx.global_mut::<EstadoInicio>();
+                                estado.saude_aberta = !estado.saude_aberta;
+                                cx.notify();
+                            })),
+                    ),
             )
         })
-        .children(desfazer_el)
+        .children(saude_el)
         .into_any_element()
-}
-
-fn legenda_dinamica(s: String, tema: &component::Theme) -> Div {
-    div()
-        .text_size(px(tema::TAM_LEGENDA))
-        .text_color(tema.muted_foreground)
-        .child(s)
 }
 
 #[cfg(test)]
@@ -1226,29 +1293,13 @@ mod testes {
     }
 
     #[test]
-    fn resumo_dos_jogos() {
-        let jogos = (0..7).map(|i| (format!("Jogo {i}"), StatusJogo::Otimizado));
-        let (linhas, resto) = resumo_jogos(jogos, 5);
-        assert_eq!(linhas.len(), 5);
-        assert_eq!(resto, 2);
-        assert_eq!(linhas[0], ("Jogo 0".into(), "Otimizado".into()));
-        assert_eq!(t::mais_jogos(resto), "e mais 2 jogos");
-        let (linhas, resto) = resumo_jogos(
-            [("A".to_owned(), StatusJogo::FacaAjustes { quantidade: 2 })],
-            5,
-        );
-        assert_eq!(linhas[0].1, "Faça 2 ajustes no jogo");
-        assert_eq!(resto, 0);
-    }
-
-    #[test]
     fn textos_novos_sem_sigla_e_curtos() {
         const SIGLAS: &[&str] = &[
             "GPU", "VRAM", "DLSS", "VRR", "G-SYNC", "FPS", "BAR", "DRS", "HAGS", "MPO", "SID",
             "IPC", "ETW", "MSI", "CPU", "RAM", "SSD", "API",
         ];
         let mut todos: Vec<String> = t::TODOS_L2.iter().map(|s| (*s).to_owned()).collect();
-        todos.push(t::mais_jogos(1));
+
         todos.push(format!("{} {}", t::APLICAR_ADIADO, t::PARA_VOLTAR_ATRAS));
         for s in &todos {
             for sigla in SIGLAS {

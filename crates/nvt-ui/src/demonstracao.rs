@@ -36,6 +36,7 @@ use crate::servico::{AcaoInicio, Canal, FalhaInicio, RespostaInicio};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cenario {
     Otimizado,
+    SemAgente,
     Melhorias,
     Piorou,
     JogoAberto,
@@ -55,6 +56,7 @@ pub enum Cenario {
 impl Cenario {
     pub const TODOS: &[Cenario] = &[
         Cenario::Otimizado,
+        Cenario::SemAgente,
         Cenario::Melhorias,
         Cenario::Piorou,
         Cenario::JogoAberto,
@@ -73,6 +75,7 @@ impl Cenario {
     pub fn chave(self) -> &'static str {
         match self {
             Cenario::Otimizado => "otimizado",
+            Cenario::SemAgente => "sem-agente",
             Cenario::Melhorias => "melhorias",
             Cenario::Piorou => "piorou",
             Cenario::JogoAberto => "jogo-aberto",
@@ -312,7 +315,7 @@ fn jogo(
 }
 
 fn jogos(c: Cenario) -> Vec<Jogo> {
-    if c == Cenario::Otimizado {
+    if matches!(c, Cenario::Otimizado | Cenario::SemAgente) {
         return [
             (
                 "League of Legends",
@@ -499,7 +502,7 @@ fn plano(c: Cenario, jogos: Vec<Jogo>) -> Plano {
 fn estado(c: Cenario, jogos: u32) -> nvt_ipc::Estado {
     nvt_ipc::Estado {
         agente: EstadoAgente {
-            presente: true,
+            presente: c != Cenario::SemAgente,
             restauracao_pendente: false,
         },
         diagnosticos: vec![],
@@ -878,6 +881,7 @@ mod testes {
             }
             let ok = match c {
                 Cenario::Otimizado
+                | Cenario::SemAgente
                 | Cenario::Atualizado
                 | Cenario::PrimeiraVez
                 | Cenario::Saude => v == Veredito::Otimizado,
@@ -898,7 +902,11 @@ mod testes {
             assert!(ok, "{c:?}: {v:?}");
             assert_eq!(
                 ui.dados.jogos.len(),
-                if c == Cenario::Otimizado { 3 } else { 5 }
+                if matches!(c, Cenario::Otimizado | Cenario::SemAgente) {
+                    3
+                } else {
+                    5
+                }
             );
             assert_eq!(ui.conexao, conexao_local(c).unwrap_or(Conexao::Servico));
         }

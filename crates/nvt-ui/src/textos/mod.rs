@@ -134,7 +134,7 @@ pub const AGENTE_ATIVO: &str = "Ajustes do seu usuário: ativos";
 pub const AGENTE_AUSENTE: &str =
     "Ajustes do seu usuário: pausados até você entrar de novo no Windows";
 pub const AGENTE_INDISPONIVEL: &str = "Ajustes do seu usuário: indisponíveis sem o nv-tuner ativo";
-pub const RESTAURACAO_USUARIO_PENDENTE: &str = "Restauração dos ajustes do seu usuário pendente.";
+pub const RESTAURACAO_USUARIO_PENDENTE: &str = "Restauração pendente · conclui automaticamente";
 pub const DRIVER_RESTAURADO: &str = "Restauração do driver concluída.";
 pub const OK_ACEITE: &str = "Preferência experimental atualizada.";
 pub const OK_REVERSAO_USUARIO: &str = "Reversão do ajuste do Windows solicitada.";

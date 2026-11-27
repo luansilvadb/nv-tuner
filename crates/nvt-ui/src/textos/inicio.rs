@@ -38,7 +38,8 @@ pub const MOTIVO_POUCO_ESPACO: &str = "pouco espaço livre";
 // Botões e respostas -------------------------------------------------------
 pub const BOTAO_APLICAR_RECOMENDADAS: &str = "Aplicar melhorias recomendadas";
 pub const BOTAO_DESFAZER_TUDO: &str = "Desfazer tudo";
-pub const LINK_DESFAZER_TUDO: &str = "Desfazer tudo que o nv-tuner mudou";
+pub const BOTAO_DESFAZER_AJUSTES: &str = "Desfazer ajustes";
+pub const OTIMIZACAO_AUTOMATICA: &str = "Otimização automática";
 pub const BOTAO_VOLTAR_A_AJUSTAR: &str = "Voltar a ajustar";
 pub const BOTAO_CANCELAR: &str = "Cancelar";
 pub const APLICAR_INDISPONIVEL: &str = "Disponível quando o nv-tuner estiver ativo.";
@@ -56,8 +57,6 @@ pub const DESFEITO_OK: &str = "Pronto. Tudo voltou a ser como era antes.";
 pub const DESFAZER_ADIADO: &str = "Tudo volta a ser como era quando o jogo fechar.";
 
 // Seus jogos ---------------------------------------------------------------
-pub const SECAO_JOGOS: &str = "Seus jogos";
-pub const VER_TODOS: &str = "Ver todos";
 
 // Saúde do PC --------------------------------------------------------------
 pub const SECAO_SAUDE: &str = "Saúde do PC";
@@ -108,7 +107,7 @@ pub const TODOS: &[&str] = &[
     MOTIVO_POUCO_ESPACO,
     BOTAO_APLICAR_RECOMENDADAS,
     BOTAO_DESFAZER_TUDO,
-    LINK_DESFAZER_TUDO,
+    BOTAO_DESFAZER_AJUSTES,
     BOTAO_VOLTAR_A_AJUSTAR,
     BOTAO_CANCELAR,
     APLICAR_INDISPONIVEL,
@@ -120,8 +119,6 @@ pub const TODOS: &[&str] = &[
     CONFIRMAR_DESFAZER_PARA,
     DESFEITO_OK,
     DESFAZER_ADIADO,
-    SECAO_JOGOS,
-    VER_TODOS,
     SECAO_SAUDE,
     SAUDE_VERIFICANDO,
     SAUDE_TUDO_CERTO,
@@ -244,11 +241,3 @@ pub const TODOS_L2: &[&str] = &[
     VOLTAR_ADIADO,
     AGUARDE,
 ];
-
-/// "e mais 3 jogos" no resumo de Seus jogos.
-pub fn mais_jogos(n: usize) -> String {
-    match n {
-        1 => "e mais 1 jogo".to_owned(),
-        n => format!("e mais {n} jogos"),
-    }
-}

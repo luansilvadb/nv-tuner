@@ -134,6 +134,9 @@ impl Destino {
 
 impl Janela {
     pub(super) fn ir_secao(&mut self, secao: Secao, cx: &mut Context<Self>) {
+        if self.secao != secao {
+            self.troca_secao = Some(Instant::now());
+        }
         self.secao = secao;
         self.ui.tela = secao.tela_inicial();
         cx.notify();
@@ -256,14 +259,25 @@ impl Janela {
                     .when(ativo, |v| {
                         v.text_color(tema::cor(tema::TEXTO_ITEM_MENU_ATIVO))
                     })
+                    // Item inativo (Material 3, camada de estado): sob o cursor
+                    // ou pressionado ganha só um véu neutro, e texto e ícone
+                    // passam à cor plena. Não herda o azul do item ativo.
                     .hover(|v| {
-                        v.bg(if ativo {
-                            tema::cor(tema::FUNDO_ITEM_MENU_ATIVO_HOVER)
+                        if ativo {
+                            v.bg(tema::cor(tema::FUNDO_ITEM_MENU_ATIVO_HOVER))
                         } else {
-                            tema.list_hover
-                        })
+                            v.bg(tema::cor(tema::TEXTO).opacity(0.08))
+                                .text_color(tema::cor(tema::TEXTO))
+                        }
                     })
-                    .active(|v| v.bg(tema::cor(tema::FUNDO_ITEM_MENU_PRESSIONADO)))
+                    .active(|v| {
+                        if ativo {
+                            v.bg(tema::cor(tema::FUNDO_ITEM_MENU_PRESSIONADO))
+                        } else {
+                            v.bg(tema::cor(tema::TEXTO).opacity(0.12))
+                                .text_color(tema::cor(tema::TEXTO))
+                        }
+                    })
                     .child(
                         Icon::new(secao.icone())
                             .size(px(tema::ESP_6))
@@ -339,7 +353,9 @@ impl Janela {
     pub(super) fn linha_estado(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let f = self.fatos();
         let v = (self.secao == Secao::Inicio).then(|| veredito(&f, self.ui.saude().as_ref()));
-        let texto = linha_estado_visivel(&f, v.as_ref()).map(|l| t::estado::texto(&l));
+        let texto = linha_estado_visivel(&f, v.as_ref())
+            .filter(|l| !matches!(l, crate::modelo::LinhaEstado::AgenteAusente))
+            .map(|l| t::estado::texto(&l));
         let tema = cx.theme();
         div().when_some(texto, |d, texto| {
             d.child(
@@ -460,6 +476,11 @@ pub struct Janela {
     fechar_mensagem: Option<Task<()>>,
     /// Perfis dos jogos com a linha expandida na tela Jogos.
     pub(super) expandidos: BTreeSet<String>,
+    /// Momento da última troca de seção (transição de entrada do conteúdo).
+    troca_secao: Option<Instant>,
+    /// Salvamento automático das preferências globais, adiado até o usuário
+    /// parar de escolher (cada nova escolha reinicia a espera).
+    salvar_preferencias: Option<Task<()>>,
 }
 
 impl Janela {
@@ -509,6 +530,8 @@ impl Janela {
             lateral_recolhida: false,
             fechar_mensagem: None,
             expandidos: expandidos.into_iter().collect(),
+            troca_secao: None,
+            salvar_preferencias: None,
         }
     }
 
@@ -521,7 +544,38 @@ impl Janela {
         cx.notify();
     }
 
-    fn agendar_fechamento_mensagem(&mut self, cx: &mut Context<Self>) {
+    /// Aplica as preferências globais sozinho, 500 ms depois da última
+    /// escolha. Se outra operação estiver em andamento, tenta de novo depois;
+    /// sem o serviço, a escolha fica no rascunho e a tela avisa.
+    pub(super) fn agendar_salvar_preferencias(&mut self, cx: &mut Context<Self>) {
+        self.salvar_preferencias = Some(cx.spawn(async move |janela, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                let tentar_de_novo = janela
+                    .update(cx, |j, cx| {
+                        if !j.ui.rascunho_alterado() {
+                            return false;
+                        }
+                        let comando = Comando::DefinirPreferencias(j.ui.rascunho.clone());
+                        if j.ui.pode_executar(&comando) {
+                            j.enviar(comando, cx);
+                            false
+                        } else {
+                            // Ocupado com outra operação: espera ela terminar.
+                            j.ui.ocupado.is_some()
+                        }
+                    })
+                    .unwrap_or(false);
+                if !tentar_de_novo {
+                    break;
+                }
+            }
+        }));
+    }
+
+    pub(super) fn agendar_fechamento_mensagem(&mut self, cx: &mut Context<Self>) {
         self.fechar_mensagem = self.ui.mensagem_visivel().map(|(tipo, _)| {
             let duracao = match tipo {
                 TipoMensagem::Sucesso => Duration::from_secs(3),
@@ -753,6 +807,19 @@ impl Render for Janela {
             window,
             cx,
         );
+        // Troca de seção (Material 3, eixo compartilhado Y): o conteúdo novo
+        // entra subindo 16 px enquanto aparece, com desaceleração.
+        let entrada = match self.troca_secao {
+            Some(inicio) if !cx.reduce_motion() => {
+                let t =
+                    (inicio.elapsed().as_secs_f32() / DURACAO_TROCA_SECAO.as_secs_f32()).min(1.);
+                if t < 1. {
+                    window.request_animation_frame();
+                }
+                1. - (1. - t).powi(3)
+            }
+            _ => 1.,
+        };
         let raio_painel = px(tema::RAIO_AREA_CONTEUDO);
         let largura_conteudo = window.viewport_size().width
             - largura_lateral
@@ -796,6 +863,9 @@ impl Render for Janela {
                                     .overflow_y_scroll()
                                     .child(
                                         v_flex()
+                                            .relative()
+                                            .top(px(tema::ESP_4 * (1. - entrada)))
+                                            .opacity(entrada)
                                             .px(px(tema::ESP_8))
                                             .py(px(tema::ESP_6))
                                             .gap(px(tema::ESP_6))
@@ -803,12 +873,6 @@ impl Render for Janela {
                                                 !matches!(self.secao, Secao::Inicio | Secao::Jogos),
                                                 |v| v.child(self.titulo_pagina(&tema)),
                                             )
-                                            .when(self.ui.restauracao_usuario_pendente(), |v| {
-                                                v.child(explicacao(
-                                                    t::RESTAURACAO_USUARIO_PENDENTE,
-                                                    &tema,
-                                                ))
-                                            })
                                             .children(self.avisos())
                                             .child(self.conteudo_secao(
                                                 largura_conteudo,
@@ -824,6 +888,8 @@ impl Render for Janela {
     }
 }
 
+const DURACAO_TROCA_SECAO: Duration = Duration::from_millis(280);
+
 fn abertura_lateral(largura: Pixels) -> f32 {
     ((f32::from(largura) - tema::LARGURA_LATERAL_RECOLHIDA)
         / (tema::LARGURA_LATERAL - tema::LARGURA_LATERAL_RECOLHIDA))
@@ -834,14 +900,23 @@ fn abertura_lateral(largura: Pixels) -> f32 {
 // Peças
 // ---------------------------------------------------------------------------
 
-/// Superfície comum a todo cartão e lista: mesmo canto, borda e fundo.
+/// Superfície comum a todo cartão e lista: mesmo canto e fundo tonal, sem
+/// borda (Material 3: o nível vem do tom).
 pub(super) fn superficie(tema: &Theme) -> Div {
     v_flex()
         .w_full()
         .rounded(px(tema::RAIO_CARTAO))
-        .border_1()
-        .border_color(tema::cor(tema::BORDA_SUAVE))
         .bg(tema.group_box)
+}
+
+/// Rótulo de grupo (Material 3 *Label medium*): 12 px, peso médio, só a
+/// primeira letra maiúscula.
+pub(super) fn rotulo(texto: impl Into<SharedString>, tema: &Theme) -> Div {
+    div()
+        .text_size(px(tema::TAM_LEGENDA))
+        .font_medium()
+        .text_color(tema.muted_foreground)
+        .child(texto.into())
 }
 
 pub(super) fn cartao(titulo: &'static str, corpo: impl IntoElement, tema: &Theme) -> Div {

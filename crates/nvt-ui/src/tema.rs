@@ -24,8 +24,13 @@ pub const TEXTO_SOBRE_DESTAQUE: u32 = 0x08161D;
 pub const FUNDO: u32 = 0x0B0B0E;
 /// Fundo da navegação lateral (o quadrado escuro do logo).
 pub const LATERAL: u32 = 0x15171B;
-/// Cartões e grupos.
-pub const SUPERFICIE: u32 = 0x121318;
+/// Cartões e grupos (Material 3: *surface container*). A hierarquia entre
+/// níveis vem do tom de cada superfície, não de bordas.
+pub const SUPERFICIE: u32 = 0x16171E;
+/// Controles e cartões aninhados (*surface container high*).
+pub const SUPERFICIE_ALTA: u32 = 0x1D1F28;
+/// Campos dentro de um cartão aninhado (*surface container highest*).
+pub const SUPERFICIE_MAIS_ALTA: u32 = 0x262833;
 /// Linha sob o cursor na lateral e em listas.
 pub const SUPERFICIE_HOVER: u32 = 0x202127;
 /// Borda (a moldura do logo).
@@ -109,10 +114,11 @@ pub const COLUNA_CURTA: f32 = 96.;
 pub const COLUNA_VALOR: f32 = 124.;
 pub const COLUNA_LARGA: f32 = 300.;
 pub const ALTURA_BARRA: f32 = 36.;
-pub const LARGURA_MENU_FILTROS: f32 = 268.;
-pub const RAIO_MENU_FILTROS: f32 = 18.;
-pub const FUNDO_MENU_FILTROS: u32 = 0x1B1D27;
-pub const ALTURA_BUSCA: f32 = 40.;
+/// Barra de busca do Material 3 (pílula).
+pub const ALTURA_BUSCA: f32 = 48.;
+/// Segmented button do Material 3.
+pub const ALTURA_SEGMENTADO: f32 = 40.;
+pub const ALTURA_SEGMENTADO_COMPACTO: f32 = 32.;
 const ALTURA_BOTAO_MATERIAL: f32 = 40.;
 pub const TAM_BOTAO_ICONE: f32 = ALTURA_BOTAO_MATERIAL;
 const ALTURA_BOTAO_COMPACTO: f32 = 32.;
@@ -137,8 +143,12 @@ pub const LARGURA_GRADE_TRES: f32 = 830.;
 pub const LARGURA_GRADE_DOIS: f32 = 540.;
 pub const VERDE_PAINEL: u32 = 0x54D5AA;
 pub const FUNDO_PAINEL: u32 = 0x161825;
-pub const FUNDO_CONTROLE: u32 = 0x171922;
-pub const BORDA_BUSCA: u32 = 0x2F313D;
+pub const FUNDO_CONTROLE: u32 = SUPERFICIE_ALTA;
+/// Chips (Material 3): canto de 8 px, altura compacta.
+pub const RAIO_CHIP: f32 = 8.;
+pub const ALTURA_CHIP: f32 = 24.;
+/// Cartão dentro de outro cartão.
+pub const RAIO_CARTAO_INTERNO: f32 = 16.;
 pub const BORDA_FOCO: u32 = 0x817FD1;
 pub const FUNDO_ICONE: u32 = 0x1D2031;
 pub const TEXTO_ICONE: u32 = 0xA9ABFF;

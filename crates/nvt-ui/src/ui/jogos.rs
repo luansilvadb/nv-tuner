@@ -2,14 +2,12 @@
 //! nome, selo competitivo e um status; detalhe ao clicar com o que o app fez,
 //! "Faça no jogo", "Arquivo do jogo" e detalhes técnicos recolhidos.
 
-use std::collections::BTreeSet;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use gpui_kit::base::motion::{Presence, Transition, transition};
+use gpui_kit::base::motion::{Transition, transition};
 use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::popover::Popover;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme, FocusableExt, Icon, Sizable, StyledExt, h_flex, v_flex};
@@ -17,8 +15,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use nvt_ipc::{Jogo, LIMITE_FPS_MAX, LIMITE_FPS_MIN, Qualidade, Sincronismo, StatusMudanca};
 
-use super::estrutura::{Janela, estado_vazio, superficie};
-use super::movimento::ripple;
+use super::estrutura::{Janela, estado_vazio, rotulo, superficie};
+use super::movimento::{recolhivel, ripple, ripple_com_forma};
 use crate::arquivo_jogo as aj;
 use crate::modelo::{Comando, EstadoUi, Evento, Fatos, StatusJogo, status_jogo};
 use crate::tema::{self, EstadoBotao as _};
@@ -33,8 +31,6 @@ struct Selecao {
     jogo: Option<String>,
     tecnicos: bool,
     busca: Option<Entity<InputState>>,
-    filtros_excluidos: BTreeSet<FiltroJogo>,
-    filtros_abertos: bool,
     mostrar_recomendacoes: bool,
 }
 impl Global for Selecao {}
@@ -141,209 +137,6 @@ pub(crate) fn tecnicos(j: &Jogo) -> Vec<(&'static str, String)> {
     ]
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum FiltroJogo {
-    Plataforma(String),
-    Status(bool),
-    Api(String),
-}
-
-impl FiltroJogo {
-    fn rotulo(&self) -> &str {
-        match self {
-            Self::Plataforma(nome) => nome,
-            Self::Status(true) => "Ativo",
-            Self::Status(false) => "Inativo",
-            Self::Api(api) => match t::api_grafica(api) {
-                "?" if api.is_empty() => "API desconhecida",
-                "?" => api,
-                nome => nome,
-            },
-        }
-    }
-}
-
-fn filtros_do_jogo(jogo: &Jogo, esperando: bool) -> [FiltroJogo; 3] {
-    [
-        FiltroJogo::Plataforma(if jogo.launcher.is_empty() {
-            "Plataforma desconhecida".into()
-        } else {
-            jogo.launcher.clone()
-        }),
-        FiltroJogo::Status(status_jogo(jogo, esperando) == StatusJogo::Otimizado),
-        FiltroJogo::Api(jogo.api.clone()),
-    ]
-}
-
-fn menu_filtros(
-    jogos: &[Jogo],
-    excluidos: &BTreeSet<FiltroJogo>,
-    window: &mut Window,
-    cx: &mut Context<Janela>,
-) -> Popover {
-    let janela = cx.entity().downgrade();
-    let alternar = janela.clone();
-    let aberto = cx.global::<Selecao>().filtros_abertos;
-    let presenca = Presence::new("presenca-menu-filtros", aberto)
-        .transition(Transition::new(Duration::from_millis(if aberto {
-            220
-        } else {
-            160
-        })))
-        .sample(window, cx);
-    let progresso = presenca.progress;
-    let opcoes: BTreeSet<_> = jogos
-        .iter()
-        .flat_map(|jogo| filtros_do_jogo(jogo, false))
-        .collect();
-    let plataformas: Vec<_> = opcoes
-        .iter()
-        .filter(|f| matches!(f, FiltroJogo::Plataforma(_)))
-        .cloned()
-        .collect();
-    let apis: Vec<_> = opcoes
-        .into_iter()
-        .filter(|f| matches!(f, FiltroJogo::Api(_)))
-        .collect();
-    let grupos = [
-        ("Plataforma", plataformas),
-        (
-            "Status",
-            vec![FiltroJogo::Status(true), FiltroJogo::Status(false)],
-        ),
-        ("API gráfica", apis),
-    ];
-    Popover::new("menu-filtros-jogos")
-        .anchor(Anchor::TopRight)
-        .offset(px(tema::ESP_2) * progresso)
-        .open(presenca.should_render())
-        .on_open_change(move |aberto, _, cx| {
-            let _ = alternar.update(cx, |_, cx| {
-                cx.default_global::<Selecao>().filtros_abertos = *aberto;
-                cx.notify();
-            });
-        })
-        .opacity(progresso)
-        .rounded(px(tema::RAIO_MENU_FILTROS - tema::ESP_1 * progresso))
-        .bg(tema::cor(tema::FUNDO_MENU_FILTROS))
-        .trigger(
-            tema::botao("filtros")
-                .outline()
-                .icon(IconName::SlidersHorizontal)
-                .label(if excluidos.is_empty() {
-                    "Filtros".into()
-                } else {
-                    format!("Filtros · {}", excluidos.len())
-                }),
-        )
-        .content(move |_, window, cx| {
-            let tema = cx.theme().clone();
-            let excluidos = cx.global::<Selecao>().filtros_excluidos.clone();
-            let limpar = janela.clone();
-            v_flex()
-                .w(px(tema::LARGURA_MENU_FILTROS))
-                .gap(px(tema::ESP_3))
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .child(
-                            h_flex()
-                                .gap(px(tema::ESP_2))
-                                .child(
-                                    Icon::new(IconName::SlidersHorizontal)
-                                        .size(px(tema::ESP_4))
-                                        .text_color(tema::cor(tema::TEXTO_ICONE)),
-                                )
-                                .child(div().font_semibold().child("Filtros avançados")),
-                        )
-                        .child(
-                            tema::botao_compacto("limpar-filtros")
-                                .ghost()
-                                .label("Limpar")
-                                .text_color(tema::cor(tema::TEXTO_ICONE))
-                                .indisponivel(excluidos.is_empty())
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    let _ = limpar.update(cx, |_, cx| {
-                                        cx.default_global::<Selecao>().filtros_excluidos.clear();
-                                        cx.notify();
-                                    });
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .children(grupos.iter().enumerate().map(|(i, (titulo, opcoes))| {
-                    let itens = opcoes
-                        .iter()
-                        .enumerate()
-                        .map(|(j, opcao)| {
-                            let marcada = !excluidos.contains(opcao);
-                            let chave: SharedString = format!("opcao-filtro-{i}-{j}").into();
-                            let selecao = transition(
-                                chave.clone(),
-                                if marcada { 1_f32 } else { 0_f32 },
-                                Transition::new(Duration::from_millis(180)),
-                                window,
-                                cx,
-                            );
-                            let rotulo = opcao.rotulo().to_owned();
-                            let opcao = opcao.clone();
-                            let janela = janela.clone();
-
-                            tema::botao_compacto(chave)
-                                .ghost()
-                                .bg(tema::cor(tema::ACAO_VIOLETA).opacity(0.10 + 0.34 * selecao))
-                                .text_color(if marcada {
-                                    tema.foreground
-                                } else {
-                                    tema.muted_foreground
-                                })
-                                .accessibility_label(rotulo.clone())
-                                .toggled(marcada)
-                                .child(
-                                    h_flex()
-                                        .child(
-                                            div()
-                                                .overflow_hidden()
-                                                .opacity(selecao)
-                                                .w(px(tema::ESP_4 + tema::ESP_1) * selecao)
-                                                .child(
-                                                    Icon::new(IconName::Check)
-                                                        .size(px(tema::TAM_CORPO))
-                                                        .text_color(tema::cor(tema::TEXTO_ICONE)),
-                                                ),
-                                        )
-                                        .child(rotulo),
-                                )
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    let _ = janela.update(cx, |_, cx| {
-                                        let excluidos =
-                                            &mut cx.default_global::<Selecao>().filtros_excluidos;
-                                        if !excluidos.remove(&opcao) {
-                                            excluidos.insert(opcao.clone());
-                                        }
-                                        cx.notify();
-                                    });
-                                    cx.notify();
-                                }))
-                        })
-                        .collect::<Vec<_>>();
-                    v_flex()
-                        .gap(px(tema::ESP_2))
-                        .border_t_1()
-                        .border_color(tema::cor(tema::BORDA_SUAVE))
-                        .pt(px(tema::ESP_3))
-                        .child(
-                            div()
-                                .font_semibold()
-                                .text_size(px(tema::TAM_LEGENDA))
-                                .text_color(tema.muted_foreground)
-                                .child(*titulo),
-                        )
-                        .child(h_flex().flex_wrap().gap(px(tema::ESP_2)).children(itens))
-                }))
-        })
-}
-
 /// Conteúdo da seção Jogos.
 pub(super) fn render(
     janela: &Janela,
@@ -376,19 +169,15 @@ pub(super) fn render(
     let busca_focada = campo.has_selection_focus(window, cx);
     let foco_busca = campo.focus_handle(cx);
     let selecao = cx.default_global::<Selecao>();
-    let excluidos = selecao.filtros_excluidos.clone();
     let esp = esperando(&janela.ui);
     let mostrar_recomendacoes = selecao.mostrar_recomendacoes;
     let filtrados: Vec<_> = jogos
         .iter()
         .enumerate()
         .filter(|(_, j)| {
-            filtros_do_jogo(j, esp)
-                .iter()
-                .all(|filtro| !excluidos.contains(filtro))
-                && (termo.is_empty()
-                    || j.nome.to_lowercase().contains(&termo)
-                    || j.launcher.to_lowercase().contains(&termo))
+            termo.is_empty()
+                || j.nome.to_lowercase().contains(&termo)
+                || j.launcher.to_lowercase().contains(&termo)
         })
         .collect();
     let (aberto, tec) = cx
@@ -426,21 +215,62 @@ pub(super) fn render(
                     }),
             )
             .w_full()
-            .px(px(tema::ESP_3))
-            .rounded(px(tema::RAIO))
-            .bg(tema::cor(tema::FUNDO_CONTROLE))
-            .border_1()
-            .border_color(tema::cor(if busca_focada {
-                tema::BORDA_FOCO
+            .px(px(tema::ESP_4))
+            .rounded_full()
+            .bg(tema::cor(if busca_focada {
+                tema::SUPERFICIE_MAIS_ALTA
             } else {
-                tema::BORDA_BUSCA
-            })),
+                tema::FUNDO_CONTROLE
+            }))
+            // Sem moldura em repouso; o anel só aparece com foco.
+            .border_1()
+            .border_color(if busca_focada {
+                tema::cor(tema::BORDA_FOCO)
+            } else {
+                tema.transparent
+            }),
         px(tema::ALTURA_BUSCA),
     );
-    let barra = superficie(&tema).p(px(tema::ESP_2)).child(
+    let alternar_detalhes = cx.listener(|_, _, _, cx| {
+        let selecao = cx.default_global::<Selecao>();
+        selecao.mostrar_recomendacoes = !selecao.mostrar_recomendacoes;
+        cx.notify();
+    });
+    // Com ajustes aplicados (ou pausados) o topo mostra o switch da
+    // otimização; o painel de recomendações só abre por "Otimizar sistema",
+    // então nesse estado fica oculto.
+    let (acao, mostrar_recomendacoes) = match super::inicio::controle_otimizacao(janela, window, cx)
+    {
+        Some(controle) => (controle, false),
+        None => (
+            // Mesma altura da busca: a barra se lê como uma linha só (Material 3).
+            ripple(
+                "onda-otimizar",
+                true,
+                tema::botao("otimizar-sistema")
+                    .icon(if mostrar_recomendacoes {
+                        IconName::ChevronUp
+                    } else {
+                        IconName::Zap
+                    })
+                    .label("Otimizar sistema")
+                    .primary()
+                    .on_click(alternar_detalhes)
+                    .h(px(tema::ALTURA_BUSCA))
+                    .rounded(px(tema::ALTURA_BUSCA / 2.)),
+                window,
+                cx,
+            )
+            .into_any_element(),
+            mostrar_recomendacoes,
+        ),
+    };
+    // Barra de busca do Material 3: pílula solta, sem cartão em volta.
+    let barra = div().w_full().child(
         h_flex()
             .w_full()
             .flex_wrap()
+            .items_center()
             .gap(px(tema::ESP_2))
             .child(
                 div()
@@ -453,51 +283,31 @@ pub(super) fn render(
                     })
                     .child(campo_busca),
             )
-            .when(!jogos.is_empty(), |v| {
-                let filtros = menu_filtros(&jogos, &excluidos, window, cx);
-                v.child(ripple("onda-filtros", true, filtros, window, cx))
-            })
-            .child(ripple(
-                "onda-otimizar",
-                true,
-                tema::botao("otimizar-sistema")
-                    .primary()
-                    .icon(IconName::Zap)
-                    .label(if mostrar_recomendacoes {
-                        "Ocultar recomendações"
-                    } else {
-                        "Otimizar sistema"
-                    })
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        let selecao = cx.default_global::<Selecao>();
-                        selecao.mostrar_recomendacoes = !selecao.mostrar_recomendacoes;
-                        cx.notify();
-                    })),
-                window,
-                cx,
-            )),
+            .child(acao),
+    );
+    let recomendacoes = recolhivel(
+        "painel-otimizacao",
+        mostrar_recomendacoes,
+        window,
+        cx,
+        |window, cx| {
+            div()
+                .pt(px(tema::ESP_3))
+                .child(super::inicio::recomendacoes(janela, window, cx))
+                .into_any_element()
+        },
     );
     let preferencias = preferencias_globais(janela, largura, window, cx);
-    let v = v_flex()
-        .gap(px(tema::ESP_4))
-        .w_full()
-        .child(barra)
-        .when(mostrar_recomendacoes, |v| {
-            v.child(super::inicio::recomendacoes(janela, cx))
-        });
+    let v = v_flex().gap(px(tema::ESP_4)).w_full().child(barra);
     let cabecalho = h_flex()
         .gap(px(tema::ESP_3))
         .child(ripple("onda-procurar-jogos", pode, procurar, window, cx))
-        .child(
-            div()
-                .font_semibold()
-                .child(if termo.is_empty() && excluidos.is_empty() {
-                    format!("Jogos detectados ({})", jogos.len())
-                } else {
-                    format!("Jogos encontrados ({} de {})", filtrados.len(), jogos.len())
-                }),
-        );
-    let v = v.child(cabecalho);
+        .child(div().flex_1().font_semibold().child(if termo.is_empty() {
+            format!("Jogos detectados ({})", jogos.len())
+        } else {
+            format!("Jogos encontrados ({} de {})", filtrados.len(), jogos.len())
+        }));
+    let v = v.child(v_flex().child(cabecalho).children(recomendacoes));
     if filtrados.is_empty() {
         return v
             .child(superficie(&tema).child(estado_vazio(
@@ -505,7 +315,7 @@ pub(super) fn render(
                 if jogos.is_empty() {
                     tj::NENHUM_JOGO
                 } else {
-                    "Nenhum jogo corresponde aos filtros."
+                    "Nenhum jogo corresponde à busca."
                 },
                 None,
                 &tema,
@@ -519,6 +329,15 @@ pub(super) fn render(
         let sel = aberto.as_deref() == Some(l.chave.as_str())
             || aberto.as_deref() == Some(l.nome.as_str());
         let chave = l.chave.clone();
+        // Morph do cartão ao expandir: cantos crescem, o tom sobe um nível, o
+        // cartão se afasta dos vizinhos e a seta gira; o detalhe revela junto.
+        let expansao = transition(
+            SharedString::from(format!("expansao-jogo-{}", l.chave)),
+            if sel { 1_f32 } else { 0_f32 },
+            Transition::new(Duration::from_millis(280)),
+            window,
+            cx,
+        );
         let cor_status = match l.status {
             StatusJogo::Otimizado => tema.success,
             StatusJogo::FacaAjustes { .. } => tema.info,
@@ -595,47 +414,210 @@ pub(super) fn render(
                             ),
                     ),
             )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .rounded_full()
-                    .px(px(tema::ESP_2))
-                    .bg(tema::cor(tema::FUNDO_ICONE))
-                    .font_family("Consolas")
-                    .text_size(px(tema::TAM_LEGENDA))
-                    .text_color(if l.status == StatusJogo::Otimizado {
-                        tema::cor(tema::TEXTO_ICONE)
-                    } else {
-                        tema.muted_foreground
-                    })
-                    .child(if l.status == StatusJogo::Otimizado {
-                        "● Ativo"
-                    } else {
-                        "○ Pendente"
-                    }),
-            )
+            .child(chip_status(l.status == StatusJogo::Otimizado, &tema))
             .child(
                 div()
                     .w(px(tema::ESP_4))
                     .text_size(px(tema::TAM_LEGENDA))
                     .text_color(tema.muted_foreground)
                     .child(
-                        Icon::new(if sel {
-                            IconName::ChevronUp
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .size(px(tema::TAM_CORPO)),
+                        Icon::new(IconName::ChevronDown)
+                            .size(px(tema::TAM_CORPO))
+                            .rotate(radians(std::f32::consts::PI * expansao)),
                     ),
             );
+        let detalhe = recolhivel(
+            format!("detalhe-jogo-{}", l.chave),
+            sel,
+            window,
+            cx,
+            |_, cx| detalhe(janela, i, j, tec, cx).into_any_element(),
+        );
         lista = lista.child(
             superficie(&tema)
                 .overflow_hidden()
-                .child(item)
-                .when(sel, |v| v.child(detalhe(janela, i, j, tec, cx))),
+                .rounded(px(
+                    tema::RAIO_CARTAO + (tema::RAIO_CARTAO_PAINEL - tema::RAIO_CARTAO) * expansao
+                ))
+                .bg(misturar(
+                    tema.group_box,
+                    tema::cor(tema::SUPERFICIE_ALTA),
+                    expansao,
+                ))
+                .my(px(tema::ESP_2 * expansao))
+                .child(ripple_com_forma(
+                    format!("onda-jogo-{}", l.chave),
+                    true,
+                    item,
+                    tema::cor(tema::TEXTO).opacity(0.12),
+                    (Some(tema::RAIO_CARTAO), Some(tema::RAIO_CARTAO)),
+                    window,
+                    cx,
+                ))
+                .children(detalhe),
         );
     }
     v.child(lista).child(preferencias).into_any_element()
+}
+
+/// Chip de status (Material 3): tonal quando ativo, contornado quando
+/// pendente; ícone em vez de glifos de texto.
+fn chip_status(ativo: bool, tema: &gpui_kit::component::Theme) -> Div {
+    let (icone, texto, cor, fundo, borda) = if ativo {
+        let cor = tema::cor(tema::TEXTO_ICONE);
+        (
+            IconName::Check,
+            "Ativo",
+            cor,
+            cor.opacity(0.14),
+            tema.transparent,
+        )
+    } else {
+        (
+            IconName::Clock,
+            "Pendente",
+            tema.muted_foreground,
+            tema.transparent,
+            tema::cor(tema::BORDA),
+        )
+    };
+    h_flex()
+        .flex_shrink_0()
+        .h(px(tema::ALTURA_CHIP))
+        .gap(px(tema::ESP_1))
+        .px(px(tema::ESP_2))
+        .rounded(px(tema::RAIO_CHIP))
+        .border_1()
+        .border_color(borda)
+        .bg(fundo)
+        .text_size(px(tema::TAM_LEGENDA))
+        .font_medium()
+        .text_color(cor)
+        .child(Icon::new(icone).size(px(tema::TAM_LEGENDA)))
+        .child(texto)
+}
+
+/// Interpolação linear entre duas cores (para morphs de tom).
+fn misturar(de: Hsla, para: Hsla, t: f32) -> Hsla {
+    let de = de.to_rgb();
+    let para = para.to_rgb();
+    let l = |a: f32, b: f32| a + (b - a) * t;
+    Rgba {
+        r: l(de.r, para.r),
+        g: l(de.g, para.g),
+        b: l(de.b, para.b),
+        a: l(de.a, para.a),
+    }
+    .into()
+}
+
+type AoClicar = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+/// Um segmento de [`segmentado`].
+struct Segmento {
+    rotulo: SharedString,
+    escolhido: bool,
+    ao_clicar: AoClicar,
+}
+
+impl Segmento {
+    fn new(
+        rotulo: impl Into<SharedString>,
+        escolhido: bool,
+        ao_clicar: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            rotulo: rotulo.into(),
+            escolhido,
+            ao_clicar: Box::new(ao_clicar),
+        }
+    }
+}
+
+/// Segmented button (Material 3): pílula contornada, segmentos iguais, o
+/// escolhido preenchido em tom violeta e com check.
+fn segmentado(
+    id: &'static str,
+    altura: f32,
+    segmentos: Vec<Segmento>,
+    tema: &gpui_kit::component::Theme,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let ultimo = segmentos.len().saturating_sub(1);
+    let borda = tema::cor(tema::BORDA);
+    h_flex()
+        .w_full()
+        .h(px(altura))
+        .rounded_full()
+        .border_1()
+        .border_color(borda)
+        .children(segmentos.into_iter().enumerate().map(|(i, s)| {
+            // Morph da seleção (Material 3): o fundo e a cor entram aos poucos e
+            // o check cresce da largura zero, empurrando o rótulo para o lado.
+            let selecao = transition(
+                SharedString::from(format!("selecao-{id}-{i}")),
+                if s.escolhido { 1_f32 } else { 0_f32 },
+                Transition::new(Duration::from_millis(220)),
+                window,
+                cx,
+            );
+            let suave = 1. - (1. - selecao).powi(3);
+            let com_check = altura >= tema::ALTURA_SEGMENTADO;
+            let segmento = h_flex()
+                .id((id, i))
+                .justify_center()
+                .px(px(tema::ESP_2))
+                .when(i < ultimo, |d| d.border_r_1().border_color(borda))
+                // O GPUI não recorta o fundo dos filhos: as pontas arredondam sozinhas.
+                .when(i == 0, |d| d.rounded_l_full())
+                .when(i == ultimo, |d| d.rounded_r_full())
+                .cursor_pointer()
+                .text_size(px(if altura < tema::ALTURA_SEGMENTADO {
+                    tema::TAM_LEGENDA
+                } else {
+                    tema::TAM_CORPO
+                }))
+                .font_medium()
+                .bg(tema::cor(tema::ACAO_VIOLETA).opacity(0.28 * suave))
+                .text_color(misturar(
+                    tema.foreground,
+                    tema::cor(tema::TEXTO_ICONE),
+                    suave,
+                ))
+                .when(!s.escolhido, |d| d.hover(|d| d.bg(tema.list_hover)))
+                // No compacto o check não cabe ao lado de rótulos como "Sem
+                // limite"; o preenchimento já marca a escolha.
+                .when(com_check && selecao > 0., |d| {
+                    d.child(
+                        div()
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .w(px((tema::TAM_LEGENDA + tema::ESP_1) * suave))
+                            .opacity(suave)
+                            .child(Icon::new(IconName::Check).size(px(tema::TAM_LEGENDA))),
+                    )
+                })
+                .child(div().truncate().child(s.rotulo))
+                .on_click(s.ao_clicar);
+            // Pontas em cápsula, meio retangular: a onda não vaza da pílula.
+            let cantos = (
+                if i == 0 { None } else { Some(0.) },
+                if i == ultimo { None } else { Some(0.) },
+            );
+            ripple_com_forma(
+                format!("onda-{id}-{i}"),
+                true,
+                segmento.size_full(),
+                tema::cor(tema::TEXTO).opacity(0.16),
+                cantos,
+                window,
+                cx,
+            )
+            .flex_1()
+            .min_w_0()
+            .h_full()
+        }))
 }
 
 fn preferencias_globais(
@@ -650,51 +632,46 @@ fn preferencias_globais(
     let pode_salvar = janela
         .ui
         .pode_executar(&Comando::DefinirPreferencias(r.clone()));
-    let titulo = |texto: &'static str| {
-        div()
-            .font_family("Consolas")
-            .text_size(px(tema::TAM_LEGENDA))
-            .text_color(tema.muted_foreground)
-            .child(texto)
-    };
+    let titulo = |texto: &'static str| rotulo(texto, &tema);
+    // Cartão aninhado: um tom acima do cartão externo, sem borda.
     let cartao = || {
         superficie(&tema)
             .h_full()
             .min_w_0()
             .gap(px(tema::ESP_2))
-            .p(px(tema::ESP_3))
-            .bg(tema::cor(tema::FUNDO_CONTROLE))
+            .p(px(tema::ESP_4))
+            .rounded(px(tema::RAIO_CARTAO_INTERNO))
+            .bg(tema::cor(tema::SUPERFICIE_ALTA))
     };
 
-    let perfil = cartao().child(titulo("PERFIL DE DESEMPENHO")).children(
-        [
-            (Qualidade::Desempenho, "Desempenho máximo"),
-            (Qualidade::Equilibrado, "Equilibrado"),
-            (Qualidade::Qualidade, "Alta fidelidade"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(i, (qualidade, nome))| {
-            tema::botao_compacto(("qualidade-global", i))
-                .w_full()
-                .ghost()
-                .toggled(r.qualidade == qualidade)
-                .child(h_flex().w_full().justify_between().child(nome).when(
+    let perfil = v_flex()
+        .gap(px(tema::ESP_2))
+        .child(titulo("Perfil de desempenho"))
+        .child(segmentado(
+            "qualidade-global",
+            tema::ALTURA_SEGMENTADO,
+            [
+                (Qualidade::Desempenho, "Desempenho máximo"),
+                (Qualidade::Equilibrado, "Equilibrado"),
+                (Qualidade::Qualidade, "Alta fidelidade"),
+            ]
+            .into_iter()
+            .map(|(qualidade, nome)| {
+                Segmento::new(
+                    nome,
                     r.qualidade == qualidade,
-                    |v| {
-                        v.child(
-                            Icon::new(IconName::CircleCheck)
-                                .size(px(tema::TAM_CORPO))
-                                .text_color(tema::cor(tema::TEXTO_ICONE)),
-                        )
-                    },
-                ))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.ui.rascunho.qualidade = qualidade;
-                    cx.notify();
-                }))
-        }),
-    );
+                    cx.listener(move |this, _, _, cx| {
+                        this.ui.rascunho.qualidade = qualidade;
+                        this.agendar_salvar_preferencias(cx);
+                        cx.notify();
+                    }),
+                )
+            })
+            .collect(),
+            &tema,
+            window,
+            cx,
+        ));
 
     let reflex = janela
         .ui
@@ -710,7 +687,7 @@ fn preferencias_globais(
         .clone();
     let foco_visivel = window.last_input_was_keyboard() && foco_sync.contains_focused(window, cx);
     let sincronismo = cartao()
-        .child(titulo("SINCRONIZAÇÃO & LATÊNCIA"))
+        .child(titulo("Sincronização e latência"))
         .child(
             h_flex()
                 .justify_between()
@@ -735,8 +712,6 @@ fn preferencias_globais(
             h_flex()
                 .justify_between()
                 .gap(px(tema::ESP_2))
-                .border_t_1()
-                .border_color(tema.border)
                 .pt(px(tema::ESP_2))
                 .child(div().font_semibold().child("Sincronismo vertical"))
                 .child(
@@ -772,32 +747,37 @@ fn preferencias_globais(
                                     } else {
                                         Sincronismo::Desligado
                                     };
+                                    this.agendar_salvar_preferencias(cx);
                                     cx.notify();
                                 })),
                         ),
                 ),
         )
         .when(sync_ativo, |v| {
-            v.child(
-                h_flex().gap(px(tema::ESP_1)).children(
-                    [
-                        (Sincronismo::VSync, "V-Sync"),
-                        (Sincronismo::GSync, "G-SYNC"),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (modo, nome))| {
-                        tema::botao_compacto(("modo-sync", i))
-                            .ghost()
-                            .label(nome)
-                            .toggled(r.sincronismo == modo)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.ui.rascunho.sincronismo = modo;
-                                cx.notify();
-                            }))
-                    }),
-                ),
-            )
+            v.child(segmentado(
+                "modo-sync",
+                tema::ALTURA_SEGMENTADO_COMPACTO,
+                [
+                    (Sincronismo::VSync, "V-Sync"),
+                    (Sincronismo::GSync, "G-SYNC"),
+                ]
+                .into_iter()
+                .map(|(modo, nome)| {
+                    Segmento::new(
+                        nome,
+                        r.sincronismo == modo,
+                        cx.listener(move |this, _, _, cx| {
+                            this.ui.rascunho.sincronismo = modo;
+                            this.agendar_salvar_preferencias(cx);
+                            cx.notify();
+                        }),
+                    )
+                })
+                .collect(),
+                &tema,
+                window,
+                cx,
+            ))
         })
         .when_some(janela.ui.aviso_sincronismo(), |v, aviso| {
             v.child(
@@ -808,72 +788,94 @@ fn preferencias_globais(
             )
         });
 
+    // Atalhos num segmented; "Outro" abre o ajuste fino para valores fora
+    // dos atalhos (ex.: 165), que antes ficava sempre visível.
+    const ATALHOS_FPS: [Option<u32>; 4] = [None, Some(60), Some(144), Some(240)];
+    const FPS_OUTRO_INICIAL: u32 = 120;
+    let personalizado = !ATALHOS_FPS.contains(&r.limite_fps);
+    let mut segmentos_fps: Vec<Segmento> = ATALHOS_FPS
+        .into_iter()
+        .map(|fps| {
+            Segmento::new(
+                fps.map_or_else(|| "Sem limite".to_owned(), |fps| fps.to_string()),
+                r.limite_fps == fps,
+                cx.listener(move |this, _, _, cx| {
+                    this.ui.rascunho.limite_fps = fps;
+                    this.agendar_salvar_preferencias(cx);
+                    cx.notify();
+                }),
+            )
+        })
+        .collect();
+    segmentos_fps.push(Segmento::new(
+        "Outro",
+        personalizado,
+        cx.listener(|this, _, _, cx| {
+            let atual = this.ui.rascunho.limite_fps;
+            if ATALHOS_FPS.contains(&atual) {
+                this.ui.rascunho.limite_fps = Some(FPS_OUTRO_INICIAL);
+                this.agendar_salvar_preferencias(cx);
+                cx.notify();
+            }
+        }),
+    ));
+    let seletor_fps = segmentado(
+        "atalho-fps-global",
+        tema::ALTURA_SEGMENTADO_COMPACTO,
+        segmentos_fps,
+        &tema,
+        window,
+        cx,
+    );
     let passo = |id, rotulo, delta: i32| {
         tema::botao_compacto(id)
             .ghost()
             .label(rotulo)
-            .indisponivel(r.limite_fps.is_none())
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(fps) = this.ui.rascunho.limite_fps {
                     this.ui.rascunho.limite_fps = Some(
                         fps.saturating_add_signed(delta)
                             .clamp(LIMITE_FPS_MIN, LIMITE_FPS_MAX),
                     );
+                    this.agendar_salvar_preferencias(cx);
                     cx.notify();
                 }
             }))
     };
     let limite = cartao()
-        .child(titulo("LIMITE DE FPS"))
-        .child(
-            h_flex()
-                .justify_between()
-                .rounded(px(tema::RAIO))
-                .border_1()
-                .border_color(tema.border)
-                .bg(tema.group_box)
-                .child(passo("fps-global-menos", "−", -1))
-                .child(
-                    div().font_family("Consolas").font_semibold().child(
-                        r.limite_fps
-                            .map_or_else(|| "Desligado".into(), |fps| format!("{fps} FPS")),
-                    ),
-                )
-                .child(passo("fps-global-mais", "+", 1)),
-        )
-        .child(
-            h_flex().flex_wrap().gap(px(tema::ESP_1)).children(
-                [Some(60), Some(144), Some(240), None]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, fps)| {
-                        tema::botao_compacto(("atalho-fps-global", i))
-                            .flex_grow(1.)
-                            .outline()
-                            .label(fps.map_or_else(|| "OFF".into(), |fps| fps.to_string()))
-                            .toggled(r.limite_fps == fps)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.ui.rascunho.limite_fps = fps;
-                                cx.notify();
-                            }))
-                    }),
-            ),
-        );
+        .child(titulo("Limite de FPS"))
+        .child(seletor_fps)
+        .when(personalizado, |v| {
+            v.child(
+                h_flex()
+                    .justify_between()
+                    .rounded(px(tema::RAIO_CHIP))
+                    .bg(tema::cor(tema::SUPERFICIE_MAIS_ALTA))
+                    .child(passo("fps-global-menos-5", "−5", -5))
+                    .child(passo("fps-global-menos", "−", -1))
+                    .child(
+                        div().flex_1().text_center().font_semibold().child(
+                            r.limite_fps
+                                .map_or_else(String::new, |fps| format!("{fps} FPS")),
+                        ),
+                    )
+                    .child(passo("fps-global-mais", "+", 1))
+                    .child(passo("fps-global-mais-5", "+5", 5)),
+            )
+        });
 
-    let colunas = if largura >= px(tema::LARGURA_GRADE_TRES) {
-        3
+    let colunas = if largura >= px(tema::LARGURA_GRADE_DOIS) {
+        2
     } else {
         1
     };
     superficie(&tema)
-        .p(px(tema::ESP_4))
+        .rounded(px(tema::RAIO_CARTAO_PAINEL))
+        .p(px(tema::ESP_6))
         .gap(px(tema::ESP_4))
         .child(
             h_flex()
                 .justify_between()
-                .border_b_1()
-                .border_color(tema.border)
-                .pb(px(tema::ESP_3))
                 .child(
                     v_flex()
                         .child(div().font_semibold().child("Preferências globais"))
@@ -884,60 +886,44 @@ fn preferencias_globais(
                                 .child("Configurações padrão para os jogos detectados"),
                         ),
                 )
-                .child(Icon::new(IconName::SlidersHorizontal).text_color(tema.muted_foreground)),
+                // Ação rara e secundária: link discreto no cabeçalho, no lugar
+                // do antigo rodapé de botões (as escolhas já se aplicam sozinhas).
+                .child(ripple(
+                    "onda-restaurar",
+                    true,
+                    tema::botao_compacto("restaurar-prefs-globais")
+                        .ghost()
+                        .icon(IconName::RotateCcw)
+                        .label("Restaurar padrões")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.ui.rascunho = crate::modelo::preferencias_padrao();
+                            this.agendar_salvar_preferencias(cx);
+                            cx.notify();
+                        })),
+                    window,
+                    cx,
+                )),
         )
+        .child(perfil)
         .child(
             div()
                 .grid()
                 .grid_cols(colunas)
                 .gap(px(tema::ESP_4))
-                .children([perfil, sincronismo, limite]),
+                .children([sincronismo, limite]),
         )
-        .child(
-            h_flex()
-                .justify_end()
-                .flex_wrap()
-                .gap(px(tema::ESP_2))
-                .border_t_1()
-                .border_color(tema.border)
-                .pt(px(tema::ESP_2))
-                .when(alterado, |v| {
-                    v.child(
-                        div()
-                            .flex_1()
-                            .text_color(tema.warning)
-                            .text_size(px(tema::TAM_LEGENDA))
-                            .child(t::PREFS_NAO_SALVAS),
-                    )
-                })
-                .child(ripple(
-                    "onda-restaurar",
-                    true,
-                    tema::botao("restaurar-prefs-globais")
-                        .ghost()
-                        .label("Restaurar padrões")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.ui.rascunho = crate::modelo::preferencias_padrao();
-                            cx.notify();
-                        })),
-                    window,
-                    cx,
-                ))
-                .child(ripple(
-                    "onda-salvar",
-                    alterado && pode_salvar,
-                    tema::botao("salvar-prefs-globais")
-                        .primary()
-                        .icon(IconName::Check)
-                        .label("Salvar alterações")
-                        .indisponivel(!(alterado && pode_salvar))
-                        .when(!pode_salvar, |b| b.tooltip(t::SO_COM_SERVICO))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.enviar(Comando::DefinirPreferencias(this.ui.rascunho.clone()), cx);
-                        })),
-                    window,
-                    cx,
-                )),
+        // Sem o serviço a escolha não tem como ser aplicada: fica guardada e
+        // a tela diz por quê (com o serviço, salva sozinha em ~0,5 s).
+        .when(
+            alterado && !pode_salvar && janela.ui.ocupado.is_none(),
+            |v| {
+                v.child(
+                    div()
+                        .text_color(tema.warning)
+                        .text_size(px(tema::TAM_LEGENDA))
+                        .child(t::SO_COM_SERVICO),
+                )
+            },
         )
 }
 
@@ -988,11 +974,11 @@ fn detalhe(janela: &Janela, i: usize, j: &Jogo, tec: bool, cx: &mut Context<Jane
     };
     let mut d = v_flex()
         .gap(px(tema::ESP_3))
-        .p(px(tema::ESP_4))
-        .border_t_1()
-        .border_color(tema.border)
-        .bg(tema.background)
-        .child(div().font_semibold().child(j.nome.clone()))
+        // Sem fundo nem divisória próprios: herda o tom do cartão expandido,
+        // e o nome já está no cabeçalho logo acima.
+        .px(px(tema::ESP_4))
+        .pt(px(tema::ESP_1))
+        .pb(px(tema::ESP_4))
         .child(bloco(tj::DETALHE_FEITO, feito(j), tj::DETALHE_NADA_FEITO))
         .child(bloco(tj::DETALHE_FACA, passos(j), tj::DETALHE_NADA_A_FAZER));
     if let Some(a) = arquivo(janela, i, j, cx) {
