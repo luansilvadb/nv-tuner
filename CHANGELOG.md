@@ -9,6 +9,27 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 
 ## [Não lançado]
 
+## [0.4.0] - 2026-11-27
+
+*Visual novo no estilo Material 3*
+
+### Alterado
+
+- A interface ganhou o visual Material 3: superfícies em tons no lugar de bordas, chips de status com ícone e animações ao trocar de seção e ao abrir o cartão de um jogo.
+- A busca virou uma pílula. Perfil, V-Sync/G-SYNC e limite de FPS agora são escolhidos em botões segmentados, e o ajuste fino de FPS só aparece em "Outro".
+- O interruptor "Otimização automática" substitui o botão que mudava de rótulo.
+- As preferências globais são salvas sozinhas logo após a última escolha. "Restaurar padrões" fica no cabeçalho do cartão.
+- A busca de jogos instalados verifica todas as plataformas ao mesmo tempo.
+- O código foi reorganizado por dentro, sem mudança no uso.
+
+### Removido
+
+- O menu de filtros da tela **Jogos**. Para achar um jogo, use a busca pelo nome.
+
+### Corrigido
+
+- Uma escolha feita enquanto o envio anterior ainda estava em andamento não é mais apagada pela resposta.
+
 ## [0.3.2] - 2026-11-27
 
 *Busca e filtros na biblioteca de jogos*
@@ -142,7 +163,8 @@ As notas de cada release no GitHub são montadas a partir da seção da versão
 - **Interface em GPUI** com 6 telas em português e restauração do estado original.
 - Instalador MSI.
 
-[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.2...HEAD
+[Não lançado]: https://github.com/luansilvadb/nv-tuner/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/luansilvadb/nv-tuner/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/luansilvadb/nv-tuner/compare/v0.2.0...v0.3.0
