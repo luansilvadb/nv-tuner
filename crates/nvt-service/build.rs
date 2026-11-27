@@ -1,4 +1,4 @@
-//! Extrai de `docs/pesquisa/settings-referencia.json` (NVIDIA Profile
+//! Extrai de `data/settings-referencia.json` (NVIDIA Profile
 //! Inspector, MIT) só os nomes legíveis das settings do catálogo
 //! (`regras/settings.toml`), para não embutir a referência inteira (~1 MB).
 //! Também embute o ícone e o VERSIONINFO do nvt-service.exe
@@ -49,9 +49,9 @@ fn hex(s: &str) -> Option<u32> {
 fn main() {
     embutir_recurso_win("nv-tuner (serviço)", "nvt-service");
 
-    let raiz = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../..");
-    let toml_path = raiz.join("regras/settings.toml");
-    let ref_path = raiz.join("docs/pesquisa/settings-referencia.json");
+    let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let toml_path = crate_dir.join("../../regras/settings.toml");
+    let ref_path = crate_dir.join("data/settings-referencia.json");
     println!("cargo:rerun-if-changed={}", toml_path.display());
     println!("cargo:rerun-if-changed={}", ref_path.display());
 

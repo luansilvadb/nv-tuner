@@ -1,6 +1,6 @@
 //! Nomes legíveis de settings e valores para a UI e os relatórios.
 //!
-//! Fonte: `docs/pesquisa/settings-referencia.json` (NVIDIA Profile Inspector,
+//! Fonte: `data/settings-referencia.json` (NVIDIA Profile Inspector,
 //! MIT), filtrada no `build.rs` para os IDs do catálogo. Na falta de um nome
 //! na referência, usa a descrição e os nomes de valores do catálogo
 //! (`regras/settings.toml`).
