@@ -922,7 +922,7 @@ mod testes {
     /// `main` escolhe o canal simulado e nunca inicia o do serviço junto.
     #[test]
     fn main_nao_inicia_o_servico_na_demonstracao() {
-        let main = include_str!("main.rs");
+        let main = include_str!("main.rs").replace("\r\n", "\n");
         let i = main.find("fn main()").unwrap();
         let corpo = &main[i..main[i..].find("\n}\n").unwrap() + i];
         let escolha = corpo

@@ -172,7 +172,7 @@ fn ui_continua_enviando_cada_requisicao_da_v0_2_0() {
         .iter()
         .map(|a| {
             let f = fs::read_to_string(a).unwrap_or_else(|e| panic!("ler {}: {e}", a.display()));
-            codigo_de_producao(&f)
+            codigo_de_producao(&f.replace("\r\n", "\n"))
         })
         .collect::<Vec<_>>()
         .join("\n");

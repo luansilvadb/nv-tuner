@@ -426,7 +426,8 @@ fn nenhuma_api_proibida_em_codigo_de_producao() {
     let mut existentes = Vec::new();
     for arquivo in &arquivos {
         let fonte = fs::read_to_string(arquivo)
-            .unwrap_or_else(|e| panic!("ler {}: {e}", arquivo.display()));
+            .unwrap_or_else(|e| panic!("ler {}: {e}", arquivo.display()))
+            .replace("\r\n", "\n");
         let relativo = arquivo.strip_prefix(&raiz).unwrap_or(arquivo);
         let relativo = relativo.display().to_string().replace('\\', "/");
         for oc in analisar(&fonte) {
@@ -448,7 +449,9 @@ fn nenhuma_api_proibida_em_codigo_de_producao() {
 #[test]
 fn lancador_usa_msiexec_da_pasta_de_sistema() {
     let caminho = raiz_workspace().join("crates/nvt-service/src/atualizacao/lancador.rs");
-    let fonte = fs::read_to_string(&caminho).expect("ler lancador.rs");
+    let fonte = fs::read_to_string(&caminho)
+        .expect("ler lancador.rs")
+        .replace("\r\n", "\n");
     let codigo: String = lexer(&fonte).into_iter().map(|l| l.busca + "\n").collect();
     assert!(
         codigo.contains("const MSIEXEC: &str = \"msiexec.exe\""),
@@ -465,7 +468,9 @@ fn lancador_usa_msiexec_da_pasta_de_sistema() {
 #[test]
 fn abrir_usa_so_a_constante_de_inicializacao() {
     let caminho = raiz_workspace().join("crates/nvt-ui/src/abrir.rs");
-    let fonte = fs::read_to_string(&caminho).expect("abrir.rs existe desde o L4");
+    let fonte = fs::read_to_string(&caminho)
+        .expect("abrir.rs existe desde o L4")
+        .replace("\r\n", "\n");
     conferir_abrir(&fonte).unwrap_or_else(|e| panic!("abrir.rs: {e}"));
 }
 
