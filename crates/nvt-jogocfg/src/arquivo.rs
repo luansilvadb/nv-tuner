@@ -152,8 +152,8 @@ pub fn gravar(raiz: &Path, caminho: &Path, novo: &[u8], hash_esperado: &Hash) ->
         .file_name()
         .ok_or_else(|| Erro::formato("caminho sem nome"))?;
     let temp = pasta.join(format!(
-        "{}.nvt-{}-{}.tmp",
-        nome.to_string_lossy(),
+        "{}{}-{}{SUFIXO_TEMP}",
+        prefixo_temporario(nome),
         std::process::id(),
         SEQUENCIA.fetch_add(1, Ordering::Relaxed)
     ));
@@ -168,6 +168,25 @@ pub fn gravar(raiz: &Path, caminho: &Path, novo: &[u8], hash_esperado: &Hash) ->
         return Err(Erro::HashDivergente);
     }
     Ok(relido.hash)
+}
+
+/// Sufixo dos temporários criados por [`gravar`].
+const SUFIXO_TEMP: &str = ".tmp";
+
+/// Prefixo dos temporários de um arquivo de nome `nome`: `<nome>.nvt-`.
+fn prefixo_temporario(nome: &std::ffi::OsStr) -> String {
+    format!("{}.nvt-", nome.to_string_lossy())
+}
+
+/// Diz se `nome_arquivo` segue o padrão `<nome>.nvt-*.tmp` dos temporários que [`gravar`]
+/// cria para `alvo`. Ponto único do padrão: quem limpa sobras de queda usa este critério.
+/// A comparação é feita sobre os nomes convertidos com perda (`to_string_lossy`).
+pub fn eh_temporario_de(nome_arquivo: &std::ffi::OsStr, alvo: &Path) -> bool {
+    let Some(nome) = alvo.file_name() else {
+        return false;
+    };
+    let n = nome_arquivo.to_string_lossy();
+    n.starts_with(&prefixo_temporario(nome)) && n.ends_with(SUFIXO_TEMP)
 }
 
 fn escrever_e_trocar(caminho: &Path, temp: &Path, novo: &[u8]) -> Resultado<()> {
@@ -228,4 +247,39 @@ pub(crate) fn pasta_conhecida(id: &windows_sys::core::GUID) -> Resultado<PathBuf
     // SAFETY: `p` veio de SHGetKnownFolderPath (ou é nulo, aceito pela API).
     unsafe { CoTaskMemFree(p.cast()) };
     r
+}
+
+#[cfg(test)]
+mod testes_temporario {
+    use super::eh_temporario_de;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    #[test]
+    fn reconhece_so_o_padrao_de_temporario() {
+        let alvo = Path::new(r"C:\jogo\cfg.ini");
+        let sim = [
+            "cfg.ini.nvt-123-4.tmp",
+            "cfg.ini.nvt-.tmp",
+            "cfg.ini.nvt-x.tmp",
+        ];
+        let nao = [
+            "cfg.ini",
+            "cfg.ini.tmp",
+            "cfg.ini.nvt-1-2.bak",
+            "outro.ini.nvt-1-2.tmp",
+            "xcfg.ini.nvt-1-2.tmp",
+            "cfg.ini.nvt1-2.tmp",
+        ];
+        for n in sim {
+            assert!(eh_temporario_de(OsStr::new(n), alvo), "{n}");
+        }
+        for n in nao {
+            assert!(!eh_temporario_de(OsStr::new(n), alvo), "{n}");
+        }
+        assert!(!eh_temporario_de(
+            OsStr::new("a.nvt-1.tmp"),
+            Path::new(r"C:\")
+        ));
+    }
 }

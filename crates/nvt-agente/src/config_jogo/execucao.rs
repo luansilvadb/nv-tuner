@@ -934,20 +934,17 @@ impl<A: LeituraUsuario + EscritaUsuario, T: Transporte, P: Persistencia> Execuca
 /// Remove temporários `<nome>.nvt-*.tmp` deixados por uma queda entre a escrita do
 /// temporário e o `ReplaceFileW`.
 fn limpar_temporarios(raiz: &Path, caminho: &Path) {
-    let (Some(pasta), Some(nome)) = (caminho.parent(), caminho.file_name()) else {
+    let (Some(pasta), Some(_)) = (caminho.parent(), caminho.file_name()) else {
         return;
     };
     if arquivo::verificar_componentes(raiz, pasta).is_err() {
         return;
     }
-    let prefixo = format!("{}.nvt-", nome.to_string_lossy());
     let Ok(entradas) = std::fs::read_dir(pasta) else {
         return;
     };
     for e in entradas.flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        if n.starts_with(&prefixo)
-            && n.ends_with(".tmp")
+        if arquivo::eh_temporario_de(&e.file_name(), caminho)
             && e.file_type().is_ok_and(|t| t.is_file())
         {
             let _ = std::fs::remove_file(e.path());
