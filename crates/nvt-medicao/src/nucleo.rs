@@ -275,7 +275,7 @@ impl Agregador {
     }
 
     /// Fecha a partida em `t_fim_us`. Descarta < 60 s ou sem Presents (R-M-04).
-    pub fn finalizar(self, t_fim_us: u64) -> Result<Partida, Descarte> {
+    pub fn finalizar(mut self, t_fim_us: u64) -> Result<Partida, Descarte> {
         let duracao_s =
             u32::try_from(t_fim_us.saturating_sub(self.t0_us) / 1_000_000).unwrap_or(u32::MAX);
         if self.presents == 0 {
@@ -284,7 +284,7 @@ impl Agregador {
         if duracao_s < DURACAO_MINIMA_S {
             return Err(Descarte::Curta);
         }
-        let mut ordenados = self.frametimes.clone();
+        let mut ordenados = std::mem::take(&mut self.frametimes);
         ordenados.sort_unstable();
         let soma_ft: u64 = ordenados.iter().map(|&f| u64::from(f)).sum();
         let quadros_total = ordenados.len() as u64;

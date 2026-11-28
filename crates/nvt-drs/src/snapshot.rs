@@ -3,6 +3,7 @@
 //! [`capture`] só lê. [`restore_plan`] é puro (compara dois snapshots). [`apply_restore`]
 //! altera a sessão e chama [`Session::save`], que grava no disco.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -80,10 +81,6 @@ impl Snapshot {
         }
         Ok(snap)
     }
-
-    fn profile(&self, r: &ProfileRef) -> Option<&ProfileSnapshot> {
-        self.profiles.iter().find(|p| &p.profile == r)
-    }
 }
 
 /// Captura o perfil base e os perfis dos executáveis `exes` (somente leitura).
@@ -103,17 +100,26 @@ pub fn capture(session: &Session<'_>, exes: &[&str]) -> Result<Snapshot> {
         Vec::new(),
     )?);
 
+    // Nome do perfil nomeado -> posição em `profiles` (o base nunca casa com `Named`).
+    let mut indice: HashMap<String, usize> = HashMap::new();
     let mut missing = Vec::new();
     for &exe in exes {
         match session.find_application(exe)? {
             None => missing.push(exe.to_string()),
             Some((p, _)) => {
-                let name = session.profile_info(p)?.name;
-                let r = ProfileRef::Named(name);
-                if let Some(ps) = profiles.iter_mut().find(|ps| ps.profile == r) {
-                    ps.applications.push(exe.to_string());
+                let info = session.profile_info(p)?;
+                if let Some(&i) = indice.get(&info.name) {
+                    profiles[i].applications.push(exe.to_string());
                 } else {
-                    profiles.push(profile_snapshot(session, p, r, vec![exe.to_string()])?);
+                    indice.insert(info.name.clone(), profiles.len());
+                    let r = ProfileRef::Named(info.name.clone());
+                    profiles.push(snapshot_com_info(
+                        session,
+                        p,
+                        r,
+                        info,
+                        vec![exe.to_string()],
+                    )?);
                 }
             }
         }
@@ -137,6 +143,17 @@ fn profile_snapshot(
     applications: Vec<String>,
 ) -> Result<ProfileSnapshot> {
     let info = session.profile_info(p)?;
+    snapshot_com_info(session, p, r, info, applications)
+}
+
+/// Como [`profile_snapshot`], com o `ProfileInfo` já lido (evita outra ida ao driver).
+fn snapshot_com_info(
+    session: &Session<'_>,
+    p: crate::drs::Profile<'_>,
+    r: ProfileRef,
+    info: crate::drs::ProfileInfo,
+    applications: Vec<String>,
+) -> Result<ProfileSnapshot> {
     let settings = session
         .enum_settings(p)?
         .into_iter()
@@ -194,17 +211,36 @@ impl RestorePlan {
 /// Calcula o plano para levar o estado `current` ao snapshot `target`. Só considera os
 /// perfis presentes em `target`; perfis que existem apenas em `current` ficam intocados.
 pub fn restore_plan(target: &Snapshot, current: &Snapshot) -> RestorePlan {
+    // Chave do perfil: `None` = base, `Some(nome)` = nomeado. Fica a primeira ocorrência,
+    // como na busca linear de `Snapshot::profile`.
+    let chave = |r: &ProfileRef| match r {
+        ProfileRef::Base => None,
+        ProfileRef::Named(n) => Some(n.clone()),
+    };
+    let mut por_perfil: HashMap<Option<String>, &ProfileSnapshot> = HashMap::new();
+    for p in &current.profiles {
+        por_perfil.entry(chave(&p.profile)).or_insert(p);
+    }
+
     let mut ops = Vec::new();
     for tp in &target.profiles {
-        let cp = current.profile(&tp.profile);
+        let cp = por_perfil.get(&chave(&tp.profile)).copied();
         if cp.is_none() {
             if let ProfileRef::Named(name) = &tp.profile {
                 ops.push(RestoreOp::CreateProfile { name: name.clone() });
             }
         }
-        let apps_atuais: &[String] = cp.map(|c| c.applications.as_slice()).unwrap_or(&[]);
+        // `eq_ignore_ascii_case` equivale a comparar as formas em minúsculas ASCII.
+        let apps_atuais: HashSet<String> = cp
+            .map(|c| {
+                c.applications
+                    .iter()
+                    .map(|a| a.to_ascii_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
         for exe in &tp.applications {
-            if !apps_atuais.iter().any(|a| a.eq_ignore_ascii_case(exe)) {
+            if !apps_atuais.contains(&exe.to_ascii_lowercase()) {
                 ops.push(RestoreOp::CreateApplication {
                     profile: tp.profile.clone(),
                     exe: exe.clone(),
@@ -212,10 +248,16 @@ pub fn restore_plan(target: &Snapshot, current: &Snapshot) -> RestorePlan {
             }
         }
         let atuais: &[SettingSnapshot] = cp.map(|c| c.settings.as_slice()).unwrap_or(&[]);
+        // id -> valores atuais (vetor para preservar o caso de id repetido).
+        let mut valores: HashMap<u32, Vec<&SettingValue>> = HashMap::new();
+        for cs in atuais {
+            valores.entry(cs.id).or_default().push(&cs.value);
+        }
+        let ids_alvo: HashSet<u32> = tp.settings.iter().map(|ts| ts.id).collect();
         for ts in &tp.settings {
-            let igual = atuais
-                .iter()
-                .any(|cs| cs.id == ts.id && cs.value == ts.value);
+            let igual = valores
+                .get(&ts.id)
+                .is_some_and(|vs| vs.iter().any(|v| **v == ts.value));
             if !igual {
                 ops.push(RestoreOp::Set {
                     profile: tp.profile.clone(),
@@ -225,7 +267,7 @@ pub fn restore_plan(target: &Snapshot, current: &Snapshot) -> RestorePlan {
             }
         }
         for cs in atuais {
-            if !tp.settings.iter().any(|ts| ts.id == cs.id) {
+            if !ids_alvo.contains(&cs.id) {
                 ops.push(RestoreOp::Reset {
                     profile: tp.profile.clone(),
                     id: cs.id,
@@ -241,15 +283,29 @@ pub fn restore_plan(target: &Snapshot, current: &Snapshot) -> RestorePlan {
 /// privilégio, [`Session::save`] devolve [`Error::PrivilegeRequired`] e nada chega ao disco
 /// (no 621.40 ele grava mesmo sem administrador). Para no primeiro erro, sem gravar.
 pub fn apply_restore(session: &Session<'_>, plan: &RestorePlan) -> Result<()> {
-    let perfil = |r: &ProfileRef| -> Result<crate::drs::Profile<'_>> {
-        match r {
-            ProfileRef::Base => session.base_profile(),
+    // Cache de handles só desta chamada. O handle vale enquanto a sessão viver (ver
+    // `drs::Profile`); nenhuma operação do plano apaga perfil nem recarrega a sessão.
+    // Um nome só entra no cache depois de achado, e `CreateProfile` só aparece para nome
+    // ausente (a busca anterior teria falhado e abortado), então o cache nunca fica velho.
+    let mut cache: HashMap<Option<String>, crate::drs::Profile<'_>> = HashMap::new();
+    let mut perfil = |r: &ProfileRef| -> Result<crate::drs::Profile<'_>> {
+        let chave = match r {
+            ProfileRef::Base => None,
+            ProfileRef::Named(n) => Some(n.clone()),
+        };
+        if let Some(&p) = cache.get(&chave) {
+            return Ok(p);
+        }
+        let p = match r {
+            ProfileRef::Base => session.base_profile()?,
             ProfileRef::Named(n) => session.find_profile_by_name(n)?.ok_or(Error::Nvapi {
                 function: "NvAPI_DRS_FindProfileByName",
                 status: crate::error::Status::ProfileNotFound,
                 message: format!("perfil “{n}” não encontrado"),
-            }),
-        }
+            })?,
+        };
+        cache.insert(chave, p);
+        Ok(p)
     };
     for op in &plan.ops {
         match op {

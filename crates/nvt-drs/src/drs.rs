@@ -16,6 +16,14 @@ use crate::error::{Error, Result};
 use crate::ffi::{self, Handle, id};
 use crate::strings::{from_wide, to_unicode_string};
 
+/// Chama a função NVAPI `$f` com os argumentos e confere o status com `NvApi::check`,
+/// concentrando o `unsafe` e o check. O comentário `SAFETY` fica no ponto de uso.
+macro_rules! chamar {
+    ($api:expr, $nome:expr, $f:ident($($arg:expr),* $(,)?)) => {
+        $api.check($nome, unsafe { $f($($arg),*) })
+    };
+}
+
 /// Quantas estruturas pedir por chamada nas enumerações em lote.
 const LOTE: usize = 32;
 
@@ -284,12 +292,12 @@ impl<'a> Session<'a> {
         let create: ffi::FnCreateSession = api.resolve(id::DRS_CREATE_SESSION, F)?;
         let mut h: Handle = std::ptr::null_mut();
         // SAFETY: ponteiro de saída válido.
-        api.check(F, unsafe { create(&mut h) })?;
+        chamar!(api, F, create(&mut h))?;
         let s = Self { api, h };
         const L: &str = "NvAPI_DRS_LoadSettings";
         let load: ffi::FnSession = api.resolve(id::DRS_LOAD_SETTINGS, L)?;
         // SAFETY: sessão recém-criada; em erro, `Drop` a destrói.
-        api.check(L, unsafe { load(s.h) })?;
+        chamar!(api, L, load(s.h))?;
         Ok(s)
     }
 
@@ -302,7 +310,7 @@ impl<'a> Session<'a> {
         let f: ffi::FnGetProfile = self.api.resolve(idf, function)?;
         let mut p: Handle = std::ptr::null_mut();
         // SAFETY: sessão válida e ponteiro de saída.
-        self.api.check(function, unsafe { f(self.h, &mut p) })?;
+        chamar!(self.api, function, f(self.h, &mut p))?;
         Ok(Profile::new(p))
     }
 
@@ -349,7 +357,7 @@ impl<'a> Session<'a> {
         let f: ffi::FnGetProfileInfo = self.api.resolve(id::DRS_GET_PROFILE_INFO, F)?;
         let mut info = Box::new(ffi::NvdrsProfileV1::ZERO);
         // SAFETY: estrutura V1 com versão preenchida; handles válidos (lifetime).
-        self.api.check(F, unsafe { f(self.h, p.h, &mut *info) })?;
+        chamar!(self.api, F, f(self.h, p.h, &mut *info))?;
         Ok(ProfileInfo {
             name: from_wide(&info.profile_name),
             is_predefined: info.is_predefined != 0,
@@ -499,8 +507,7 @@ impl<'a> Session<'a> {
         let (f, _): (ffi::FnProfileSettingId, _) =
             self.api.resolve_fallback(interno, publico, function)?;
         // SAFETY: sessão e perfil válidos.
-        self.api
-            .check(function, unsafe { f(self.h, p.h, setting_id) })
+        chamar!(self.api, function, f(self.h, p.h, setting_id))
     }
 
     /// Remove (em memória) o valor gravado pelo usuário no perfil.
@@ -533,8 +540,7 @@ impl<'a> Session<'a> {
         info.profile_name = *to_unicode_string(name)?;
         let mut p: Handle = std::ptr::null_mut();
         // SAFETY: estrutura V1 com versão e nome preenchidos; saída válida.
-        self.api
-            .check(F, unsafe { f(self.h, &mut *info, &mut p) })?;
+        chamar!(self.api, F, f(self.h, &mut *info, &mut p))?;
         Ok(Profile::new(p))
     }
 
@@ -551,7 +557,7 @@ impl<'a> Session<'a> {
         app.app_name = *to_unicode_string(exe)?;
         app.user_friendly_name = *to_unicode_string(friendly_name.unwrap_or(exe))?;
         // SAFETY: estrutura V4 com versão e nomes preenchidos.
-        self.api.check(F, unsafe { f(self.h, p.h, &mut *app) })
+        chamar!(self.api, F, f(self.h, p.h, &mut *app))
     }
 
     /// Apaga (em memória) o perfil `p`. O handle `p` não deve ser usado depois; perfis
@@ -560,7 +566,7 @@ impl<'a> Session<'a> {
         const F: &str = "NvAPI_DRS_DeleteProfile";
         let f: ffi::FnDeleteProfile = self.api.resolve(id::DRS_DELETE_PROFILE, F)?;
         // SAFETY: sessão e perfil válidos (lifetime).
-        self.api.check(F, unsafe { f(self.h, p.h) })
+        chamar!(self.api, F, f(self.h, p.h))
     }
 
     /// Remove (em memória) o executável `exe` do perfil.
@@ -569,7 +575,7 @@ impl<'a> Session<'a> {
         let f: ffi::FnDeleteApplication = self.api.resolve(id::DRS_DELETE_APPLICATION, F)?;
         let nome = to_unicode_string(exe)?;
         // SAFETY: sessão e perfil válidos; nome com 2048 u16 terminado em zero.
-        self.api.check(F, unsafe { f(self.h, p.h, &*nome) })
+        chamar!(self.api, F, f(self.h, p.h, &*nome))
     }
 
     /// `DRS_SaveSettings`: grava a sessão no disco. `-137` vira [`Error::PrivilegeRequired`].
@@ -581,7 +587,7 @@ impl<'a> Session<'a> {
         const F: &str = "NvAPI_DRS_SaveSettings";
         let f: ffi::FnSession = self.api.resolve(id::DRS_SAVE_SETTINGS, F)?;
         // SAFETY: sessão válida.
-        self.api.check(F, unsafe { f(self.h) })
+        chamar!(self.api, F, f(self.h))
     }
 }
 
