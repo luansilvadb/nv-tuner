@@ -3,7 +3,7 @@
 //! jogo e os fatos de cada jogo cruzados com a base curada
 //! (`regras/jogos.toml`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -243,9 +243,20 @@ fn exe_indicado(j: &DetectedGame) -> Option<String> {
         .map(|n| n.to_string_lossy().into_owned())
 }
 
-fn adicionar_sem_repetir(lista: &mut Vec<String>, nome: &str) {
-    if !nome.is_empty() && !lista.iter().any(|x| x.eq_ignore_ascii_case(nome)) {
-        lista.push(nome.to_owned());
+/// Lista em ordem de inserção sem nomes repetidos ignorando caixa ASCII. As
+/// chaves `to_ascii_lowercase` equivalem a comparar com `eq_ignore_ascii_case`
+/// e evitam a busca linear a cada inserção.
+#[derive(Default)]
+struct SemRepetir {
+    itens: Vec<String>,
+    chaves: HashSet<String>,
+}
+
+impl SemRepetir {
+    fn adicionar(&mut self, nome: &str) {
+        if !nome.is_empty() && self.chaves.insert(nome.to_ascii_lowercase()) {
+            self.itens.push(nome.to_owned());
+        }
     }
 }
 
@@ -332,21 +343,21 @@ impl DetectorJogos {
             .iter()
             .map(|j| (chave_cache(j), self.exes_conhecidos(j)))
             .collect();
-        let mut vigiados: Vec<String> = Vec::new();
+        let mut vigiados = SemRepetir::default();
         for (_, exes) in &conhecidos {
             for e in exes {
-                adicionar_sem_repetir(&mut vigiados, e);
+                vigiados.adicionar(e);
             }
         }
-        for p in self.base.processos_vigiados() {
-            adicionar_sem_repetir(&mut vigiados, &p);
+        for p in self.base.processos_vigiados_ref() {
+            vigiados.adicionar(p);
         }
         for p in ANTICHEAT_SO_DURANTE_JOGO {
-            adicionar_sem_repetir(&mut vigiados, p);
+            vigiados.adicionar(p);
         }
         for j in jogos {
             if let Some(n) = j.exe_indicado.as_deref().and_then(|p| p.file_name()) {
-                adicionar_sem_repetir(&mut vigiados, &n.to_string_lossy());
+                vigiados.adicionar(&n.to_string_lossy());
             }
         }
         let mut avisos_adiamento = BTreeSet::new();
@@ -360,7 +371,7 @@ impl DetectorJogos {
         let mut saida = Vec::new();
         let mut novos = BTreeMap::new();
         let mut adiadas = Vec::new();
-        let mut encontrados = Vec::new();
+        let mut encontrados = SemRepetir::default();
         let mut lista_processos_indisponivel = false;
         let mut pendentes: Vec<_> = (0..jogos.len()).collect();
 
@@ -378,9 +389,9 @@ impl DetectorJogos {
             };
             let rodando = lista
                 .as_ref()
-                .map_or_else(Vec::new, |ps| nvt_detect::em_execucao(ps, &vigiados));
+                .map_or_else(Vec::new, |ps| nvt_detect::em_execucao(ps, &vigiados.itens));
             for exe in &rodando {
-                adicionar_sem_repetir(&mut encontrados, exe);
+                encontrados.adicionar(exe);
             }
             // Só enumera jogos de exe desconhecido após uma lista legível
             // anterior e quando nenhum processo vigiado está em execução.
@@ -415,7 +426,7 @@ impl DetectorJogos {
                     }
                     Some(Ok((AnaliseJogo::EmExecucao { exes: abertos }, _))) => {
                         for exe in &abertos {
-                            adicionar_sem_repetir(&mut encontrados, exe);
+                            encontrados.adicionar(exe);
                         }
                         let confirmados = nvt_detect::facts::jogo_em_execucao(j, exes, &abertos);
                         if confirmados.is_empty() {
@@ -485,14 +496,14 @@ impl DetectorJogos {
             self.ja_varreu |= lista.is_some();
             if !local
                 || adiadas.is_empty()
-                || !encontrados.is_empty()
+                || !encontrados.itens.is_empty()
                 || lista_processos_indisponivel
             {
                 break;
             }
             for (_, entrada) in &saida {
                 if !entrada.exe.is_empty() {
-                    adicionar_sem_repetir(&mut vigiados, &entrada.exe);
+                    vigiados.adicionar(&entrada.exe);
                 }
             }
             pendentes = std::mem::take(&mut adiadas);
@@ -520,12 +531,12 @@ impl DetectorJogos {
         ResultadoDeteccao {
             jogos: saida.into_iter().map(|(_, entrada)| entrada).collect(),
             avisos,
-            adiadas_primeira_passada: if encontrados.is_empty() {
+            adiadas_primeira_passada: if encontrados.itens.is_empty() {
                 adiadas.into_iter().map(|i| jogos[i].nome.clone()).collect()
             } else {
                 Vec::new()
             },
-            processos_em_execucao: encontrados,
+            processos_em_execucao: encontrados.itens,
             lista_processos_indisponivel,
         }
     }
@@ -562,27 +573,22 @@ impl DetectorJogos {
     /// anterior e, para jogo da Steam, os executáveis e processos protegidos
     /// do jogo da base com o mesmo AppID.
     fn exes_conhecidos(&self, j: &DetectedGame) -> Vec<String> {
-        let mut exes = Vec::new();
+        let mut exes = SemRepetir::default();
         if let Some(a) = self
             .anteriores
             .get(&chave_cache(j))
             .filter(|a| !a.exe.is_empty())
         {
-            adicionar_sem_repetir(&mut exes, &a.exe);
+            exes.adicionar(&a.exe);
         }
         if let Some(appid) = j.steam_appid() {
-            for c in self
-                .base
-                .jogos()
-                .iter()
-                .filter(|c| c.steam_appid == Some(appid))
-            {
+            for c in self.base.jogos_por_appid(appid) {
                 for e in c.executaveis.iter().chain(&c.processos_protegidos) {
-                    adicionar_sem_repetir(&mut exes, e);
+                    exes.adicionar(e);
                 }
             }
         }
-        exes
+        exes.itens
     }
 
     /// Entrada de um jogo em execução: os fatos anteriores ou, sem eles,

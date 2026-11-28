@@ -6,13 +6,13 @@
 //! anticheat), a política de configuração da fase 3 e códigos de orientação.
 //! O núcleo não gera texto: as orientações são só códigos, traduzidos na UI.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config_jogo::{self, CatalogoConfigJogo, DefArquivoJogo, ErroConfigJogo, RegraJogo};
-use crate::preferences::Sincronismo;
+use crate::preferences::{Sincronismo, enum_nomeado};
 
 /// Conteúdo de `regras/jogos.toml`, embutido no binário.
 pub const JOGOS_TOML: &str = include_str!("../../../regras/jogos.toml");
@@ -82,64 +82,36 @@ impl PoliticaConfig {
     }
 }
 
-/// Código de orientação por jogo (texto em `textos.rs`, fora do núcleo).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Orientacao {
-    ReflexOn,
-    ReflexOnBoost,
-    ReduceBuffering,
-    LimitadorDoJogo,
-    SemLimiteComReflex,
-    TelaCheia,
-    VsyncJogoOff,
-    VsyncDriverComGsync,
-    FpsMaxLaunchEa,
-    FpsMaxPadraoBaixo,
-    OneFrameThreadLagOff,
-    ResolucaoAdaptativaOff,
-    ModoPerformanceOpcional,
-    #[serde(rename = "fps_limit_cpu_100")]
-    FpsLimitCpu100,
+enum_nomeado! {
+    /// Código de orientação por jogo (texto em `textos.rs`, fora do núcleo).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Orientacao {
+        ReflexOn => "reflex_on",
+        ReflexOnBoost => "reflex_on_boost",
+        ReduceBuffering => "reduce_buffering",
+        LimitadorDoJogo => "limitador_do_jogo",
+        SemLimiteComReflex => "sem_limite_com_reflex",
+        TelaCheia => "tela_cheia",
+        VsyncJogoOff => "vsync_jogo_off",
+        VsyncDriverComGsync => "vsync_driver_com_gsync",
+        FpsMaxLaunchEa => "fps_max_launch_ea",
+        FpsMaxPadraoBaixo => "fps_max_padrao_baixo",
+        OneFrameThreadLagOff => "one_frame_thread_lag_off",
+        ResolucaoAdaptativaOff => "resolucao_adaptativa_off",
+        ModoPerformanceOpcional => "modo_performance_opcional",
+        #[serde(rename = "fps_limit_cpu_100")]
+        FpsLimitCpu100 => "fps_limit_cpu_100",
+    }
 }
 
 impl Orientacao {
     /// Todos os códigos conhecidos.
-    pub const TODAS: [Self; 14] = [
-        Self::ReflexOn,
-        Self::ReflexOnBoost,
-        Self::ReduceBuffering,
-        Self::LimitadorDoJogo,
-        Self::SemLimiteComReflex,
-        Self::TelaCheia,
-        Self::VsyncJogoOff,
-        Self::VsyncDriverComGsync,
-        Self::FpsMaxLaunchEa,
-        Self::FpsMaxPadraoBaixo,
-        Self::OneFrameThreadLagOff,
-        Self::ResolucaoAdaptativaOff,
-        Self::ModoPerformanceOpcional,
-        Self::FpsLimitCpu100,
-    ];
+    pub const TODAS: [Self; 14] = Self::VARIANTES;
 
     /// Código usado no TOML e no IPC.
     pub const fn codigo(self) -> &'static str {
-        match self {
-            Self::ReflexOn => "reflex_on",
-            Self::ReflexOnBoost => "reflex_on_boost",
-            Self::ReduceBuffering => "reduce_buffering",
-            Self::LimitadorDoJogo => "limitador_do_jogo",
-            Self::SemLimiteComReflex => "sem_limite_com_reflex",
-            Self::TelaCheia => "tela_cheia",
-            Self::VsyncJogoOff => "vsync_jogo_off",
-            Self::VsyncDriverComGsync => "vsync_driver_com_gsync",
-            Self::FpsMaxLaunchEa => "fps_max_launch_ea",
-            Self::FpsMaxPadraoBaixo => "fps_max_padrao_baixo",
-            Self::OneFrameThreadLagOff => "one_frame_thread_lag_off",
-            Self::ResolucaoAdaptativaOff => "resolucao_adaptativa_off",
-            Self::ModoPerformanceOpcional => "modo_performance_opcional",
-            Self::FpsLimitCpu100 => "fps_limit_cpu_100",
-        }
+        self.nome_variante()
     }
 }
 
@@ -169,7 +141,10 @@ impl JogoCurado {
     /// diferenciar maiúsculas.
     pub fn tem_executavel(&self, exe: &str) -> bool {
         let nome = nome_arquivo(exe);
-        self.executaveis.iter().any(|e| iguais(e, nome))
+        let chave = chave_exe(nome);
+        self.executaveis
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(nome) || chave_exe(e) == chave)
     }
 }
 
@@ -280,13 +255,79 @@ impl fmt::Display for ErrosJogos {
 impl std::error::Error for ErrosJogos {}
 
 /// Base curada validada.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct BaseJogos {
     jogos: Vec<JogoCurado>,
     config: CatalogoConfigJogo,
+    /// Derivado de `jogos`; fora de `Debug` e `PartialEq`.
+    indices: Indices,
 }
 
+/// Índices montados uma vez na construção da base (ela é imutável).
+#[derive(Clone, Default)]
+struct Indices {
+    /// Exe em [`chave_exe`] -> posições em `jogos`, em ordem crescente.
+    por_exe: HashMap<String, Vec<usize>>,
+    /// Id -> primeira posição com esse id.
+    por_id: HashMap<String, usize>,
+    /// AppID da Steam -> posições em `jogos`, em ordem crescente.
+    por_appid: HashMap<u32, Vec<usize>>,
+    /// Resultado de [`BaseJogos::processos_vigiados`].
+    vigiados: BTreeSet<String>,
+}
+
+impl Indices {
+    fn montar(jogos: &[JogoCurado]) -> Self {
+        let mut ind = Self::default();
+        for (i, j) in jogos.iter().enumerate() {
+            ind.por_id.entry(j.id.as_str().to_owned()).or_insert(i);
+            for exe in &j.executaveis {
+                let lista = ind.por_exe.entry(chave_exe(exe)).or_default();
+                if lista.last() != Some(&i) {
+                    lista.push(i);
+                }
+            }
+            if let Some(appid) = j.steam_appid {
+                ind.por_appid.entry(appid).or_default().push(i);
+            }
+            ind.vigiados.extend(
+                j.executaveis
+                    .iter()
+                    .chain(&j.processos_protegidos)
+                    .map(|p| p.to_lowercase()),
+            );
+        }
+        ind
+    }
+}
+
+impl fmt::Debug for BaseJogos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BaseJogos")
+            .field("jogos", &self.jogos)
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
+impl PartialEq for BaseJogos {
+    fn eq(&self, outra: &Self) -> bool {
+        self.jogos == outra.jogos && self.config == outra.config
+    }
+}
+
+impl Eq for BaseJogos {}
+
 impl BaseJogos {
+    fn nova(jogos: Vec<JogoCurado>, config: CatalogoConfigJogo) -> Self {
+        let indices = Indices::montar(&jogos);
+        Self {
+            jogos,
+            config,
+            indices,
+        }
+    }
+
     /// Base embutida (`regras/jogos.toml`).
     /// O parse e a validação rodam uma vez por processo; cada chamada devolve um clone.
     pub fn embutida() -> Result<Self, ErrosJogos> {
@@ -333,10 +374,7 @@ impl BaseJogos {
         );
         erros.extend(erros_config.into_iter().map(ErroJogo::ConfigJogo));
         if erros.is_empty() {
-            Ok(Self {
-                jogos: bruto.jogo,
-                config,
-            })
+            Ok(Self::nova(bruto.jogo, config))
         } else {
             Err(ErrosJogos(erros))
         }
@@ -354,38 +392,47 @@ impl BaseJogos {
 
     /// Jogo pelo id.
     pub fn jogo(&self, id: &str) -> Option<&JogoCurado> {
-        self.jogos.iter().find(|j| j.id.as_str() == id)
+        self.indices.por_id.get(id).map(|&i| &self.jogos[i])
+    }
+
+    /// Jogos com o AppID da Steam informado, na ordem da base.
+    pub fn jogos_por_appid(&self, steam_appid: u32) -> impl Iterator<Item = &JogoCurado> {
+        self.indices
+            .por_appid
+            .get(&steam_appid)
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.jogos[i])
     }
 
     /// Jogo da base para um exe detectado (nome ou caminho; sem diferenciar
     /// maiúsculas). Se o jogo curado tem `steam_appid` e o chamador informou
     /// um AppID diferente, não casa.
     pub fn casar(&self, exe: &str, steam_appid: Option<u32>) -> Option<&JogoCurado> {
-        self.jogos.iter().find(|j| {
-            j.tem_executavel(exe)
-                && match (j.steam_appid, steam_appid) {
-                    (Some(curado), Some(informado)) => curado == informado,
-                    _ => true,
-                }
-        })
+        let candidatos = self.indices.por_exe.get(&chave_exe(nome_arquivo(exe)))?;
+        candidatos
+            .iter()
+            .map(|&i| &self.jogos[i])
+            .find(|j| match (j.steam_appid, steam_appid) {
+                (Some(curado), Some(informado)) => curado == informado,
+                _ => true,
+            })
     }
 
     /// Executáveis e `processos_protegidos` de todos os jogos, em minúsculas,
     /// para vigiar jogos em execução.
     pub fn processos_vigiados(&self) -> BTreeSet<String> {
-        self.jogos
-            .iter()
-            .flat_map(|j| j.executaveis.iter().chain(&j.processos_protegidos))
-            .map(|p| p.to_lowercase())
-            .collect()
+        self.indices.vigiados.clone()
+    }
+
+    /// Como [`BaseJogos::processos_vigiados`], sem copiar o conjunto.
+    pub fn processos_vigiados_ref(&self) -> &BTreeSet<String> {
+        &self.indices.vigiados
     }
 
     /// Base sem nenhum jogo (todo jogo fica fora da base).
     pub fn vazia() -> Self {
-        Self {
-            jogos: Vec::new(),
-            config: CatalogoConfigJogo::default(),
-        }
+        Self::nova(Vec::new(), CatalogoConfigJogo::default())
     }
 }
 
@@ -482,8 +529,12 @@ fn nome_arquivo(exe: &str) -> &str {
     exe.rsplit(['\\', '/']).next().unwrap_or(exe)
 }
 
-fn iguais(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b) || a.to_lowercase() == b.to_lowercase()
+/// Chave de comparação de executáveis sem diferenciar maiúsculas. A regra
+/// antiga, `eq_ignore_ascii_case || to_lowercase ==`, equivale a comparar
+/// esta chave: se dois nomes diferem só na caixa ASCII, os demais caracteres
+/// são idênticos e `to_lowercase` dá o mesmo resultado nos dois.
+fn chave_exe(exe: &str) -> String {
+    exe.to_lowercase()
 }
 
 #[cfg(test)]

@@ -269,12 +269,13 @@ pub fn desligar_limite_drs(
     let Some(&off) = def.valores.get("off") else {
         return;
     };
+    let travas = prefs.travas();
     for j in jogos {
         let Some(regra) = j.jogo_base.as_ref().and_then(|b| limites.get(b)) else {
             continue;
         };
         let alvo = Alvo::Jogo(j.id.clone());
-        if prefs.travada(&alvo, SETTING_LIMITE_FPS) {
+        if travas.contains(&(&alvo, SETTING_LIMITE_FPS)) {
             continue;
         }
         let mudanca = SettingChange {

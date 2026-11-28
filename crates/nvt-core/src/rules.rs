@@ -7,7 +7,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::capabilities::{Arquitetura, Capabilities};
-use crate::catalogo::{Catalogo, PreferenciaGovernante, VERSAO_SCHEMA};
+use crate::carga;
+use crate::catalogo::{Catalogo, DefSetting, PreferenciaGovernante, VERSAO_SCHEMA};
 use crate::explicacao::{
     DLSS_AUSENTE, Falha, MotivoDeclarado, MotivoNaoAplicada, TipoMotivo, motivo_padrao,
 };
@@ -96,46 +97,239 @@ pub struct Condicoes {
     pub limite_fps_definido: Option<bool>,
 }
 
+/// Fatos contra os quais as condições são avaliadas. As condições `jogo_*`
+/// só são avaliadas com `jogo` presente.
+struct Fatos<'a> {
+    caps: &'a Capabilities,
+    jogo: Option<&'a GameFacts>,
+    prefs: &'a Preferences,
+}
+
+/// Forma de uma condição e como ler o fato que ela compara.
+enum Teste<'a> {
+    /// Igualdade com fato booleano; fato desconhecido (`None`) não casa.
+    Booleano(Option<bool>, fn(&Fatos<'_>) -> Option<bool>),
+    /// O fato precisa estar na lista. O fato devolve `(nome, conhecido)`.
+    Lista {
+        lista: &'a Option<Vec<String>>,
+        aceitos: &'static [&'static str],
+        fato: fn(&Fatos<'_>) -> (&'static str, bool),
+    },
+    /// Mínimo numérico (fato sempre conhecido).
+    MinimoU32(Option<u32>, fn(&Fatos<'_>) -> u32),
+    /// Versão mínima (fato sempre conhecido).
+    MinimoVersao(Option<Versao>, fn(&Fatos<'_>) -> Versao),
+    /// Versão mínima do DLSS do jogo (ausência vira [`DLSS_AUSENTE`]).
+    DlssMin(Option<Versao>),
+}
+
+impl Teste<'_> {
+    fn presente(&self) -> bool {
+        match self {
+            Self::Booleano(c, _) => c.is_some(),
+            Self::Lista { lista, .. } => lista.is_some(),
+            Self::MinimoU32(c, _) => c.is_some(),
+            Self::MinimoVersao(c, _) | Self::DlssMin(c) => c.is_some(),
+        }
+    }
+
+    /// `(esperado, encontrado)` se a condição está presente e não casa.
+    fn falha(&self, f: &Fatos<'_>) -> Option<(String, Option<String>)> {
+        match self {
+            Self::Booleano(c, fato) => {
+                let c = (*c)?;
+                let v = fato(f);
+                (v != Some(c)).then(|| (c.to_string(), v.map(|v| v.to_string())))
+            }
+            Self::Lista { lista, fato, .. } => {
+                let l = lista.as_ref()?;
+                let (nome, conhecido) = fato(f);
+                (!l.iter().any(|n| n == nome))
+                    .then(|| (l.join(", "), conhecido.then(|| nome.to_owned())))
+            }
+            Self::MinimoU32(m, fato) => {
+                let m = (*m)?;
+                let v = fato(f);
+                (v < m).then(|| (m.to_string(), Some(v.to_string())))
+            }
+            Self::MinimoVersao(m, fato) => {
+                let m = (*m)?;
+                let v = fato(f);
+                (v < m).then(|| (m.to_string(), Some(v.to_string())))
+            }
+            Self::DlssMin(m) => {
+                let m = (*m)?;
+                let dlss = f.jogo.and_then(|j| j.dlss);
+                (!dlss.is_some_and(|v| v >= m)).then(|| {
+                    let achado = dlss.map_or_else(|| DLSS_AUSENTE.to_owned(), |v| v.to_string());
+                    (m.to_string(), Some(achado))
+                })
+            }
+        }
+    }
+}
+
+/// Uma entrada do registro de condições ([`Condicoes::registro`]).
+struct Condicao<'a> {
+    nome: &'static str,
+    /// Usa fatos do jogo (só vale em escopo `por_jogo`).
+    de_jogo: bool,
+    teste: Teste<'a>,
+}
+
 impl Condicoes {
+    /// Registro único das condições, na ordem usada para explicar as falhas:
+    /// fatos do jogo, Tensor Cores, arquitetura, demais capacidades e
+    /// preferências. A desestruturação sem `..` faz uma condição nova que
+    /// não entrar aqui virar erro de compilação.
+    fn registro(&self) -> [Condicao<'_>; 22] {
+        use Teste::{Booleano, DlssMin, Lista, MinimoU32, MinimoVersao};
+        let Self {
+            arquitetura,
+            tem_tensor_cores,
+            tensor_fp8,
+            frame_gen,
+            mfg,
+            rebar_suportado,
+            rebar_ativo,
+            vram_mb_min,
+            driver_min,
+            refresh_conhecido,
+            vrr_possivel,
+            vrr_ativo,
+            jogo_api,
+            jogo_dlss,
+            jogo_dlss_min,
+            jogo_reflex,
+            jogo_anticheat_kernel,
+            jogo_competitivo,
+            jogo_limitador_nativo,
+            sincronismo,
+            qualidade,
+            limite_fps_definido,
+        } = self;
+        fn jogo<'a>(nome: &'static str, teste: Teste<'a>) -> Condicao<'a> {
+            Condicao {
+                nome,
+                de_jogo: true,
+                teste,
+            }
+        }
+        fn geral<'a>(nome: &'static str, teste: Teste<'a>) -> Condicao<'a> {
+            Condicao {
+                nome,
+                de_jogo: false,
+                teste,
+            }
+        }
+        [
+            jogo(
+                "jogo_dlss",
+                Booleano(*jogo_dlss, |f| f.jogo.map(|j| j.dlss.is_some())),
+            ),
+            jogo("jogo_dlss_min", DlssMin(*jogo_dlss_min)),
+            jogo(
+                "jogo_api",
+                Lista {
+                    lista: jogo_api,
+                    aceitos: &Api::NOMES_REGRA,
+                    fato: |f| {
+                        let api = f.jogo.map_or(Api::Desconhecida, |j| j.api);
+                        (api.nome_regra(), api != Api::Desconhecida)
+                    },
+                },
+            ),
+            jogo("jogo_reflex", Booleano(*jogo_reflex, |f| f.jogo?.reflex)),
+            jogo(
+                "jogo_anticheat_kernel",
+                Booleano(*jogo_anticheat_kernel, |f| f.jogo?.anticheat_kernel),
+            ),
+            jogo(
+                "jogo_competitivo",
+                Booleano(*jogo_competitivo, |f| f.jogo.map(|j| j.competitivo)),
+            ),
+            jogo(
+                "jogo_limitador_nativo",
+                Booleano(*jogo_limitador_nativo, |f| f.jogo?.limitador_nativo),
+            ),
+            geral(
+                "tem_tensor_cores",
+                Booleano(*tem_tensor_cores, |f| Some(f.caps.tem_tensor_cores)),
+            ),
+            geral(
+                "tensor_fp8",
+                Booleano(*tensor_fp8, |f| Some(f.caps.tensor_fp8)),
+            ),
+            geral(
+                "arquitetura",
+                Lista {
+                    lista: arquitetura,
+                    aceitos: &Arquitetura::NOMES_REGRA,
+                    fato: |f| (f.caps.arquitetura.nome_regra(), true),
+                },
+            ),
+            geral(
+                "frame_gen",
+                Booleano(*frame_gen, |f| Some(f.caps.frame_gen)),
+            ),
+            geral("mfg", Booleano(*mfg, |f| Some(f.caps.mfg))),
+            geral(
+                "rebar_suportado",
+                Booleano(*rebar_suportado, |f| Some(f.caps.rebar_suportado)),
+            ),
+            geral(
+                "rebar_ativo",
+                Booleano(*rebar_ativo, |f| f.caps.rebar_ativo),
+            ),
+            geral("vram_mb_min", MinimoU32(*vram_mb_min, |f| f.caps.vram_mb)),
+            geral(
+                "driver_min",
+                MinimoVersao(*driver_min, |f| f.caps.driver_version),
+            ),
+            geral(
+                "refresh_conhecido",
+                Booleano(*refresh_conhecido, |f| Some(f.caps.refresh_hz().is_some())),
+            ),
+            geral(
+                "vrr_possivel",
+                Booleano(*vrr_possivel, |f| f.caps.vrr.possivel),
+            ),
+            geral("vrr_ativo", Booleano(*vrr_ativo, |f| f.caps.vrr.ativo)),
+            geral(
+                "sincronismo",
+                Lista {
+                    lista: sincronismo,
+                    aceitos: &Sincronismo::NOMES_REGRA,
+                    fato: |f| (f.prefs.sincronismo.nome_regra(), true),
+                },
+            ),
+            geral(
+                "qualidade",
+                Lista {
+                    lista: qualidade,
+                    aceitos: &Qualidade::NOMES_REGRA,
+                    fato: |f| (f.prefs.qualidade.nome_regra(), true),
+                },
+            ),
+            geral(
+                "limite_fps_definido",
+                Booleano(*limite_fps_definido, |f| Some(f.prefs.limite_fps.is_some())),
+            ),
+        ]
+    }
+
     /// Número de condições presentes (especificidade da regra).
     pub fn quantidade(&self) -> usize {
-        [
-            self.arquitetura.is_some(),
-            self.tem_tensor_cores.is_some(),
-            self.tensor_fp8.is_some(),
-            self.frame_gen.is_some(),
-            self.mfg.is_some(),
-            self.rebar_suportado.is_some(),
-            self.rebar_ativo.is_some(),
-            self.vram_mb_min.is_some(),
-            self.driver_min.is_some(),
-            self.refresh_conhecido.is_some(),
-            self.vrr_possivel.is_some(),
-            self.vrr_ativo.is_some(),
-            self.jogo_api.is_some(),
-            self.jogo_dlss.is_some(),
-            self.jogo_dlss_min.is_some(),
-            self.jogo_reflex.is_some(),
-            self.jogo_anticheat_kernel.is_some(),
-            self.jogo_competitivo.is_some(),
-            self.jogo_limitador_nativo.is_some(),
-            self.sincronismo.is_some(),
-            self.qualidade.is_some(),
-            self.limite_fps_definido.is_some(),
-        ]
-        .into_iter()
-        .filter(|b| *b)
-        .count()
+        self.registro()
+            .iter()
+            .filter(|c| c.teste.presente())
+            .count()
     }
 
     pub(crate) fn usa_fatos_de_jogo(&self) -> bool {
-        self.jogo_api.is_some()
-            || self.jogo_dlss.is_some()
-            || self.jogo_dlss_min.is_some()
-            || self.jogo_reflex.is_some()
-            || self.jogo_anticheat_kernel.is_some()
-            || self.jogo_competitivo.is_some()
-            || self.jogo_limitador_nativo.is_some()
+        self.registro()
+            .iter()
+            .any(|c| c.de_jogo && c.teste.presente())
     }
 
     /// Verdadeiro se a regra está condicionada à preferência.
@@ -164,200 +358,51 @@ impl Condicoes {
         jogo: Option<&GameFacts>,
         prefs: &Preferences,
     ) -> Vec<Falha> {
-        fn add(
-            f: &mut Vec<Falha>,
-            condicao: &'static str,
-            esperado: String,
-            achado: Option<String>,
-        ) {
-            f.push(Falha {
-                condicao,
-                esperado,
-                encontrado: achado,
-            });
-        }
-        fn booleano(f: &mut Vec<Falha>, condicao: &'static str, c: Option<bool>, v: Option<bool>) {
-            if let Some(c) = c
-                && v != Some(c)
-            {
-                add(f, condicao, c.to_string(), v.map(|v| v.to_string()));
-            }
-        }
-        fn lista(
-            f: &mut Vec<Falha>,
-            condicao: &'static str,
-            l: &Option<Vec<String>>,
-            nome: &str,
-            conhecido: bool,
-        ) {
-            if let Some(l) = l
-                && !l.iter().any(|n| n == nome)
-            {
-                add(
-                    f,
-                    condicao,
-                    l.join(", "),
-                    conhecido.then(|| nome.to_owned()),
-                );
-            }
-        }
-
-        let mut f = Vec::new();
-        if let Some(j) = jogo {
-            booleano(&mut f, "jogo_dlss", self.jogo_dlss, Some(j.dlss.is_some()));
-            if let Some(m) = self.jogo_dlss_min
-                && !j.dlss.is_some_and(|v| v >= m)
-            {
-                let achado = j
-                    .dlss
-                    .map_or_else(|| DLSS_AUSENTE.to_owned(), |v| v.to_string());
-                add(&mut f, "jogo_dlss_min", m.to_string(), Some(achado));
-            }
-            lista(
-                &mut f,
-                "jogo_api",
-                &self.jogo_api,
-                j.api.nome_regra(),
-                j.api != Api::Desconhecida,
-            );
-            booleano(&mut f, "jogo_reflex", self.jogo_reflex, j.reflex);
-            booleano(
-                &mut f,
-                "jogo_anticheat_kernel",
-                self.jogo_anticheat_kernel,
-                j.anticheat_kernel,
-            );
-            booleano(
-                &mut f,
-                "jogo_competitivo",
-                self.jogo_competitivo,
-                Some(j.competitivo),
-            );
-            booleano(
-                &mut f,
-                "jogo_limitador_nativo",
-                self.jogo_limitador_nativo,
-                j.limitador_nativo,
-            );
-        }
-
-        booleano(
-            &mut f,
-            "tem_tensor_cores",
-            self.tem_tensor_cores,
-            Some(caps.tem_tensor_cores),
-        );
-        booleano(&mut f, "tensor_fp8", self.tensor_fp8, Some(caps.tensor_fp8));
-        lista(
-            &mut f,
-            "arquitetura",
-            &self.arquitetura,
-            caps.arquitetura.nome_regra(),
-            true,
-        );
-        booleano(&mut f, "frame_gen", self.frame_gen, Some(caps.frame_gen));
-        booleano(&mut f, "mfg", self.mfg, Some(caps.mfg));
-        booleano(
-            &mut f,
-            "rebar_suportado",
-            self.rebar_suportado,
-            Some(caps.rebar_suportado),
-        );
-        booleano(&mut f, "rebar_ativo", self.rebar_ativo, caps.rebar_ativo);
-        if let Some(m) = self.vram_mb_min
-            && caps.vram_mb < m
-        {
-            add(
-                &mut f,
-                "vram_mb_min",
-                m.to_string(),
-                Some(caps.vram_mb.to_string()),
-            );
-        }
-        if let Some(m) = self.driver_min
-            && caps.driver_version < m
-        {
-            add(
-                &mut f,
-                "driver_min",
-                m.to_string(),
-                Some(caps.driver_version.to_string()),
-            );
-        }
-        booleano(
-            &mut f,
-            "refresh_conhecido",
-            self.refresh_conhecido,
-            Some(caps.refresh_hz().is_some()),
-        );
-        booleano(&mut f, "vrr_possivel", self.vrr_possivel, caps.vrr.possivel);
-        booleano(&mut f, "vrr_ativo", self.vrr_ativo, caps.vrr.ativo);
-
-        lista(
-            &mut f,
-            "sincronismo",
-            &self.sincronismo,
-            prefs.sincronismo.nome_regra(),
-            true,
-        );
-        lista(
-            &mut f,
-            "qualidade",
-            &self.qualidade,
-            prefs.qualidade.nome_regra(),
-            true,
-        );
-        booleano(
-            &mut f,
-            "limite_fps_definido",
-            self.limite_fps_definido,
-            Some(prefs.limite_fps.is_some()),
-        );
-        f
+        let fatos = Fatos { caps, jogo, prefs };
+        self.registro()
+            .iter()
+            .filter(|c| !c.de_jogo || jogo.is_some())
+            .filter_map(|c| {
+                let (esperado, encontrado) = c.teste.falha(&fatos)?;
+                Some(Falha {
+                    condicao: c.nome,
+                    esperado,
+                    encontrado,
+                })
+            })
+            .collect()
     }
 
     /// Verdadeiro se a condição `nome` está presente.
     pub fn presente(&self, nome: &str) -> bool {
-        match nome {
-            "arquitetura" => self.arquitetura.is_some(),
-            "tem_tensor_cores" => self.tem_tensor_cores.is_some(),
-            "tensor_fp8" => self.tensor_fp8.is_some(),
-            "frame_gen" => self.frame_gen.is_some(),
-            "mfg" => self.mfg.is_some(),
-            "rebar_suportado" => self.rebar_suportado.is_some(),
-            "rebar_ativo" => self.rebar_ativo.is_some(),
-            "vram_mb_min" => self.vram_mb_min.is_some(),
-            "driver_min" => self.driver_min.is_some(),
-            "refresh_conhecido" => self.refresh_conhecido.is_some(),
-            "vrr_possivel" => self.vrr_possivel.is_some(),
-            "vrr_ativo" => self.vrr_ativo.is_some(),
-            "jogo_api" => self.jogo_api.is_some(),
-            "jogo_dlss" => self.jogo_dlss.is_some(),
-            "jogo_dlss_min" => self.jogo_dlss_min.is_some(),
-            "jogo_reflex" => self.jogo_reflex.is_some(),
-            "jogo_anticheat_kernel" => self.jogo_anticheat_kernel.is_some(),
-            "jogo_competitivo" => self.jogo_competitivo.is_some(),
-            "jogo_limitador_nativo" => self.jogo_limitador_nativo.is_some(),
-            "sincronismo" => self.sincronismo.is_some(),
-            "qualidade" => self.qualidade.is_some(),
-            "limite_fps_definido" => self.limite_fps_definido.is_some(),
-            _ => false,
-        }
+        self.registro()
+            .iter()
+            .any(|c| c.nome == nome && c.teste.presente())
     }
 
     /// Itens da condição de lista `nome` e os valores que ela aceita
     /// (`None` se `nome` não é condição de lista).
     fn lista_de(&self, nome: &str) -> Option<(&[String], &'static [&'static str])> {
-        let (l, aceitos): (&Option<Vec<String>>, &'static [&'static str]) = match nome {
-            "arquitetura" => (&self.arquitetura, &Arquitetura::NOMES_REGRA),
-            "jogo_api" => (&self.jogo_api, &Api::NOMES_REGRA),
-            "sincronismo" => (&self.sincronismo, &Sincronismo::NOMES_REGRA),
-            "qualidade" => (&self.qualidade, &Qualidade::NOMES_REGRA),
-            _ => return None,
-        };
-        Some((l.as_deref().unwrap_or(&[]), aceitos))
+        self.listas()
+            .find(|(n, _, _)| *n == nome)
+            .map(|(_, l, aceitos)| (l.as_deref().unwrap_or(&[]), aceitos))
+    }
+
+    /// Condições de lista do registro, na ordem dele: `(nome, lista, aceitos)`.
+    fn listas(&self) -> impl Iterator<Item = ListaCondicao<'_>> {
+        self.registro().into_iter().filter_map(|c| match c.teste {
+            Teste::Lista { lista, aceitos, .. } => Some((c.nome, lista, aceitos)),
+            _ => None,
+        })
     }
 }
+
+/// `(nome, lista, aceitos)` de uma condição de lista.
+type ListaCondicao<'a> = (
+    &'static str,
+    &'a Option<Vec<String>>,
+    &'static [&'static str],
+);
 
 /// Regra validada.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -440,6 +485,14 @@ struct ArquivoRegras {
     versao_schema: u32,
     #[serde(default)]
     regra: Vec<RegraBruta>,
+}
+
+impl carga::Versionado for ArquivoRegras {
+    const VERSAO_SCHEMA: u32 = VERSAO_SCHEMA;
+
+    fn versao_schema(&self) -> u32 {
+        self.versao_schema
+    }
 }
 
 /// Um erro de carga ou validação.
@@ -593,22 +646,21 @@ impl ConjuntoRegras {
         let mut regras = Vec::new();
         let mut ids = BTreeSet::new();
         for (arquivo, conteudo) in arquivos {
-            let bruto: ArquivoRegras = match toml::from_str(conteudo) {
-                Ok(b) => b,
+            let bruto: ArquivoRegras = match carga::ler(arquivo, conteudo) {
+                Ok(lido) => {
+                    if let Some(encontrada) = lido.versao_errada {
+                        erros.push(ErroRegra::VersaoSchema {
+                            arquivo: (*arquivo).to_owned(),
+                            encontrada,
+                        });
+                    }
+                    lido.dados
+                }
                 Err(e) => {
-                    erros.push(ErroRegra::Toml {
-                        arquivo: (*arquivo).to_owned(),
-                        mensagem: e.to_string(),
-                    });
+                    erros.push(e);
                     continue;
                 }
             };
-            if bruto.versao_schema != VERSAO_SCHEMA {
-                erros.push(ErroRegra::VersaoSchema {
-                    arquivo: (*arquivo).to_owned(),
-                    encontrada: bruto.versao_schema,
-                });
-            }
             for r in bruto.regra {
                 if !ids.insert(r.id.clone()) {
                     erros.push(ErroRegra::RegraDuplicada {
@@ -705,30 +757,14 @@ fn validar(
         });
     }
 
-    // Condições.
+    // Condições. As listas seguem o registro, mas `arquitetura` vem
+    // primeiro para manter a ordem histórica das mensagens de erro.
     let q = &r.quando;
-    validar_lista(
-        &id,
-        "arquitetura",
-        &q.arquitetura,
-        &Arquitetura::NOMES_REGRA,
-        erros,
-    );
-    validar_lista(&id, "jogo_api", &q.jogo_api, &Api::NOMES_REGRA, erros);
-    validar_lista(
-        &id,
-        "sincronismo",
-        &q.sincronismo,
-        &Sincronismo::NOMES_REGRA,
-        erros,
-    );
-    validar_lista(
-        &id,
-        "qualidade",
-        &q.qualidade,
-        &Qualidade::NOMES_REGRA,
-        erros,
-    );
+    let mut listas: Vec<_> = q.listas().collect();
+    listas.sort_by_key(|(nome, _, _)| *nome != "arquitetura");
+    for (campo, lista, aceitos) in listas {
+        validar_lista(&id, campo, lista, aceitos, erros);
+    }
     let cond = |mensagem: &str| ErroRegra::CondicaoInvalida {
         regra: id.clone(),
         mensagem: mensagem.to_owned(),
@@ -775,44 +811,12 @@ fn validar(
             valor,
             aceitos: def.valores_aceitos(),
         };
-        let valor = match &bruto {
-            toml::Value::String(nome) if def.valores.contains_key(nome) => {
-                Some(ValorAcao::Nome(nome.clone()))
-            }
-            toml::Value::Integer(n) => match u32::try_from(*n) {
-                Ok(v) if def.aceita(v) => Some(ValorAcao::Numero(v)),
-                _ => None,
-            },
-            toml::Value::Table(t)
-                if t.len() == 1 && t.get("limite_vrr") == Some(&toml::Value::Boolean(true)) =>
-            {
-                if def.faixa.is_some() {
-                    if q.refresh_conhecido != Some(true) || q.vrr_ativo != Some(true) {
-                        erros.push(cond(
-                            "`limite_vrr` exige `quando.refresh_conhecido = true` e `quando.vrr_ativo = true`",
-                        ));
-                    }
-                    Some(ValorAcao::LimiteVrr)
-                } else {
-                    None
-                }
-            }
-            toml::Value::Table(t) => match (t.len(), t.get("refresh_menos")) {
-                (1, Some(toml::Value::Integer(m))) => match u32::try_from(*m) {
-                    Ok(m) if def.faixa.is_some() => {
-                        if q.refresh_conhecido != Some(true) {
-                            erros.push(cond(
-                                "`refresh_menos` exige `quando.refresh_conhecido = true`",
-                            ));
-                        }
-                        Some(ValorAcao::RefreshMenos(m))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            },
-            _ => None,
-        };
+        let valor = converter_valor(def, &bruto);
+        if let Some((mensagem, atendido)) = valor.as_ref().and_then(ValorAcao::requisito)
+            && !atendido(q)
+        {
+            erros.push(cond(mensagem));
+        }
         match valor {
             Some(v) => {
                 aplicar.insert(setting, v);
@@ -835,6 +839,50 @@ fn validar(
         motivos,
         arquivo: arquivo.to_owned(),
     })
+}
+
+/// Converte o valor bruto de `aplicar` para a setting `def`; `None` se
+/// o valor não é aceito. Valores dinâmicos (tabela de uma chave) exigem
+/// setting com `faixa`.
+fn converter_valor(def: &DefSetting, bruto: &toml::Value) -> Option<ValorAcao> {
+    match bruto {
+        toml::Value::String(nome) if def.valores.contains_key(nome) => {
+            Some(ValorAcao::Nome(nome.clone()))
+        }
+        toml::Value::Integer(n) => u32::try_from(*n)
+            .ok()
+            .filter(|v| def.aceita(*v))
+            .map(ValorAcao::Numero),
+        toml::Value::Table(t) if def.faixa.is_some() && t.len() == 1 => match t.iter().next()? {
+            (k, toml::Value::Boolean(true)) if k == "limite_vrr" => Some(ValorAcao::LimiteVrr),
+            (k, toml::Value::Integer(m)) if k == "refresh_menos" => {
+                u32::try_from(*m).ok().map(ValorAcao::RefreshMenos)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Mensagem de erro e teste de um pré-requisito em `quando`.
+type Requisito = (&'static str, fn(&Condicoes) -> bool);
+
+impl ValorAcao {
+    /// Pré-requisito em `quando` de um valor dinâmico: mensagem de erro e
+    /// teste. `None` para valores fixos.
+    fn requisito(&self) -> Option<Requisito> {
+        match self {
+            Self::Nome(_) | Self::Numero(_) => None,
+            Self::RefreshMenos(_) => Some((
+                "`refresh_menos` exige `quando.refresh_conhecido = true`",
+                |q| q.refresh_conhecido == Some(true),
+            )),
+            Self::LimiteVrr => Some((
+                "`limite_vrr` exige `quando.refresh_conhecido = true` e `quando.vrr_ativo = true`",
+                |q| q.refresh_conhecido == Some(true) && q.vrr_ativo == Some(true),
+            )),
+        }
+    }
 }
 
 /// Valida `motivo_quando_nao_aplica`: cada chave é uma condição presente em

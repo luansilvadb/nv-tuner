@@ -9,6 +9,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::carga;
 use crate::rules::{ErroRegra, ErrosRegras};
 
 /// Preferência do usuário que governa uma setting. Regras só podem mexer
@@ -98,6 +99,14 @@ struct ArquivoCatalogo {
     setting: Vec<DefSetting>,
 }
 
+impl carga::Versionado for ArquivoCatalogo {
+    const VERSAO_SCHEMA: u32 = VERSAO_SCHEMA;
+
+    fn versao_schema(&self) -> u32 {
+        self.versao_schema
+    }
+}
+
 /// Versão do formato de `settings.toml` e dos arquivos de regras.
 pub const VERSAO_SCHEMA: u32 = 1;
 
@@ -112,17 +121,14 @@ pub struct Catalogo {
 impl Catalogo {
     /// Interpreta e valida o conteúdo de `settings.toml`.
     pub fn from_toml(arquivo: &str, conteudo: &str) -> Result<Self, ErrosRegras> {
-        let bruto: ArquivoCatalogo = toml::from_str(conteudo).map_err(|e| {
-            ErrosRegras(vec![ErroRegra::Toml {
-                arquivo: arquivo.to_owned(),
-                mensagem: e.to_string(),
-            }])
-        })?;
+        let lido =
+            carga::ler::<ArquivoCatalogo>(arquivo, conteudo).map_err(|e| ErrosRegras(vec![e]))?;
+        let bruto = lido.dados;
         let mut erros = Vec::new();
-        if bruto.versao_schema != VERSAO_SCHEMA {
+        if let Some(encontrada) = lido.versao_errada {
             erros.push(ErroRegra::VersaoSchema {
                 arquivo: arquivo.to_owned(),
-                encontrada: bruto.versao_schema,
+                encontrada,
             });
         }
         let mut settings = BTreeMap::new();

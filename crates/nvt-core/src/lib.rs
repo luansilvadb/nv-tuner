@@ -6,6 +6,7 @@
 //! configuração a ser aplicado pelo serviço.
 
 pub mod capabilities;
+mod carga;
 pub mod catalogo;
 pub mod config_jogo;
 pub mod evaluator;
@@ -54,6 +55,9 @@ pub const SETTINGS_TOML: &str = include_str!("../../../regras/settings.toml");
 /// Conteúdo de `regras/base.toml`, embutido no binário.
 pub const BASE_TOML: &str = include_str!("../../../regras/base.toml");
 
+/// Arquivos de regras embutidos, `(nome, conteúdo)`, na ordem de carga.
+pub const REGRAS_EMBUTIDAS: &[(&str, &str)] = &[("base.toml", BASE_TOML)];
+
 impl ConjuntoRegras {
     /// Catálogo e regras embutidos (`regras/settings.toml` + `regras/base.toml`).
     /// O parse e a validação rodam uma vez por processo; cada chamada devolve um clone.
@@ -61,7 +65,7 @@ impl ConjuntoRegras {
         static CACHE: std::sync::OnceLock<Result<ConjuntoRegras, ErrosRegras>> =
             std::sync::OnceLock::new();
         CACHE
-            .get_or_init(|| Self::from_toml(SETTINGS_TOML, &[("base.toml", BASE_TOML)]))
+            .get_or_init(|| Self::from_toml(SETTINGS_TOML, REGRAS_EMBUTIDAS))
             .clone()
     }
 }

@@ -1,6 +1,22 @@
 //! Pipeline: resolução de jogos, planejamento do [`Diff`] e aplicação verificada.
 
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
+
 use super::*;
+
+/// Chave de perfil equivalente a [`mesmo_perfil`]: `None` é o global e nomes
+/// comparam por `to_ascii_lowercase` (o mesmo que `eq_ignore_ascii_case`).
+fn chave_perfil(p: &ProfileRef) -> Option<String> {
+    match p {
+        ProfileRef::Base => None,
+        ProfileRef::Named(n) => Some(n.to_ascii_lowercase()),
+    }
+}
+
+/// Índice (perfil -> id -> valor) do snapshot original seguido dos perfis
+/// adicionais; em repetição vale a primeira entrada, como na busca linear.
+type IndiceOriginal<'a> = HashMap<Option<String>, HashMap<u32, &'a SettingValue>>;
 
 impl<S: DriverStore> Engine<S> {
     // ── Pipeline ───────────────────────────────────────────────────────────
@@ -22,6 +38,8 @@ impl<S: DriverStore> Engine<S> {
         let mut saida: Vec<JogoResolvido> = Vec::new();
         let mut ignorados = Vec::new();
         let mut nomes_novos: BTreeSet<String> = BTreeSet::new();
+        // Perfis já em `saida`, por `to_ascii_lowercase` (= `eq_ignore_ascii_case`).
+        let mut vistos: HashSet<String> = HashSet::new();
         for j in jogos {
             let (perfil, origem) = match self.resolver_um(j, &nomes_novos) {
                 Ok(r) => r,
@@ -37,7 +55,7 @@ impl<S: DriverStore> Engine<S> {
             if origem == OrigemPerfil::ACriar {
                 nomes_novos.insert(perfil.to_lowercase());
             }
-            if saida.iter().any(|s| s.perfil.eq_ignore_ascii_case(&perfil)) {
+            if !vistos.insert(perfil.to_ascii_lowercase()) {
                 continue;
             }
             let fatos = fatos_do_jogo(perfil.clone(), j, casar_na_base(&self.base, j));
@@ -180,27 +198,39 @@ impl<S: DriverStore> Engine<S> {
         conformes: &[MudancaPlanejada],
     ) -> Vec<Reversao> {
         let mut saida = Vec::new();
+        // Conjuntos pré-calculados com a mesma comparação de `mesmo_perfil`.
+        let perfis_jogos: HashSet<String> = jogos
+            .iter()
+            .map(|j| j.perfil.to_ascii_lowercase())
+            .collect();
+        let no_plano: HashSet<(Option<String>, u32)> = mudancas
+            .iter()
+            .chain(conformes)
+            .map(|m| (chave_perfil(&m.perfil), m.mudanca.id))
+            .collect();
+        let mut indice: Option<IndiceOriginal<'_>> = None;
         for e in &self.armazem.estado.esperado {
-            let considerado = match &e.perfil {
-                ProfileRef::Base => true,
-                ProfileRef::Named(n) => jogos.iter().any(|j| j.perfil.eq_ignore_ascii_case(n)),
+            let chave = chave_perfil(&e.perfil);
+            let considerado = match &chave {
+                None => true,
+                Some(n) => perfis_jogos.contains(n),
             };
-            let no_plano = mudancas
-                .iter()
-                .chain(conformes)
-                .any(|m| m.mudanca.id == e.id && mesmo_perfil(&m.perfil, &e.perfil));
-            if !considerado || no_plano {
+            if !considerado || no_plano.contains(&(chave, e.id)) {
                 continue;
             }
             // Erro de leitura: continua vigiada e tenta de novo no próximo ciclo.
-            if let Ok(r) = self.reversao_de(e) {
+            if let Ok(r) = self.reversao_de(e, &mut indice) {
                 saida.push(r);
             }
         }
         saida
     }
 
-    fn reversao_de(&self, e: &Esperado) -> Resultado<Reversao> {
+    fn reversao_de<'a>(
+        &'a self,
+        e: &Esperado,
+        indice: &mut Option<IndiceOriginal<'a>>,
+    ) -> Resultado<Reversao> {
         let lido = match self.store.ler_setting(&e.perfil, e.id) {
             Ok(s) => s,
             Err(err) => {
@@ -223,7 +253,7 @@ impl<S: DriverStore> Engine<S> {
         let original = match e.antes_da_gestao {
             Some(ValorAntes::Valor(v)) => Original::Valor(SettingValue::Dword(v)),
             Some(ValorAntes::Inexistente) => Original::Ausente,
-            None => self.original_de(&e.perfil, e.id),
+            None => self.original_de(&e.perfil, e.id, indice),
         };
         let acao = match original {
             Original::Desconhecido => AcaoReversao::SoDeixarDeVigiar,
@@ -247,27 +277,47 @@ impl<S: DriverStore> Engine<S> {
 
     /// Valor de (perfil, id) antes do app: perfil criado pelo app não tinha nada;
     /// senão vale o snapshot original (ou o original do perfil adicional).
-    fn original_de(&self, perfil: &ProfileRef, id: u32) -> Original {
+    /// O índice é montado na primeira consulta e reaproveitado no resto do
+    /// planejamento.
+    fn original_de<'a>(
+        &'a self,
+        perfil: &ProfileRef,
+        id: u32,
+        indice: &mut Option<IndiceOriginal<'a>>,
+    ) -> Original {
         if let ProfileRef::Named(n) = perfil
             && self.armazem.estado.criado_pelo_app(n)
         {
             return Original::Ausente;
         }
+        let indice = indice.get_or_insert_with(|| self.indice_original());
+        match indice.get(&chave_perfil(perfil)) {
+            None => Original::Desconhecido,
+            Some(settings) => match settings.get(&id) {
+                Some(v) => Original::Valor((*v).clone()),
+                None => Original::Ausente,
+            },
+        }
+    }
+
+    fn indice_original(&self) -> IndiceOriginal<'_> {
         let snap = self
             .armazem
             .snapshot_original()
             .into_iter()
             .flat_map(|s| s.profiles.iter());
-        let p = snap
-            .chain(self.armazem.estado.perfis_adicionais.iter())
-            .find(|p| mesmo_perfil(&p.profile, perfil));
-        match p {
-            None => Original::Desconhecido,
-            Some(p) => match p.settings.iter().find(|s| s.id == id) {
-                Some(s) => Original::Valor(s.value.clone()),
-                None => Original::Ausente,
-            },
+        let mut indice: IndiceOriginal<'_> = HashMap::new();
+        for p in snap.chain(self.armazem.estado.perfis_adicionais.iter()) {
+            // Só o primeiro perfil equivalente conta (como o `find` de antes).
+            if let Entry::Vacant(v) = indice.entry(chave_perfil(&p.profile)) {
+                let mut settings = HashMap::new();
+                for s in &p.settings {
+                    settings.entry(s.id).or_insert(&s.value);
+                }
+                v.insert(settings);
+            }
         }
+        indice
     }
 
     pub(super) fn registrar(&mut self, r: RegistroHistorico) {

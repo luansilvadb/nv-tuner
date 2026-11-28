@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::carga;
 use crate::config_jogo::{FatosConfigJogo, PlanoJogo};
 use crate::evaluator::Chave;
 use crate::plan::{CodigoExplicacao, EstadoExperimental};
@@ -225,24 +226,65 @@ enum NomeValor {
     Ausente,
 }
 
-impl NomeValor {
-    fn esperado(self, setting: SettingUsuario) -> Option<ValorCatalogoUsuario> {
-        use ValorCatalogoUsuario::{Fixo, MaximoNativo, Original};
-        Some(match (setting, self) {
-            (TelaRefresh, Self::MaximoNativo) => MaximoNativo,
-            (TelaRefresh | MouseAceleracao, Self::Original) => Original,
-            (MouseAceleracao, Self::Off) => Fixo(ValorUsuario::Spi([0, 0, 0])),
-            (DxSwapEffectUpgrade, Self::On) => Fixo(ValorUsuario::Token("1".into())),
-            (DxSwapEffectUpgrade, Self::Off) => Fixo(ValorUsuario::Token("0".into())),
-            (GamedvrCapturaHistorica, Self::On) => Fixo(ValorUsuario::Dword(1)),
-            (GamedvrCapturaHistorica, Self::Off) => Fixo(ValorUsuario::Dword(0)),
-            (DxSwapEffectUpgrade | GamedvrCapturaHistorica, Self::Ausente) => {
-                Fixo(ValorUsuario::Ausente)
-            }
-            _ => return None,
-        })
+/// Valor do catálogo em forma constante (ver [`CATALOGO`]).
+#[derive(Debug, Clone, Copy)]
+enum ValorConst {
+    MaximoNativo,
+    Original,
+    Ausente,
+    Dword(u32),
+    Spi([i32; 3]),
+    Token(&'static str),
+}
+
+impl ValorConst {
+    fn valor(self) -> ValorCatalogoUsuario {
+        match self {
+            Self::MaximoNativo => ValorCatalogoUsuario::MaximoNativo,
+            Self::Original => ValorCatalogoUsuario::Original,
+            Self::Ausente => ValorCatalogoUsuario::Fixo(ValorUsuario::Ausente),
+            Self::Dword(dword) => ValorCatalogoUsuario::Fixo(ValorUsuario::Dword(dword)),
+            Self::Spi(spi) => ValorCatalogoUsuario::Fixo(ValorUsuario::Spi(spi)),
+            Self::Token(token) => ValorCatalogoUsuario::Fixo(ValorUsuario::Token(token.into())),
+        }
     }
 }
+
+/// Catálogo único das settings do Windows: valores aceitos por nome. O
+/// `[catalogo]` de `regras/windows.toml` precisa repetir exatamente isto, e
+/// [`SETTINGS`] sai daqui.
+const CATALOGO: [(SettingUsuario, &[(NomeValor, ValorConst)]); 4] = [
+    (
+        TelaRefresh,
+        &[
+            (NomeValor::MaximoNativo, ValorConst::MaximoNativo),
+            (NomeValor::Original, ValorConst::Original),
+        ],
+    ),
+    (
+        MouseAceleracao,
+        &[
+            (NomeValor::Original, ValorConst::Original),
+            (NomeValor::Off, ValorConst::Spi([0, 0, 0])),
+        ],
+    ),
+    (
+        DxSwapEffectUpgrade,
+        &[
+            (NomeValor::On, ValorConst::Token("1")),
+            (NomeValor::Off, ValorConst::Token("0")),
+            (NomeValor::Ausente, ValorConst::Ausente),
+        ],
+    ),
+    (
+        GamedvrCapturaHistorica,
+        &[
+            (NomeValor::On, ValorConst::Dword(1)),
+            (NomeValor::Off, ValorConst::Dword(0)),
+            (NomeValor::Ausente, ValorConst::Ausente),
+        ],
+    ),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
@@ -299,12 +341,23 @@ struct ArquivoWindows {
     regra: Vec<RegraUsuario>,
 }
 
-const SETTINGS: [SettingUsuario; 4] = [
-    TelaRefresh,
-    MouseAceleracao,
-    DxSwapEffectUpgrade,
-    GamedvrCapturaHistorica,
-];
+impl carga::Versionado for ArquivoWindows {
+    const VERSAO_SCHEMA: u32 = VERSAO_SCHEMA_WINDOWS;
+
+    fn versao_schema(&self) -> u32 {
+        self.versao_schema
+    }
+}
+
+const SETTINGS: [SettingUsuario; CATALOGO.len()] = {
+    let mut settings = [TelaRefresh; CATALOGO.len()];
+    let mut i = 0;
+    while i < CATALOGO.len() {
+        settings[i] = CATALOGO[i].0;
+        i += 1;
+    }
+    settings
+};
 
 /// Catálogo e regras validados junto com os IDs DRS que serão usados.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,25 +402,19 @@ impl ConjuntoRegrasUsuario {
                 mensagem,
             }])
         };
-        let bruto: ArquivoWindows = toml::from_str(conteudo).map_err(|e| erro(e.to_string()))?;
-        if bruto.versao_schema != VERSAO_SCHEMA_WINDOWS {
+        let lido =
+            carga::ler::<ArquivoWindows>(arquivo, conteudo).map_err(|e| ErrosRegras(vec![e]))?;
+        if let Some(encontrada) = lido.versao_errada {
             return Err(erro(format!(
-                "versao_schema {} não suportada (esperado {VERSAO_SCHEMA_WINDOWS})",
-                bruto.versao_schema
+                "versao_schema {encontrada} não suportada (esperado {VERSAO_SCHEMA_WINDOWS})"
             )));
         }
+        let bruto = lido.dados;
         let mut catalogo = BTreeMap::new();
-        for setting in SETTINGS {
-            let nomes = [
-                NomeValor::MaximoNativo,
-                NomeValor::Original,
-                NomeValor::Off,
-                NomeValor::On,
-                NomeValor::Ausente,
-            ];
+        for (setting, nomes) in CATALOGO {
             let valores: BTreeMap<_, _> = nomes
-                .into_iter()
-                .filter_map(|nome| nome.esperado(setting).map(|valor| (nome, valor)))
+                .iter()
+                .map(|&(nome, valor)| (nome, valor.valor()))
                 .collect();
             let esperado = valores
                 .iter()

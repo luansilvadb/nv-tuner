@@ -5,36 +5,31 @@
 use serde::{Deserialize, Serialize};
 
 use crate::jogos::{IdJogo, Orientacao};
+use crate::preferences::enum_nomeado;
 use crate::versao::Versao;
 
-/// API gráfica principal do jogo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-pub enum Api {
-    Dx9,
-    Dx11,
-    Dx12,
-    Vulkan,
-    OpenGL,
-    #[default]
-    Desconhecida,
+enum_nomeado! {
+    /// API gráfica principal do jogo.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+    pub enum Api {
+        Dx9 => "dx9",
+        Dx11 => "dx11",
+        Dx12 => "dx12",
+        Vulkan => "vulkan",
+        OpenGL => "opengl",
+        #[default]
+        Desconhecida => "desconhecida",
+    }
 }
 
 impl Api {
     /// Nome usado nas condições das regras (`quando.jogo_api`).
     pub const fn nome_regra(self) -> &'static str {
-        match self {
-            Self::Dx9 => "dx9",
-            Self::Dx11 => "dx11",
-            Self::Dx12 => "dx12",
-            Self::Vulkan => "vulkan",
-            Self::OpenGL => "opengl",
-            Self::Desconhecida => "desconhecida",
-        }
+        self.nome_variante()
     }
 
     /// Nomes aceitos em `quando.jogo_api`.
-    pub const NOMES_REGRA: [&'static str; 6] =
-        ["dx9", "dx11", "dx12", "vulkan", "opengl", "desconhecida"];
+    pub const NOMES_REGRA: [&'static str; 6] = Self::NOMES_VARIANTES;
 }
 
 /// O que se sabe sobre um jogo instalado.

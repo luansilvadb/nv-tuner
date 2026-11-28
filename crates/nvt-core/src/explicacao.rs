@@ -8,36 +8,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::capabilities::Arquitetura;
 use crate::jogos::Orientacao;
-use crate::preferences::Qualidade;
+use crate::preferences::{Qualidade, enum_nomeado};
 use crate::rules::ImpactoVisual;
 
-/// Motivos que uma regra pode declarar em `motivo_quando_nao_aplica`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TipoMotivo {
-    /// O jogo não tem DLSS.
-    JogoSemDlss,
-    /// A arquitetura da GPU não precisa do ajuste (ex.: Ada com FP8).
-    ArquiteturaNaoPrecisa,
-    /// A GPU não tem Tensor Cores (GTX 16).
-    SemTensorCores,
+enum_nomeado! {
+    /// Motivos que uma regra pode declarar em `motivo_quando_nao_aplica`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum TipoMotivo {
+        /// O jogo não tem DLSS.
+        JogoSemDlss => "jogo_sem_dlss",
+        /// A arquitetura da GPU não precisa do ajuste (ex.: Ada com FP8).
+        ArquiteturaNaoPrecisa => "arquitetura_nao_precisa",
+        /// A GPU não tem Tensor Cores (GTX 16).
+        SemTensorCores => "sem_tensor_cores",
+    }
 }
 
 impl TipoMotivo {
     /// Nomes aceitos em `motivo_quando_nao_aplica`.
-    pub const NOMES: [&'static str; 3] = [
-        "jogo_sem_dlss",
-        "arquitetura_nao_precisa",
-        "sem_tensor_cores",
-    ];
+    pub const NOMES: [&'static str; 3] = Self::NOMES_VARIANTES;
 
     pub fn de_nome(nome: &str) -> Option<Self> {
-        match nome {
-            "jogo_sem_dlss" => Some(Self::JogoSemDlss),
-            "arquitetura_nao_precisa" => Some(Self::ArquiteturaNaoPrecisa),
-            "sem_tensor_cores" => Some(Self::SemTensorCores),
-            _ => None,
-        }
+        Self::de_nome_variante(nome)
     }
 }
 

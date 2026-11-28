@@ -11,7 +11,7 @@
 //! travadas pelo usuário nunca entram no plano.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::capabilities::Capabilities;
 use crate::catalogo::{Catalogo, PreferenciaGovernante};
@@ -101,20 +101,27 @@ pub fn avaliar_com_aceites(
         }
     };
 
+    // Travas consultadas por candidato: conjunto montado uma vez.
+    let travas = prefs.travas();
+    let travada = |alvo: &Alvo, setting: &str| travas.contains(&(alvo, setting));
+    // Alvos montados uma vez, e não a cada regra.
+    let alvos_global: [(Alvo, Option<&GameFacts>); 1] = [(Alvo::Global, None)];
+    let alvos_jogos: Vec<(Alvo, Option<&GameFacts>)> = jogos
+        .iter()
+        .map(|j| (Alvo::Jogo(j.id.clone()), Some(j)))
+        .collect();
+
     for regra in &conjunto.regras {
         let aceita = regra.status == Status::Experimental && aceites.contains(&regra.id);
         if aceita {
             plan.estado_experimental
                 .insert(regra.id.clone(), EstadoExperimental::Aceita);
         }
-        let alvos: Vec<(Alvo, Option<&GameFacts>)> = match regra.escopo {
-            Escopo::Global => vec![(Alvo::Global, None)],
-            Escopo::PorJogo => jogos
-                .iter()
-                .map(|j| (Alvo::Jogo(j.id.clone()), Some(j)))
-                .collect(),
+        let alvos: &[(Alvo, Option<&GameFacts>)] = match regra.escopo {
+            Escopo::Global => &alvos_global,
+            Escopo::PorJogo => &alvos_jogos,
         };
-        for (alvo, jogo) in alvos {
+        for (alvo, jogo) in alvos.iter().map(|(a, j)| (a, *j)) {
             // Mesmo critério de `Condicoes::casa`, avaliando as condições uma vez só.
             if jogo.is_none() && regra.quando.usa_fatos_de_jogo() {
                 continue;
@@ -123,7 +130,7 @@ pub fn avaliar_com_aceites(
             if !falhas.is_empty() {
                 if jogo.is_some() {
                     nao(
-                        &alvo,
+                        alvo,
                         &regra.id,
                         regra.motivo_nao_casou(&falhas, caps.arquitetura),
                     );
@@ -132,7 +139,7 @@ pub fn avaliar_com_aceites(
             }
             if regra.impacto_visual > teto {
                 nao(
-                    &alvo,
+                    alvo,
                     &regra.id,
                     MotivoNaoAplicada::BloqueadaPeloTetoDeQualidade {
                         teto: prefs.qualidade,
@@ -141,7 +148,7 @@ pub fn avaliar_com_aceites(
                 );
                 plan.descartes.push(Descarte {
                     regra: Some(regra.id.clone()),
-                    alvo,
+                    alvo: alvo.clone(),
                     setting: None,
                     motivo: format!(
                         "impacto visual {:?} acima do teto de qualidade {:?}",
@@ -150,11 +157,11 @@ pub fn avaliar_com_aceites(
                 });
                 continue;
             }
-            let mudancas = resolver(regra, caps, catalogo, &alvo, &mut plan.descartes);
+            let mudancas = resolver(regra, caps, catalogo, alvo, &mut plan.descartes);
             if mudancas.is_empty() {
                 // Todas as ações descartadas (ex.: refresh − margem fora da faixa).
                 nao(
-                    &alvo,
+                    alvo,
                     &regra.id,
                     MotivoNaoAplicada::CondicaoNaoAtendida {
                         condicao: "aplicar".into(),
@@ -166,17 +173,14 @@ pub fn avaliar_com_aceites(
             match regra.status {
                 Status::Experimental if !aceita => {
                     if !mudancas.is_empty() {
-                        if mudancas
-                            .iter()
-                            .any(|(_, m)| !prefs.travada(&alvo, &m.setting))
-                        {
+                        if mudancas.iter().any(|(_, m)| !travada(alvo, &m.setting)) {
                             plan.estado_experimental
                                 .insert(regra.id.clone(), EstadoExperimental::Aceitavel);
                         }
-                        nao(&alvo, &regra.id, MotivoNaoAplicada::Experimental);
+                        nao(alvo, &regra.id, MotivoNaoAplicada::Experimental);
                         plan.experimentais.push(Sugestao {
                             regra: regra.id.clone(),
-                            alvo,
+                            alvo: alvo.clone(),
                             mudancas: mudancas.into_iter().map(|(_, m)| m).collect(),
                         });
                     }
@@ -265,7 +269,7 @@ pub fn avaliar_com_aceites(
                 motivo: format!("conflito: suplantada por {nome_vencedor}"),
             });
         }
-        if prefs.travada(&alvo, &setting) {
+        if travada(&alvo, &setting) {
             nao(
                 &alvo,
                 &id_vencedor,
@@ -294,7 +298,7 @@ pub fn avaliar_com_aceites(
     }
 
     for j in jogos {
-        let proprias: Vec<&str> = plan
+        let proprias: HashSet<&str> = plan
             .mudancas(&Alvo::Jogo(j.id.clone()))
             .iter()
             .map(|m| m.setting.as_str())
@@ -302,7 +306,7 @@ pub fn avaliar_com_aceites(
         let herda_do_global = plan
             .global
             .iter()
-            .filter(|m| !proprias.contains(&m.setting.as_str()))
+            .filter(|m| !proprias.contains(m.setting.as_str()))
             .map(|m| m.setting.clone())
             .collect();
         let mut nao_aplicadas = nao_aplicadas.remove(&j.id).unwrap_or_default();
