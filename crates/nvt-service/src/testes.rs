@@ -1963,67 +1963,21 @@ mod atualizacao {
 /// R-AR-01 a R-AR-06: "Aplicar melhorias recomendadas" com driver,
 /// processos e armazenamento de usuários falsos.
 mod recomendadas {
-    use std::cell::{Cell, RefCell};
     use std::collections::BTreeSet;
-    use std::io;
-    use std::rc::Rc;
 
     use nvt_drs::{FonteFalsa, VrrBruto};
     use nvt_ipc::pipe::IdentidadeCliente;
 
     use super::*;
-    use crate::usuario::{Armazenamento, Coordenador, DadosUsuarios};
+    use crate::teste_util::{Memoria, cliente, coordenador};
+    use crate::usuario::Coordenador;
 
     const DRS: &str = "sincronismo-gsync-limite";
     const CAPTURA: &str = "windows-captura-historica-off";
     const ID_LIMITE: u32 = 0x1083_5002;
 
-    /// `usuarios.json` em memória, com contagem de gravações e falha forçada.
-    #[derive(Clone, Default)]
-    struct Memoria {
-        dados: Rc<RefCell<DadosUsuarios>>,
-        gravacoes: Rc<Cell<u32>>,
-        falhar: Rc<Cell<bool>>,
-    }
-
-    impl Armazenamento for Memoria {
-        fn carregar(&self) -> io::Result<DadosUsuarios> {
-            Ok(self.dados.borrow().clone())
-        }
-        fn salvar(&self, dados: &DadosUsuarios) -> io::Result<()> {
-            if self.falhar.get() {
-                return Err(io::Error::other("disco cheio"));
-            }
-            self.gravacoes.set(self.gravacoes.get() + 1);
-            *self.dados.borrow_mut() = dados.clone();
-            Ok(())
-        }
-    }
-
-    impl Memoria {
-        fn json(&self) -> String {
-            serde_json::to_string(&*self.dados.borrow()).unwrap()
-        }
-        fn contem(&self, regra: &str) -> bool {
-            self.json().contains(&format!("\"{regra}\""))
-        }
-    }
-
     fn id(sid: &str) -> IdentidadeCliente {
-        IdentidadeCliente {
-            sid: sid.into(),
-            sessao: 1,
-        }
-    }
-
-    fn coordenador(m: &Memoria) -> Coordenador {
-        Coordenador::abrir(
-            m.clone(),
-            &nvt_core::ConjuntoRegras::embutido().unwrap(),
-            Some(22631),
-            0,
-        )
-        .unwrap()
+        cliente(sid, 1)
     }
 
     /// Agente presente com a captura histórica ligada (CAPTURA aplicável).

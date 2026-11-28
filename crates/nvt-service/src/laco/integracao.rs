@@ -2,6 +2,7 @@
 //! atendimento sem driver.
 
 use super::*;
+use crate::nucleo::Rota;
 
 impl Integracao {
     pub(super) fn abrir(op: &Opcoes) -> Self {
@@ -134,9 +135,11 @@ impl Integracao {
         restauracao: (u64, bool),
         driver: impl FnOnce(Requisicao) -> (Resposta, (u64, bool)),
     ) -> Resposta {
-        if let Some(r) = self
-            .partidas
-            .atender(&identidade, self.console.as_ref(), &req)
+        let rota = crate::nucleo::rota(&req);
+        if rota == Rota::Partidas
+            && let Some(r) = self
+                .partidas
+                .atender(&identidade, self.console.as_ref(), &req)
         {
             return r;
         }
@@ -148,7 +151,9 @@ impl Integracao {
         if let Some(usuario) = &mut self.usuario {
             usuario.atualizar_restauracao(restauracao.0, restauracao.1);
             usuario.definir_atualizacao(atualizacao.clone());
-            if let Some(resposta) = usuario.tratar(&identidade, &req, agora, agora_unix()) {
+            if rota == Rota::Usuario
+                && let Some(resposta) = usuario.tratar(&identidade, &req, agora, agora_unix())
+            {
                 self.repassar_sessoes(agora);
                 return resposta;
             }
@@ -170,46 +175,62 @@ impl Integracao {
             {
                 let aceites = usuario.aceites_drs(Some(&identidade.sid));
                 let console = self.console.as_ref() == Some(&identidade);
-                plano.sugestoes_driver.retain(|s| {
-                    s.estado == nvt_ipc::EstadoExperimental::Aceitavel || aceites.contains(&s.regra)
-                });
-                for regra in regras
-                    .regras
-                    .iter()
-                    .filter(|r| r.status == nvt_core::Status::Experimental)
-                {
-                    let aceita = aceites.contains(&regra.id);
-                    let existente = plano
-                        .sugestoes_driver
-                        .iter_mut()
-                        .find(|s| s.regra == regra.id);
-                    let sugestao = match existente {
-                        Some(sugestao) => sugestao,
-                        None if aceita => {
-                            plano.sugestoes_driver.push(sugestao_drs(regra));
-                            plano
-                                .sugestoes_driver
-                                .last_mut()
-                                .expect("sugestão inserida")
-                        }
-                        None => continue,
-                    };
-                    if aceita {
-                        sugestao.estado = nvt_ipc::EstadoExperimental::Aceita;
-                        if !console || !self.aceites_drs.contains(&regra.id) {
-                            sugestao
-                                .descricao
-                                .push_str(" (aceite inativo nesta sessão)");
-                        }
-                    }
-                    sugestao
-                        .descricao
-                        .push_str(" DRS compartilhado entre usuários.");
-                }
+                sugestoes_experimentais_drs(plano, regras, &aceites, console, &self.aceites_drs);
             }
         }
         self.repassar_sessoes(agora);
         resposta
+    }
+}
+
+/// Pós-processa as sugestões experimentais DRS do plano para quem pediu:
+/// mantém só as aplicáveis ou aceitas por este SID (`aceites`), inclui as
+/// aceitas que o motor não sugeriu e marca as aceitas, avisando quando o
+/// aceite não vale nesta sessão (quem pediu não é o `console` ou o console
+/// não as aceitou, `aceites_console`). Toda sugestão lembra que o DRS é
+/// compartilhado entre usuários.
+fn sugestoes_experimentais_drs(
+    plano: &mut nvt_ipc::Plano,
+    regras: &nvt_core::ConjuntoRegras,
+    aceites: &std::collections::BTreeSet<String>,
+    console: bool,
+    aceites_console: &std::collections::BTreeSet<String>,
+) {
+    plano.sugestoes_driver.retain(|s| {
+        s.estado == nvt_ipc::EstadoExperimental::Aceitavel || aceites.contains(&s.regra)
+    });
+    for regra in regras
+        .regras
+        .iter()
+        .filter(|r| r.status == nvt_core::Status::Experimental)
+    {
+        let aceita = aceites.contains(&regra.id);
+        let existente = plano
+            .sugestoes_driver
+            .iter_mut()
+            .find(|s| s.regra == regra.id);
+        let sugestao = match existente {
+            Some(sugestao) => sugestao,
+            None if aceita => {
+                plano.sugestoes_driver.push(sugestao_drs(regra));
+                plano
+                    .sugestoes_driver
+                    .last_mut()
+                    .expect("sugestão inserida")
+            }
+            None => continue,
+        };
+        if aceita {
+            sugestao.estado = nvt_ipc::EstadoExperimental::Aceita;
+            if !console || !aceites_console.contains(&regra.id) {
+                sugestao
+                    .descricao
+                    .push_str(" (aceite inativo nesta sessão)");
+            }
+        }
+        sugestao
+            .descricao
+            .push_str(" DRS compartilhado entre usuários.");
     }
 }
 
@@ -291,25 +312,10 @@ pub(crate) fn tratar_sem_driver(
     };
     let falha = |e: std::io::Error| Resposta::erro(CodigoErro::Interno, e.to_string());
     match req {
-        Requisicao::ObterEstado => Resposta::Estado(nvt_ipc::Estado {
-            agente: Default::default(),
-            diagnosticos: Vec::new(),
-            versao_servico: env!("CARGO_PKG_VERSION").into(),
-            driver: None,
-            gpu: None,
-            preferencias: crate::nucleo::prefs_ipc(&nvt_core::Preferences::default()),
-            jogos: 0,
-            ultima_aplicacao: estado.ultima_aplicacao.map(|u| nvt_ipc::Aplicacao {
-                quando_unix: u.quando_unix,
-                mudancas: u.mudancas,
-                falhas: u.falhas,
-            }),
-            alertas_deriva: Vec::new(),
-            avisos: Vec::new(),
-            adiamento: None,
-            atualizacao: Default::default(),
-            autonomia_pausada: false,
-        }),
+        Requisicao::ObterEstado => Resposta::Estado(crate::nucleo::estado_ipc(
+            &nvt_core::Preferences::default(),
+            estado.ultima_aplicacao,
+        )),
         Requisicao::ObterPlano => plano_sem_driver(),
         Requisicao::ListarHistorico { .. } => Resposta::Historico {
             entradas: Vec::new(),

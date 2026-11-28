@@ -52,7 +52,6 @@ fn sem_feature_responde_recurso_ausente() {
 #[cfg(feature = "medicao-partidas")]
 mod com_feature {
     use std::collections::VecDeque;
-    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -82,23 +81,16 @@ mod com_feature {
     }
 
     struct Cenario {
-        dir: PathBuf,
+        dir: crate::teste_util::DirTemp,
         armazem: Compartilhado,
         relogio: Arc<AtomicU64>,
         presents: Arc<Mutex<PresentsFalsos>>,
         aberturas: Arc<AtomicU64>,
     }
 
-    impl Drop for Cenario {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
-
     fn cenario(nome: &str) -> Cenario {
-        let dir = std::env::temp_dir().join(format!("nvt-partidas-{nome}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let armazem = Arc::new(Mutex::new(Some(Armazem::abrir(&dir).unwrap())));
+        let dir = crate::teste_util::DirTemp::novo(&format!("partidas-{nome}"));
+        let armazem = Arc::new(Mutex::new(Some(Armazem::abrir(&dir.0).unwrap())));
         Cenario {
             dir,
             armazem,
@@ -275,7 +267,7 @@ mod com_feature {
         let c = cenario("desligada");
         let f = fontes(&c, vec![jogo()], false);
         let mut p = Partidas::default();
-        let raiz = c.dir.join("estado");
+        let raiz = c.dir.0.join("estado");
         let mut subiu = false;
         p.iniciar_com(&raiz, true, |a| {
             subiu = true;

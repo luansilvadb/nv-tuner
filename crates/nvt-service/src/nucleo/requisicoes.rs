@@ -6,43 +6,22 @@ use super::*;
 impl<'a, S: DriverStore> Nucleo<'a, S> {
     /// Trata uma requisição (já validada na forma pelo `nvt-ipc`).
     pub fn tratar(&mut self, req: Requisicao, agora: Instant) -> Resposta {
-        let grava = matches!(
-            req,
-            Requisicao::AplicarAgora
-                | Requisicao::RestaurarOriginal
-                | Requisicao::DefinirPreferencias { .. }
-                | Requisicao::TravarSetting { .. }
-                | Requisicao::DestravarSetting { .. }
-        );
-        if grava && !self.pode_gravar() {
+        if grava_com_driver(&req) && !self.pode_gravar() {
             return Resposta::erro(
                 CodigoErro::Interno,
                 "serviço em modo somente leitura: nenhuma gravação é feita",
             );
         }
-        let r = match req {
-            Requisicao::AgenteConsultar { .. }
-            | Requisicao::AgenteRelatar { .. }
-            | Requisicao::DefinirAceiteExperimental { .. }
-            // R-AR: depende da identidade; ver `crate::recomendadas::aplicar`.
-            | Requisicao::AplicarRecomendadas
-            | Requisicao::ReverterAjusteUsuario { .. }
-            | Requisicao::ReverterConfigJogo { .. }
-            | Requisicao::MarcarAtualizacaoVista { .. }
-            // Saúde: atendidas pela integração com o cache da thread de saúde.
-            | Requisicao::ObterSaude
-            | Requisicao::MarcarInicioVisto { .. } => {
-                return Resposta::erro(
-                    CodigoErro::RequisicaoInvalida,
-                    "pedido requer coordenador de usuário",
-                );
-            }
+        // Pedidos de outro tratador (chamada direta, sem o despacho do laço).
+        match rota(&req) {
+            Rota::Nucleo => {}
             // v8: partidas só existem com `medicao-partidas` (L5).
-            Requisicao::ListarPartidas { .. }
-            | Requisicao::ObterPartida { .. }
-            | Requisicao::ApagarPartidas => {
+            Rota::Partidas => {
                 return Resposta::erro(CodigoErro::RecursoAusente, "recurso ainda não disponível");
             }
+            Rota::Usuario | Rota::Recomendadas | Rota::Saude => return requer_coordenador(),
+        }
+        let r = match req {
             Requisicao::ObterEstado => self.obter_estado(),
             Requisicao::ObterPlano => self.obter_plano(),
             Requisicao::AplicarAgora => self.aplicar_agora(agora),
@@ -62,6 +41,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                 self.ciclo(agora, "pedido de nova varredura");
                 Ok(Resposta::Ok)
             }
+            // Já recusados acima pela `rota`.
+            _ => return requer_coordenador(),
         };
         r.unwrap_or_else(|e| {
             error!("requisição IPC falhou: {e}");
@@ -105,25 +86,18 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                 (None, None)
             }
         };
-        Ok(Resposta::Estado(nvt_ipc::Estado {
-            agente: Default::default(),
-            diagnosticos: Vec::new(),
-            versao_servico: env!("CARGO_PKG_VERSION").to_owned(),
-            driver,
-            gpu,
-            preferencias: prefs_ipc(&self.engine.estado().preferencias),
-            jogos: u32::try_from(self.jogos.len()).unwrap_or(u32::MAX),
-            ultima_aplicacao: self.servico.ultima_aplicacao.map(|u| nvt_ipc::Aplicacao {
-                quando_unix: u.quando_unix,
-                mudancas: u.mudancas,
-                falhas: u.falhas,
-            }),
-            alertas_deriva: self.alertas.clone(),
-            avisos: self.avisos(),
-            adiamento: self.adiamento_ipc(),
-            atualizacao: nvt_ipc::EstadoAtualizacao::default(),
-            autonomia_pausada: self.servico.autonomia_pausada,
-        }))
+        let mut estado = estado_ipc(
+            &self.engine.estado().preferencias,
+            self.servico.ultima_aplicacao,
+        );
+        estado.driver = driver;
+        estado.gpu = gpu;
+        estado.jogos = u32::try_from(self.jogos.len()).unwrap_or(u32::MAX);
+        estado.alertas_deriva = self.alertas.clone();
+        estado.avisos = self.avisos();
+        estado.adiamento = self.adiamento_ipc();
+        estado.autonomia_pausada = self.servico.autonomia_pausada;
+        Ok(Resposta::Estado(estado))
     }
 
     pub(super) fn obter_plano(&mut self) -> Resultado<Resposta> {
@@ -255,20 +229,7 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
         agora: Instant,
     ) -> Resultado<Resposta> {
         self.renovar()?;
-        let prefs = Preferences {
-            sincronismo: match sincronismo {
-                nvt_ipc::Sincronismo::Desligado => nvt_core::Sincronismo::SemSync,
-                nvt_ipc::Sincronismo::VSync => nvt_core::Sincronismo::VSync,
-                nvt_ipc::Sincronismo::GSync => nvt_core::Sincronismo::GSync,
-            },
-            qualidade: match qualidade {
-                nvt_ipc::Qualidade::Desempenho => nvt_core::Qualidade::Desempenho,
-                nvt_ipc::Qualidade::Equilibrado => nvt_core::Qualidade::Equilibrado,
-                nvt_ipc::Qualidade::Qualidade => nvt_core::Qualidade::Fidelidade,
-            },
-            limite_fps,
-            escolhas_usuario: Vec::new(),
-        };
+        let prefs = prefs_core(sincronismo, qualidade, limite_fps);
         // Mudança manual pendente vira escolha travada antes do plano novo.
         // Com jogo aberto, as preferências são gravadas no estado e a
         // aplicação fica pendente.
@@ -483,6 +444,13 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
             .collect();
         Resposta::Historico { entradas }
     }
+}
+
+fn requer_coordenador() -> Resposta {
+    Resposta::erro(
+        CodigoErro::RequisicaoInvalida,
+        "pedido requer coordenador de usuário",
+    )
 }
 
 pub(super) fn nao_permitida(setting: &str) -> Resposta {

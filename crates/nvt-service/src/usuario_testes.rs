@@ -1,40 +1,12 @@
 use super::*;
-use std::cell::RefCell;
-use std::rc::Rc;
+use crate::teste_util::{Memoria, cliente, coordenador};
 
 const CAPTURA: &str = "windows-captura-historica-off";
 const DRS_A: &str = "sincronismo-gsync-limite";
 const DRS_B: &str = "dlss-preset-e-ampere";
 
-#[derive(Clone, Default)]
-struct Memoria(Rc<RefCell<DadosUsuarios>>);
-
-impl Armazenamento for Memoria {
-    fn carregar(&self) -> io::Result<DadosUsuarios> {
-        Ok(self.0.borrow().clone())
-    }
-
-    fn salvar(&self, dados: &DadosUsuarios) -> io::Result<()> {
-        *self.0.borrow_mut() = dados.clone();
-        Ok(())
-    }
-}
-
 fn abrir(memoria: Memoria) -> Coordenador {
-    Coordenador::abrir(
-        memoria,
-        &ConjuntoRegras::embutido().unwrap(),
-        Some(22631),
-        0,
-    )
-    .unwrap()
-}
-
-fn cliente(sid: &str, sessao: u32) -> IdentidadeCliente {
-    IdentidadeCliente {
-        sid: sid.into(),
-        sessao,
-    }
+    coordenador(&memoria)
 }
 
 fn fatos(captura: u32) -> nvt_ipc::FatosUsuario {
@@ -734,9 +706,12 @@ fn nao_vista_e_por_sid_e_persistida() {
     // A atualização seguinte volta a ser não vista.
     assert!(nao_vista_projetada(&c2, &a, &estado_atualizado("1.2.0")));
     // Repetir a marcação não regrava.
-    let antes = serde_json::to_string(&*memoria.0.borrow()).unwrap();
+    let antes = serde_json::to_string(&*memoria.dados.borrow()).unwrap();
     assert_eq!(marcar(&mut c, &a, "1.1.0"), Some(Resposta::Ok));
-    assert_eq!(serde_json::to_string(&*memoria.0.borrow()).unwrap(), antes);
+    assert_eq!(
+        serde_json::to_string(&*memoria.dados.borrow()).unwrap(),
+        antes
+    );
 }
 
 #[test]

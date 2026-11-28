@@ -135,35 +135,22 @@ mod testes {
     fn pipe_sem_driver_vincula_agente_e_ui_e_retorna_diagnosticos() {
         use nvt_ipc::pipe::{Cliente, ConfigCliente};
 
-        #[derive(Default)]
-        struct Memoria(std::cell::RefCell<crate::usuario::DadosUsuarios>);
-
-        impl crate::usuario::Armazenamento for Memoria {
-            fn carregar(&self) -> std::io::Result<crate::usuario::DadosUsuarios> {
-                Ok(self.0.borrow().clone())
-            }
-
-            fn salvar(&self, dados: &crate::usuario::DadosUsuarios) -> std::io::Result<()> {
-                self.0.replace(dados.clone());
-                Ok(())
-            }
-        }
-
+        let estado = crate::teste_util::DirTemp::novo("sem-driver");
         let pipe = format!(r"\\.\pipe\nvt-servico-sem-driver-{}", std::process::id());
         let (tx, rx) = mpsc::channel();
         let (parada, ipc) = iniciar_ipc(&pipe, tx.clone()).unwrap();
         let op = Opcoes {
             pipe: pipe.clone(),
-            estado_dir: std::env::temp_dir().join(format!("nvt-sem-driver-{}", std::process::id())),
+            estado_dir: estado.0.clone(),
             vigiar: None,
             config: Config::default(),
         };
         let motor = thread::spawn(move || {
             let regras = nvt_core::ConjuntoRegras::embutido().unwrap();
             let mut integracao = Integracao {
-                usuario: Some(
-                    Coordenador::abrir(Memoria::default(), &regras, Some(22631), 0).unwrap(),
-                ),
+                usuario: Some(crate::teste_util::coordenador(
+                    &crate::teste_util::Memoria::default(),
+                )),
                 regras_drs: Some(regras),
                 ..Integracao::default()
             };
@@ -271,10 +258,7 @@ mod testes {
     }
 
     fn identidade_teste() -> IdentidadeCliente {
-        IdentidadeCliente {
-            sid: "S-1-5-21-1".into(),
-            sessao: 42,
-        }
+        crate::teste_util::cliente("S-1-5-21-1", 42)
     }
 
     #[test]

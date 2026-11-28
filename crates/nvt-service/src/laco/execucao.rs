@@ -47,10 +47,8 @@ pub(super) fn esperar_sem_driver(
                         let anterior = restauracao(&estado);
                         integracao.tratar(identidade, req, Instant::now(), anterior, |req| {
                             let resposta = if op.config.somente_leitura
-                                && matches!(
-                                    req,
-                                    Requisicao::AplicarAgora | Requisicao::RestaurarOriginal
-                                ) {
+                                && crate::nucleo::grava_sem_driver(&req)
+                            {
                                 Resposta::erro(
                                     CodigoErro::Interno,
                                     "serviço em modo somente leitura",

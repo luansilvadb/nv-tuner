@@ -583,7 +583,11 @@ mod testes {
     use super::*;
 
     const SYS: &str = "C:\\Windows\\System32";
-    const PASTA: &str = "C:\\ProgramData\\nv-tuner\\atualizacao";
+    fn pasta() -> String {
+        crate::teste_util::pasta_atualizacao_falsa()
+            .display()
+            .to_string()
+    }
 
     #[test]
     fn linha_exata_com_espacos() {
@@ -640,11 +644,12 @@ mod testes {
 
     #[test]
     fn ambiente_minimo_ordenado() {
-        let b = ambiente_minimo(SYS, PASTA).unwrap();
+        let p = pasta();
+        let b = ambiente_minimo(SYS, &p).unwrap();
         let s = String::from_utf16(&b).unwrap();
         assert_eq!(
             s,
-            format!("SystemRoot=C:\\Windows\0TEMP={PASTA}\0TMP={PASTA}\0windir=C:\\Windows\0\0")
+            format!("SystemRoot=C:\\Windows\0TEMP={p}\0TMP={p}\0windir=C:\\Windows\0\0")
         );
         assert!(ambiente_minimo(SYS, "C:\\%x%").is_err());
     }

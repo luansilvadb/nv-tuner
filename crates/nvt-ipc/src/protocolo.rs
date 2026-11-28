@@ -181,32 +181,7 @@ impl Requisicao {
                 resultados_jogo,
                 saude,
                 ..
-            } => {
-                crate::config_jogo::validar_resultados_jogo(resultados_jogo)?;
-                if let Some(saude) = saude {
-                    saude.validar()?;
-                }
-                if resultados.len() > RESULTADOS_MAX {
-                    return Err("muitos resultados da tarefa".into());
-                }
-                let mut destinos = std::collections::BTreeSet::new();
-                for resultado in resultados {
-                    resultado.destino.validar()?;
-                    if !destinos.insert(&resultado.destino) {
-                        return Err("destino repetido no relato".into());
-                    }
-                    if let Some(mudanca) = &resultado.mudanca {
-                        mudanca.validar()?;
-                        if mudanca.destino() != resultado.destino {
-                            return Err("mudança de destino incompatível com o relato".into());
-                        }
-                    }
-                    if let Some(detalhe) = &resultado.detalhe {
-                        validar_texto(detalhe, DETALHE_MAX)?;
-                    }
-                }
-                Ok(())
-            }
+            } => validar_relato(resultados, resultados_jogo, saude.as_ref()),
             Self::ReverterAjusteUsuario { destino, alvo_tela } => {
                 destino.validar()?;
                 if let Some(alvo_tela) = alvo_tela
@@ -222,9 +197,54 @@ impl Requisicao {
             Self::ListarPartidas { limite, .. } if !(1..=PARTIDAS_MAX).contains(limite) => {
                 Err(format!("limite deve estar entre 1 e {PARTIDAS_MAX}"))
             }
-            _ => Ok(()),
+            // Sem validação de forma (ou guarda acima não acionada). Listadas
+            // explicitamente para que uma variante nova exija decisão aqui.
+            Self::DefinirPreferencias { .. }
+            | Self::ListarHistorico { .. }
+            | Self::ListarPartidas { .. }
+            | Self::ObterEstado
+            | Self::ObterPlano
+            | Self::AplicarAgora
+            | Self::RestaurarOriginal
+            | Self::ReescanearJogos
+            | Self::AplicarRecomendadas
+            | Self::ObterSaude
+            | Self::ObterPartida { .. }
+            | Self::ApagarPartidas => Ok(()),
         }
     }
+}
+
+/// Validação de forma do relato do agente ([`Requisicao::AgenteRelatar`]).
+fn validar_relato(
+    resultados: &[ResultadoUsuario],
+    resultados_jogo: &[ResultadoJogo],
+    saude: Option<&SaudeSessao>,
+) -> Result<(), String> {
+    crate::config_jogo::validar_resultados_jogo(resultados_jogo)?;
+    if let Some(saude) = saude {
+        saude.validar()?;
+    }
+    if resultados.len() > RESULTADOS_MAX {
+        return Err("muitos resultados da tarefa".into());
+    }
+    let mut destinos = std::collections::BTreeSet::new();
+    for resultado in resultados {
+        resultado.destino.validar()?;
+        if !destinos.insert(&resultado.destino) {
+            return Err("destino repetido no relato".into());
+        }
+        if let Some(mudanca) = &resultado.mudanca {
+            mudanca.validar()?;
+            if mudanca.destino() != resultado.destino {
+                return Err("mudança de destino incompatível com o relato".into());
+            }
+        }
+        if let Some(detalhe) = &resultado.detalhe {
+            validar_texto(detalhe, DETALHE_MAX)?;
+        }
+    }
+    Ok(())
 }
 
 /// Versão (`X.Y.Z`, opcionalmente com sufixo): 1 a 64 caracteres ASCII

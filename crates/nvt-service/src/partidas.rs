@@ -21,12 +21,7 @@ use nvt_ipc::{CodigoErro, Requisicao, Resposta};
 
 /// É uma requisição de partidas?
 pub(crate) fn eh_de_partidas(req: &Requisicao) -> bool {
-    matches!(
-        req,
-        Requisicao::ListarPartidas { .. }
-            | Requisicao::ObterPartida { .. }
-            | Requisicao::ApagarPartidas
-    )
+    crate::nucleo::rota(req) == crate::nucleo::Rota::Partidas
 }
 
 #[cfg(not(feature = "medicao-partidas"))]

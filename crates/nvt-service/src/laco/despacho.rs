@@ -2,6 +2,7 @@
 //! núcleo e o próprio laço de eventos.
 
 use super::*;
+use crate::nucleo::Rota;
 
 /// Envia `req` à thread principal e espera a resposta (thread do IPC).
 ///
@@ -132,11 +133,9 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
         req: Requisicao,
         agora: Instant,
     ) -> Resposta {
-        if matches!(
-            req,
-            Requisicao::ObterSaude | Requisicao::MarcarInicioVisto { .. }
-        ) {
-            // Só lê o cache da thread de saúde; não entra no ciclo DRS.
+        let rota = crate::nucleo::rota(&req);
+        if !crate::nucleo::usa_trava_drs(&req) {
+            // Saúde: só lê o cache da thread de saúde; não entra no ciclo DRS.
             let maquina = self.integracao.saude_maquina();
             return crate::saude::atender(
                 self.integracao.usuario.as_mut(),
@@ -149,45 +148,8 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
         }
         let exclusao = self.integracao.exclusao.clone();
         let _drs = exclusao.ciclo_drs();
-        if matches!(req, Requisicao::AplicarRecomendadas)
-            && let Some(usuario) = &mut self.integracao.usuario
-        {
-            // R-AR: depende da identidade e da sessão de console.
-            let resposta = crate::recomendadas::aplicar(
-                self.nucleo,
-                usuario,
-                &identidade,
-                self.integracao.console.as_ref(),
-                agora,
-            );
-            self.integracao
-                .definir_preferencias(&self.nucleo.preferencias());
-            return resposta;
-        }
-        if let Some(usuario) = &mut self.integracao.usuario
-            && matches!(req, Requisicao::AgenteConsultar { .. })
-        {
-            usuario.atualizar_processos(self.nucleo.processos_vigiados());
-        }
-        let antes = restauracao(self.nucleo.servico());
-        let resposta = self
-            .integracao
-            .tratar(identidade, req, agora, antes, |req| {
-                let plano = matches!(req, Requisicao::ObterPlano);
-                let mut resposta = self.nucleo.tratar(req, agora);
-                if plano
-                    && matches!(
-                        resposta,
-                        Resposta::Erro {
-                            codigo: CodigoErro::DriverIndisponivel,
-                            ..
-                        }
-                    )
-                {
-                    resposta = plano_sem_driver();
-                }
-                (resposta, restauracao(self.nucleo.servico()))
-            });
+        let resposta = self.tratar_com_drs(rota, identidade, req, agora);
+        // Toda requisição com a trava pode mudar as preferências do motor.
         self.integracao
             .definir_preferencias(&self.nucleo.preferencias());
         resposta
@@ -226,6 +188,53 @@ impl<S: DriverStore> Atendente for Atendimento<'_, '_, S> {
             );
         }
         self.nucleo.tick(agora);
+    }
+}
+
+impl<S: DriverStore> Atendimento<'_, '_, S> {
+    /// Atende `req` já com a trava do ciclo DRS.
+    fn tratar_com_drs(
+        &mut self,
+        rota: Rota,
+        identidade: IdentidadeCliente,
+        req: Requisicao,
+        agora: Instant,
+    ) -> Resposta {
+        if rota == Rota::Recomendadas
+            && let Some(usuario) = &mut self.integracao.usuario
+        {
+            // R-AR: depende da identidade e da sessão de console.
+            return crate::recomendadas::aplicar(
+                self.nucleo,
+                usuario,
+                &identidade,
+                self.integracao.console.as_ref(),
+                agora,
+            );
+        }
+        if let Some(usuario) = &mut self.integracao.usuario
+            && matches!(req, Requisicao::AgenteConsultar { .. })
+        {
+            usuario.atualizar_processos(self.nucleo.processos_vigiados());
+        }
+        let antes = restauracao(self.nucleo.servico());
+        self.integracao
+            .tratar(identidade, req, agora, antes, |req| {
+                let plano = matches!(req, Requisicao::ObterPlano);
+                let mut resposta = self.nucleo.tratar(req, agora);
+                if plano
+                    && matches!(
+                        resposta,
+                        Resposta::Erro {
+                            codigo: CodigoErro::DriverIndisponivel,
+                            ..
+                        }
+                    )
+                {
+                    resposta = plano_sem_driver();
+                }
+                (resposta, restauracao(self.nucleo.servico()))
+            })
     }
 }
 

@@ -225,9 +225,8 @@ mod testes {
 
     #[test]
     fn escreve_e_recusa_juncao_em_logs() {
-        let base = std::env::temp_dir().join(format!("nvt-logs-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(&base).unwrap();
+        let temp = crate::teste_util::DirTemp::criado("logs");
+        let base = temp.0.clone();
         // Diretório comum: escreve no arquivo do dia e mantém só 14.
         let logs = base.join("logs");
         fs::create_dir_all(&logs).unwrap();

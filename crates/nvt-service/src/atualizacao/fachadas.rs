@@ -557,7 +557,7 @@ pub(crate) mod falsas {
         }
 
         pub(crate) fn pasta_falsa() -> PathBuf {
-            PathBuf::from(r"C:\ProgramData\nv-tuner\atualizacao")
+            crate::teste_util::pasta_atualizacao_falsa()
         }
 
         pub(crate) fn por(&self, nome: &str, bytes: &[u8]) {

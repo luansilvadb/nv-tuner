@@ -51,9 +51,11 @@ mod ciclo;
 mod estado;
 mod ipc;
 mod requisicoes;
+mod rota;
 
 use estado::*;
 pub use ipc::*;
+pub(crate) use rota::*;
 
 /// Abre uma sessão nova do DRS (o driver só é relido ao abrir a sessão).
 pub type Fabrica<'a, S> = Box<dyn FnMut() -> Resultado<S> + 'a>;

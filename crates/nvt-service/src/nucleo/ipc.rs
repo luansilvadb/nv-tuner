@@ -56,10 +56,8 @@ impl<'a, S: DriverStore> Nucleo<'a, S> {
                 },
                 impacto_visual: regra
                     .and_then(|id| regras.regras.iter().find(|r| r.id == id))
-                    .map_or(nvt_ipc::ImpactoVisual::Nenhum, |r| match r.impacto_visual {
-                        ImpactoRegra::Nenhum => nvt_ipc::ImpactoVisual::Nenhum,
-                        ImpactoRegra::Leve => nvt_ipc::ImpactoVisual::Baixo,
-                        ImpactoRegra::Forte => nvt_ipc::ImpactoVisual::Alto,
+                    .map_or(nvt_ipc::ImpactoVisual::Nenhum, |r| {
+                        impacto_ipc(r.impacto_visual)
                     }),
                 status,
             }
@@ -238,25 +236,56 @@ pub fn motivo_reversao(origem: &Origem, acao: nvt_ipc::AcaoReversao) -> String {
     format!("Saiu do plano porque {causa}: {efeito}.")
 }
 
-/// Nome do perfil no protocolo (`"global"` para o perfil base).
+/// Impacto visual da regra no formato do protocolo.
+fn impacto_ipc(i: ImpactoRegra) -> nvt_ipc::ImpactoVisual {
+    match i {
+        ImpactoRegra::Nenhum => nvt_ipc::ImpactoVisual::Nenhum,
+        ImpactoRegra::Leve => nvt_ipc::ImpactoVisual::Baixo,
+        ImpactoRegra::Forte => nvt_ipc::ImpactoVisual::Alto,
+    }
+}
+
+/// Sugestão experimental do DRS no formato do protocolo.
 pub(crate) fn sugestao_drs(regra: &nvt_core::Rule) -> nvt_ipc::SugestaoExperimental {
     nvt_ipc::SugestaoExperimental {
         regra: regra.id.clone(),
         descricao: regra.descricao.clone(),
         camada: nvt_ipc::Camada::Driver,
-        impacto_visual: match regra.impacto_visual {
-            ImpactoRegra::Nenhum => nvt_ipc::ImpactoVisual::Nenhum,
-            ImpactoRegra::Leve => nvt_ipc::ImpactoVisual::Baixo,
-            ImpactoRegra::Forte => nvt_ipc::ImpactoVisual::Alto,
-        },
+        impacto_visual: impacto_ipc(regra.impacto_visual),
         estado: nvt_ipc::EstadoExperimental::Aceitavel,
     }
 }
 
+/// Nome do perfil no protocolo (`"global"` para o perfil base).
 pub fn perfil_ipc(r: &ProfileRef) -> String {
     match r {
         ProfileRef::Base => PERFIL_GLOBAL.to_owned(),
         ProfileRef::Named(n) => n.clone(),
+    }
+}
+
+// Conversões espelhadas das preferências (motor e protocolo): mantenha as
+// duas juntas.
+
+/// Preferências do protocolo no formato do motor (sem escolhas do usuário).
+pub(crate) fn prefs_core(
+    sincronismo: nvt_ipc::Sincronismo,
+    qualidade: nvt_ipc::Qualidade,
+    limite_fps: Option<u32>,
+) -> Preferences {
+    Preferences {
+        sincronismo: match sincronismo {
+            nvt_ipc::Sincronismo::Desligado => nvt_core::Sincronismo::SemSync,
+            nvt_ipc::Sincronismo::VSync => nvt_core::Sincronismo::VSync,
+            nvt_ipc::Sincronismo::GSync => nvt_core::Sincronismo::GSync,
+        },
+        qualidade: match qualidade {
+            nvt_ipc::Qualidade::Desempenho => nvt_core::Qualidade::Desempenho,
+            nvt_ipc::Qualidade::Equilibrado => nvt_core::Qualidade::Equilibrado,
+            nvt_ipc::Qualidade::Qualidade => nvt_core::Qualidade::Fidelidade,
+        },
+        limite_fps,
+        escolhas_usuario: Vec::new(),
     }
 }
 
@@ -274,6 +303,34 @@ pub fn prefs_ipc(p: &Preferences) -> nvt_ipc::Preferencias {
             nvt_core::Qualidade::Fidelidade => nvt_ipc::Qualidade::Qualidade,
         },
         limite_fps: p.limite_fps,
+    }
+}
+
+/// `Estado` do protocolo com a versão do serviço, as preferências e a última
+/// aplicação; o resto vazio (sem driver, GPU, jogos, alertas nem avisos).
+/// Com driver, o núcleo preenche os demais campos.
+pub(crate) fn estado_ipc(
+    preferencias: &Preferences,
+    ultima_aplicacao: Option<UltimaAplicacao>,
+) -> nvt_ipc::Estado {
+    nvt_ipc::Estado {
+        agente: Default::default(),
+        diagnosticos: Vec::new(),
+        versao_servico: env!("CARGO_PKG_VERSION").to_owned(),
+        driver: None,
+        gpu: None,
+        preferencias: prefs_ipc(preferencias),
+        jogos: 0,
+        ultima_aplicacao: ultima_aplicacao.map(|u| nvt_ipc::Aplicacao {
+            quando_unix: u.quando_unix,
+            mudancas: u.mudancas,
+            falhas: u.falhas,
+        }),
+        alertas_deriva: Vec::new(),
+        avisos: Vec::new(),
+        adiamento: None,
+        atualizacao: Default::default(),
+        autonomia_pausada: false,
     }
 }
 

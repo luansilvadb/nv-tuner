@@ -354,7 +354,7 @@ mod testes {
     #[test]
     fn exigir_poe_em_quarentena_e_recria() {
         let t = DirTemp::criado("quarentena");
-        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
+        let estado = t.estado();
         let alvo = t.0.join("alvo");
         fs::create_dir_all(&estado).unwrap();
         fs::create_dir_all(&alvo).unwrap();
@@ -417,7 +417,7 @@ mod testes {
     #[test]
     fn arquivo_que_some_durante_a_verificacao_nao_e_problema() {
         let t = DirTemp::criado("some");
-        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
+        let estado = t.estado();
         fs::create_dir_all(estado.join("logs")).unwrap();
         let tmp = estado.join("estado.json.tmp");
         let log = estado.join("logs").join("nv-tuner.log.1");
@@ -462,7 +462,7 @@ mod testes {
         }
         definir_dono_padrao().unwrap();
         let t = DirTemp::criado("sumido-exigir");
-        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
+        let estado = t.estado();
         criar_seguro(&estado).unwrap();
         fs::write(estado.join("estado.json"), "{}").unwrap();
         fs::write(estado.join("estado.json.tmp"), "{}").unwrap();
@@ -489,7 +489,7 @@ mod testes {
             return; // definir dono e criar com O:BA exigem privilégio
         }
         let t = DirTemp::criado("posse");
-        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
+        let estado = t.estado();
         criar_seguro(&estado).unwrap();
         let arq = estado.join("estado.json");
         fs::write(&arq, "{}").unwrap();
@@ -517,7 +517,7 @@ mod testes {
     #[test]
     fn avisar_nao_altera_nada() {
         let t = DirTemp::criado("avisar");
-        let estado = t.0.join(nvt_core::produto::PASTA_DADOS);
+        let estado = t.estado();
         fs::create_dir_all(&estado).unwrap();
         fs::write(estado.join("estado.json"), "{}").unwrap();
         let r = preparar(&estado, Modo::Avisar).unwrap();
