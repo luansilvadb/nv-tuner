@@ -56,3 +56,52 @@ pub fn passo(numero: usize, texto: &str) -> String {
 pub const BOTAO_OCULTAR_TECNICOS: &str = "Ocultar detalhes técnicos";
 pub const AJUSTOU_ARQUIVO: &str = "Ajustou o arquivo de configuração do jogo.";
 pub const ROTULO_PERFIL: &str = "Perfil do driver";
+
+// Lista e busca -------------------------------------------------------------
+pub const BUSCAR_PLACEHOLDER: &str = "Buscar jogo instalado…";
+pub const BUSCAR_ROTULO: &str = "Buscar jogo instalado";
+pub const BOTAO_OTIMIZAR: &str = "Otimizar sistema";
+pub const NENHUM_NA_BUSCA: &str = "Nenhum jogo corresponde à busca.";
+pub const CHIP_ATIVO: &str = "Ativo";
+pub const CHIP_PENDENTE: &str = "Pendente";
+
+/// "Jogos detectados (12)".
+pub fn jogos_detectados(total: usize) -> String {
+    format!("Jogos detectados ({total})")
+}
+
+/// "Jogos encontrados (3 de 12)".
+pub fn jogos_encontrados(achados: usize, total: usize) -> String {
+    format!("Jogos encontrados ({achados} de {total})")
+}
+
+// Preferências globais ------------------------------------------------------
+pub const PREFS_TITULO: &str = "Preferências globais";
+pub const PREFS_SUBTITULO: &str = "Configurações padrão para os jogos detectados";
+pub const BOTAO_RESTAURAR_PADROES: &str = "Restaurar padrões";
+pub const ROTULO_PERFIL_DESEMPENHO: &str = "Perfil de desempenho";
+pub const QUALIDADE_DESEMPENHO: &str = "Desempenho máximo";
+pub const QUALIDADE_EQUILIBRADO: &str = "Equilibrado";
+pub const QUALIDADE_FIDELIDADE: &str = "Alta fidelidade";
+pub const ROTULO_SINCRONIZACAO: &str = "Sincronização e latência";
+pub const NOME_REFLEX: &str = "NVIDIA Reflex";
+pub const SUPORTE_GPU: &str = "Suporte da GPU";
+pub const REFLEX_DISPONIVEL: &str = "Disponível";
+pub const REFLEX_INDISPONIVEL: &str = "Indisponível";
+pub const REFLEX_DESCONHECIDO: &str = "Desconhecido";
+pub const SINCRONISMO_VERTICAL: &str = "Sincronismo vertical";
+pub const MODO_VSYNC: &str = "V-Sync";
+pub const MODO_GSYNC: &str = "G-SYNC";
+pub const ROTULO_LIMITE_FPS: &str = "Limite de FPS";
+pub const FPS_SEM_LIMITE: &str = "Sem limite";
+pub const FPS_OUTRO: &str = "Outro";
+
+/// "165 FPS".
+pub fn fps(valor: u32) -> String {
+    format!("{valor} FPS")
+}
+
+/// Status da linha com a API gráfica: "Otimizado · DirectX 12".
+pub fn status_com_api(status: &str, api: &str) -> String {
+    format!("{status} · {api}")
+}

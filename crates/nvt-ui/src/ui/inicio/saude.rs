@@ -5,10 +5,7 @@ use super::*;
 /// Seção Saúde do PC do Início (só com dados de `ObterSaude`).
 pub(super) fn secao_saude(s: &nvt_ipc::Saude, janela: &Janela, cx: &mut Context<Janela>) -> Div {
     let tema = cx.theme().clone();
-    let titulo = div()
-        .text_size(px(tema::TAM_CORPO))
-        .font_semibold()
-        .child(t::SECAO_SAUDE);
+    let titulo = titulo_cartao(t::SECAO_SAUDE);
     let caixa = superficie(&tema)
         .id("saude")
         .p(px(tema::ESP_4))
@@ -78,14 +75,7 @@ pub(super) fn secao_saude(s: &nvt_ipc::Saude, janela: &Janela, cx: &mut Context<
                                 })
                                 .child(div().text_color(cor).child(l.frase)),
                         )
-                        .when_some(l.caminho, |d, c| {
-                            d.child(
-                                div()
-                                    .text_size(px(tema::TAM_LEGENDA))
-                                    .text_color(tema.muted_foreground)
-                                    .child(c),
-                            )
-                        })
+                        .when_some(l.caminho, |d, c| d.child(legenda(c, &tema)))
                         .children(botao),
                 ),
         );

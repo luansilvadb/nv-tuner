@@ -9,6 +9,7 @@ pub mod boas_vindas;
 pub mod estado;
 pub mod inicio;
 pub mod jogos;
+pub mod nav;
 #[cfg(feature = "medicao-partidas")]
 pub mod partidas;
 pub mod saude;

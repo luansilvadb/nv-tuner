@@ -7,7 +7,15 @@ pub(crate) fn recomendacoes(
     window: &mut Window,
     cx: &mut Context<Janela>,
 ) -> AnyElement {
-    let estado = cx.default_global::<EstadoInicio>().clone();
+    // Só os campos usados: evita clonar o estado inteiro a cada frame.
+    let (ocupado, saude_aberta, resultado) = {
+        let estado = cx.default_global::<EstadoInicio>();
+        (
+            estado.ocupado,
+            estado.saude_aberta,
+            estado.resultado.clone(),
+        )
+    };
     let fatos = janela.fatos();
     // Saúde do PC: cache da thread de comunicação (`ObterSaude`); sem
     // resposta, a seção não aparece e "piorou" nunca vence.
@@ -21,7 +29,6 @@ pub(crate) fn recomendacoes(
     let texto = t::veredito(v);
     let b = botoes(v, fatos);
     let tema = cx.theme().clone();
-    let ocupado = estado.ocupado;
     let otimizado_com_pausa = fatos.agente_ausente && *v == Veredito::Otimizado;
     let (icone, cor) = if otimizado_com_pausa {
         (IconName::SlidersHorizontal, tema.info)
@@ -58,16 +65,10 @@ pub(crate) fn recomendacoes(
         Tom::Informacao => tema.foreground,
         Tom::Erro => tema.danger,
     };
-    let legenda = |s: &'static str| {
-        div()
-            .text_size(px(tema::TAM_LEGENDA))
-            .text_color(tema.muted_foreground)
-            .child(s)
-    };
     let saude_disponivel = saude.is_some() && !matches!(v, Veredito::Verificando);
     let saude_el = recolhivel(
         "detalhes-saude-otimizacao",
-        saude_disponivel && estado.saude_aberta,
+        saude_disponivel && saude_aberta,
         window,
         cx,
         |_, cx| {
@@ -89,18 +90,13 @@ pub(crate) fn recomendacoes(
                         .text_size(px(tema::TAM_SUBTITULO))
                         .font_semibold()
                         .child(if otimizado_com_pausa {
-                            "Otimização do sistema".into()
+                            t::OTIMIZACAO_DO_SISTEMA.into()
                         } else {
                             texto.titulo
                         }),
                 )
                 .when(!otimizado_com_pausa, |d| {
-                    d.child(
-                        div()
-                            .text_size(px(tema::TAM_CORPO))
-                            .text_color(tema.muted_foreground)
-                            .child(texto.frase),
-                    )
+                    d.child(explicacao(texto.frase, &tema))
                 }),
         )
         .when(tem_acoes, |c| c.child(acoes))
@@ -120,13 +116,13 @@ pub(crate) fn recomendacoes(
                             .min_w_0()
                             .text_size(px(tema::TAM_LEGENDA))
                             .child(div().font_semibold().child(tj::AJUSTES_WINDOWS_PAUSADOS))
-                            .child(legenda(tj::RETOMAR_AJUSTES_WINDOWS)),
+                            .child(legenda(tj::RETOMAR_AJUSTES_WINDOWS, &tema)),
                     ),
             )
         })
-        .when_some(motivo, |c, m| c.child(legenda(m)))
-        .when(ocupado.is_some(), |c| c.child(legenda(t::AGUARDE)))
-        .when_some(estado.resultado.clone(), |c, (tom, m)| {
+        .when_some(motivo, |c, m| c.child(legenda(m, &tema)))
+        .when(ocupado.is_some(), |c| c.child(legenda(t::AGUARDE, &tema)))
+        .when_some(resultado, |c, (tom, m)| {
             c.child(
                 div()
                     .text_size(px(tema::TAM_CORPO))
@@ -158,8 +154,8 @@ pub(crate) fn recomendacoes(
                         tema::botao_base("detalhes-saude")
                             .ghost()
                             .small()
-                            .label("Saúde do PC")
-                            .icon(if estado.saude_aberta {
+                            .label(t::SECAO_SAUDE)
+                            .icon(if saude_aberta {
                                 IconName::ChevronUp
                             } else {
                                 IconName::ChevronDown

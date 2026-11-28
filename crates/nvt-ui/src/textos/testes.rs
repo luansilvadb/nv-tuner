@@ -306,3 +306,17 @@ fn plurais() {
         "Faça 2 ajustes no jogo"
     );
 }
+
+#[test]
+fn textos_gerados_da_tela_jogos() {
+    assert_eq!(jogos::jogos_detectados(12), "Jogos detectados (12)");
+    assert_eq!(
+        jogos::jogos_encontrados(3, 12),
+        "Jogos encontrados (3 de 12)"
+    );
+    assert_eq!(jogos::fps(165), "165 FPS");
+    assert_eq!(
+        jogos::status_com_api("Otimizado", "DirectX 12"),
+        "Otimizado · DirectX 12"
+    );
+}

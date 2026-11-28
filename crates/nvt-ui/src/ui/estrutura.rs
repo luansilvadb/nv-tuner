@@ -77,7 +77,6 @@ impl Janela {
         cx: &mut Context<Self>,
     ) -> Self {
         let eventos = canal.eventos;
-        super::jogos::instalar_envio(cx, canal.comandos.clone());
         super::jogos::abrir_inicial(cx, expandidos.first().cloned());
         // Consome os eventos da thread de comunicação sem bloquear a janela.
         cx.spawn(async move |this, cx| {
@@ -410,7 +409,6 @@ impl Render for Janela {
             }
             _ => 1.,
         };
-        let raio_painel = px(tema::RAIO_AREA_CONTEUDO);
         let largura_conteudo = window.viewport_size().width
             - largura_lateral
             - px(tema::ESP_8 + tema::LINHA_FINA) * 2.;
@@ -435,46 +433,63 @@ impl Render for Janela {
                             .bg(tema.sidebar)
                             .child(self.barra_superior(&tema)),
                     )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .rounded_tl(raio_painel)
-                            .border_1()
-                            .border_color(tema::cor(tema::BORDA_SUAVE).opacity(0.75))
-                            .bg(tema::cor(tema::FUNDO_AREA_CONTEUDO))
-                            .child(self.linha_estado(cx))
-                            .child(
-                                div()
-                                    .id("conteudo")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .overflow_y_scroll()
-                                    .child(
-                                        v_flex()
-                                            .relative()
-                                            .top(px(tema::ESP_4 * (1. - entrada)))
-                                            .opacity(entrada)
-                                            .px(px(tema::ESP_8))
-                                            .py(px(tema::ESP_6))
-                                            .gap(px(tema::ESP_6))
-                                            .when(
-                                                !matches!(self.secao, Secao::Inicio | Secao::Jogos),
-                                                |v| v.child(self.titulo_pagina()),
-                                            )
-                                            .children(self.avisos())
-                                            .child(self.conteudo_secao(
-                                                largura_conteudo,
-                                                window,
-                                                cx,
-                                            )),
-                                    ),
-                            ),
-                    ),
+                    .child(self.area_conteudo(entrada, largura_conteudo, window, cx)),
             )
             .children(self.mensagem_flutuante(&tema, window, cx))
             .into_any_element()
+    }
+}
+
+impl Janela {
+    /// Painel arredondado à direita da lateral: linha de estado e a coluna
+    /// rolável da seção ativa.
+    fn area_conteudo(
+        &self,
+        entrada: f32,
+        largura_conteudo: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        v_flex()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .rounded_tl(px(tema::RAIO_AREA_CONTEUDO))
+            .border_1()
+            .border_color(tema::cor(tema::BORDA_SUAVE).opacity(0.75))
+            .bg(tema::cor(tema::FUNDO_AREA_CONTEUDO))
+            .child(self.linha_estado(cx))
+            .child(self.coluna_rolavel(entrada, largura_conteudo, window, cx))
+    }
+
+    /// Coluna rolável com o título (se a seção pede), os avisos e o conteúdo
+    /// da seção; `entrada` (0 a 1) anima a troca de seção.
+    fn coluna_rolavel(
+        &self,
+        entrada: f32,
+        largura_conteudo: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        div()
+            .id("conteudo")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(
+                v_flex()
+                    .relative()
+                    .top(px(tema::ESP_4 * (1. - entrada)))
+                    .opacity(entrada)
+                    .px(px(tema::ESP_8))
+                    .py(px(tema::ESP_6))
+                    .gap(px(tema::ESP_6))
+                    .when(self.secao.def().titulo_na_pagina, |v| {
+                        v.child(self.titulo_pagina())
+                    })
+                    .children(self.avisos())
+                    .child(self.conteudo_secao(largura_conteudo, window, cx)),
+            )
     }
 }
 
@@ -527,6 +542,13 @@ mod testes {
             .map(|s| format!("{:?}", s.icone()))
             .collect();
         assert_eq!(icones.len(), Secao::visiveis().len());
+    }
+
+    #[test]
+    fn tabela_sem_repeticao() {
+        let chaves: HashSet<_> = super::SECOES.iter().map(|d| d.chave).collect();
+        assert_eq!(chaves.len(), super::SECOES.len());
+        assert_eq!(super::SECOES[0].secao, Secao::default());
     }
 
     #[test]

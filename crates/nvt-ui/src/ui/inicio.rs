@@ -16,13 +16,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::estrutura::Janela;
-use super::estrutura::{icone_destaque, superficie};
+use super::estrutura::{
+    explicacao, icone_destaque, legenda, legenda_cor, ponto_status, superficie, titulo_cartao,
+};
 use super::movimento::recolhivel;
 use crate::abrir::{self, Bloqueio, FalhaAbrir};
-use crate::demonstracao;
-use crate::local;
+use crate::backend::{Abertura, Backend};
 use crate::modelo::{Conexao, Fatos, MotivoIndisponivel, Veredito};
-use crate::servico::{self, AcaoInicio, FalhaInicio, RespostaInicio};
+use crate::servico::{AcaoInicio, FalhaInicio, RespostaInicio};
 use crate::tema::{self, EstadoBotao as _};
 use crate::textos::inicio as t;
 use crate::textos::jogos as tj;
@@ -219,17 +220,16 @@ pub(super) fn texto_bloqueio(b: Bloqueio) -> &'static str {
     }
 }
 
-/// Tratador de clique: única chamada de [`abrir::abrir_inicializacao`].
+/// Tratador de clique: única chamada de [`Backend::abrir_inicializacao`].
 /// Na demonstração nada abre.
 pub(super) fn clicar_abrir(janela: &Janela, cx: &mut Context<Janela>) {
-    let aviso = if demonstracao::ativo().is_some() {
-        Some(ts::ABRIR_DEMONSTRACAO)
-    } else {
-        match abrir::abrir_inicializacao(estado_servico(janela), &janela.ui.dados.jogos) {
-            Ok(()) => None,
-            Err(FalhaAbrir::Bloqueado(b)) => Some(texto_bloqueio(b)),
-            Err(FalhaAbrir::Windows) => Some(ts::ABRIR_FALHOU),
-        }
+    let aviso = match Backend::atual()
+        .abrir_inicializacao(estado_servico(janela), &janela.ui.dados.jogos)
+    {
+        Abertura::Aberta => None,
+        Abertura::Simulada => Some(ts::ABRIR_DEMONSTRACAO),
+        Abertura::Falhou(FalhaAbrir::Bloqueado(b)) => Some(texto_bloqueio(b)),
+        Abertura::Falhou(FalhaAbrir::Windows) => Some(ts::ABRIR_FALHOU),
     };
     cx.default_global::<EstadoInicio>().aviso_abrir = aviso;
     cx.notify();
@@ -259,14 +259,7 @@ pub(super) fn botao_abrir(
                 .indisponivel(bloqueio.is_some())
                 .on_click(cx.listener(|this, _, _, cx| clicar_abrir(this, cx))),
         )
-        .when_some(aviso, |c, a| {
-            c.child(
-                div()
-                    .text_size(px(tema::TAM_LEGENDA))
-                    .text_color(tema.muted_foreground)
-                    .child(a),
-            )
-        })
+        .when_some(aviso, |c, a| c.child(legenda(a, &tema)))
 }
 
 fn icone(v: &Veredito) -> IconName {
@@ -293,12 +286,10 @@ fn executar(acao: AcaoInicio, cx: &mut Context<Janela>) {
     estado.ocupado = Some(acao);
     estado.resultado = None;
     cx.notify();
-    let tarefa = cx.background_executor().spawn(async move {
-        match demonstracao::ativo() {
-            Some(c) => demonstracao::executar_inicio(c, acao),
-            None => servico::executar_inicio(acao),
-        }
-    });
+    let backend = Backend::atual();
+    let tarefa = cx
+        .background_executor()
+        .spawn(async move { backend.executar_inicio(acao) });
     cx.spawn(async move |this, cx| {
         let r = tarefa.await;
         let _ = this.update(cx, |janela, cx| {
@@ -327,9 +318,7 @@ fn executar(acao: AcaoInicio, cx: &mut Context<Janela>) {
 /// "Começar" nas boas-vindas: grava a marca (falha não bloqueia) e segue.
 pub(super) fn concluir_boas_vindas(cx: &mut Context<Janela>) {
     // Na demonstração nada é gravado.
-    if demonstracao::ativo().is_none() {
-        let _ = local::marcar_boas_vindas();
-    }
+    Backend::atual().marcar_boas_vindas();
     cx.default_global::<EstadoInicio>().boas_vindas_vista = Some(true);
     cx.notify();
 }
@@ -374,7 +363,11 @@ pub(super) fn controle_otimizacao(
     // Durante a operação o switch já mostra o estado pedido.
     let ligada = ligando || (botoes.desfazer && !botoes.voltar && !desligando);
     let pendente = janela.ui.restauracao_usuario_pendente();
-    let tema_ = cx.theme().clone();
+    // Só as duas cores usadas: evita clonar o tema inteiro a cada frame.
+    let (aviso, transparente) = {
+        let tema = cx.theme();
+        (tema.warning, tema.transparent)
+    };
     // Foco como no switch de sincronismo: sem o anel padrão (que aparece
     // até após clique com o mouse), só um contorno discreto via teclado.
     let foco = window
@@ -417,12 +410,7 @@ pub(super) fn controle_otimizacao(
                     .font_medium()
                     .child(t::OTIMIZACAO_AUTOMATICA)
                     .when(pendente, |v| {
-                        v.child(
-                            div()
-                                .size(px(tema::TAM_PONTO_STATUS + 1.))
-                                .rounded_full()
-                                .bg(tema_.warning),
-                        )
+                        v.child(ponto_status(tema::TAM_PONTO_STATUS + 1., aviso))
                     }),
             )
             .child(
@@ -433,7 +421,7 @@ pub(super) fn controle_otimizacao(
                     .border_color(if foco_visivel {
                         tema::cor(tema::BORDA_FOCO)
                     } else {
-                        tema_.transparent
+                        transparente
                     })
                     .on_mouse_down_out(move |_, window, cx| {
                         if foco.contains_focused(window, cx) {
@@ -455,10 +443,7 @@ pub(super) fn controle_otimizacao(
 pub(super) fn boas_vindas_pendente(cx: &mut App) -> bool {
     let e = cx.default_global::<EstadoInicio>();
     !*e.boas_vindas_vista
-        .get_or_insert_with(|| match demonstracao::ativo() {
-            Some(c) => !c.boas_vindas(),
-            None => local::boas_vindas_vista(),
-        })
+        .get_or_insert_with(|| Backend::atual().boas_vindas_vista())
 }
 
 /// Tom visual do veredito: cor do ícone.
@@ -497,6 +482,43 @@ pub(super) fn cor_tom(t: TomVeredito, tema: &component::Theme) -> Hsla {
     }
 }
 
+/// Um cartão do painel do Início: textos, ícone e cor do destaque.
+pub(super) struct CartaoPainel {
+    pub textos: t::TextoCartaoPainel,
+    pub icone: IconName,
+    /// Destaque verde (senão, a cor dos ícones).
+    pub verde: bool,
+}
+
+/// Cartões do painel, na ordem de exibição.
+pub(super) const CARTOES_PAINEL: [CartaoPainel; 5] = [
+    CartaoPainel {
+        textos: t::PAINEL_LATENCIA_SISTEMA,
+        icone: IconName::Gauge,
+        verde: true,
+    },
+    CartaoPainel {
+        textos: t::PAINEL_FRAMETIMES,
+        icone: IconName::ChartLine,
+        verde: false,
+    },
+    CartaoPainel {
+        textos: t::PAINEL_PERIFERICO,
+        icone: IconName::Mouse,
+        verde: false,
+    },
+    CartaoPainel {
+        textos: t::PAINEL_FILA,
+        icone: IconName::Layers,
+        verde: true,
+    },
+    CartaoPainel {
+        textos: t::PAINEL_DWM,
+        icone: IconName::Zap,
+        verde: true,
+    },
+];
+
 pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>) -> AnyElement {
     let tema = cx.theme();
     let gpu = janela
@@ -505,11 +527,11 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
         .estado
         .as_ref()
         .and_then(|estado| estado.gpu.as_ref());
-    let cenario = demonstracao::ativo();
-    let simulacao = cenario.is_some() && gpu.is_some();
+    let backend = Backend::atual();
+    let simulacao = backend.eh_demonstracao() && gpu.is_some();
     let texto = t::veredito(janela.veredito());
-    let descricao = if cenario == Some(demonstracao::Cenario::Otimizado) {
-        "Todos os subsistemas calibrados e otimizados para máxima estabilidade competitiva.".into()
+    let descricao = if backend.demonstracao_otimizada() {
+        t::DESCRICAO_DEMONSTRACAO_OTIMIZADO.into()
     } else {
         texto.frase
     };
@@ -521,54 +543,6 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
     } else {
         1
     };
-
-    let cartoes = [
-        (
-            "Latência do sistema",
-            "2.4 ms",
-            "−0.8 ms",
-            "Reflex + Boost",
-            "PC + Display",
-            IconName::Gauge,
-            true,
-        ),
-        (
-            "Frametimes e jitter",
-            "4.1 ms",
-            "±0.18 ms",
-            "Jitter",
-            "< 0.2 ms",
-            IconName::ChartLine,
-            false,
-        ),
-        (
-            "Latência do periférico",
-            "0.8 ms",
-            "1000 Hz",
-            "Taxa de Polling",
-            "USB Direct Interrupt",
-            IconName::Mouse,
-            false,
-        ),
-        (
-            "Fila de renderização",
-            "0 frames",
-            "",
-            "Ultra Low Latency",
-            "Buffer Prerender: OFF",
-            IconName::Layers,
-            true,
-        ),
-        (
-            "Latência do DWM",
-            "0.0 ms",
-            "Direct Flip MPO",
-            "Composição de Janela",
-            "Flip Model (Bypassed)",
-            IconName::Zap,
-            true,
-        ),
-    ];
 
     v_flex()
         .w_full()
@@ -598,89 +572,89 @@ pub(super) fn render(janela: &Janela, largura: Pixels, cx: &mut Context<Janela>)
                 .grid()
                 .grid_cols(colunas)
                 .gap(px(tema::ESP_GRADE))
-                .children(
-                    cartoes.map(|(titulo, valor, detalhe, rotulo, rodape, icone, verde)| {
-                        let destaque = if verde {
-                            tema::cor(tema::VERDE_PAINEL)
-                        } else {
-                            tema::cor(tema::TEXTO_ICONE)
-                        };
-                        superficie(tema)
-                            .rounded(px(tema::RAIO_CARTAO_PAINEL))
-                            .min_h(px(tema::ALTURA_CARTAO_PAINEL))
-                            .min_w_0()
-                            .p(px(tema::ESP_4))
-                            .gap(px(tema::ESP_2))
-                            .justify_between()
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .gap(px(tema::ESP_2))
-                                    .child(super::estrutura::rotulo(titulo, tema))
-                                    .child(
-                                        h_flex()
-                                            .size(px(tema::ESP_6))
-                                            .flex_shrink_0()
-                                            .justify_center()
-                                            .rounded(px(tema::RAIO))
-                                            .bg(tema::cor(tema::FUNDO_ICONE))
-                                            .child(
-                                                Icon::new(icone)
-                                                    .size(px(tema::TAM_CORPO))
-                                                    .text_color(destaque),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_baseline()
-                                    .flex_wrap()
-                                    .gap(px(tema::ESP_2))
-                                    .child(
-                                        div()
-                                            .font_semibold()
-                                            .text_size(px(tema::TAM_VALOR_PAINEL))
-                                            .child(if simulacao { valor } else { "—" }),
-                                    )
-                                    .when(simulacao && !detalhe.is_empty(), |v| {
-                                        v.child(
-                                            div()
-                                                .text_size(px(tema::TAM_LEGENDA))
-                                                .text_color(if icone == IconName::ChartLine {
-                                                    tema.muted_foreground
-                                                } else {
-                                                    tema::cor(tema::VERDE_PAINEL)
-                                                })
-                                                .child(detalhe),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .flex_wrap()
-                                    .gap(px(tema::ESP_1))
-                                    .border_t_1()
-                                    .border_color(tema::cor(tema::BORDA_SUAVE).opacity(0.65))
-                                    .pt(px(tema::ESP_2))
-                                    .text_size(px(tema::TAM_LEGENDA))
-                                    .child(div().text_color(tema.muted_foreground).child(rotulo))
-                                    .child(
-                                        div()
-                                            .text_color(if simulacao {
-                                                tema.foreground
-                                            } else {
-                                                tema.muted_foreground
-                                            })
-                                            .child(if simulacao {
-                                                rodape
-                                            } else {
-                                                "Sem medição"
-                                            }),
-                                    ),
-                            )
-                    }),
-                ),
+                .children(CARTOES_PAINEL.iter().map(|cartao| {
+                    let t::TextoCartaoPainel {
+                        titulo,
+                        valor,
+                        detalhe,
+                        rotulo,
+                        rodape,
+                    } = cartao.textos;
+                    let icone = cartao.icone;
+                    let destaque = if cartao.verde {
+                        tema::cor(tema::VERDE_PAINEL)
+                    } else {
+                        tema::cor(tema::TEXTO_ICONE)
+                    };
+                    superficie(tema)
+                        .rounded(px(tema::RAIO_CARTAO_PAINEL))
+                        .min_h(px(tema::ALTURA_CARTAO_PAINEL))
+                        .min_w_0()
+                        .p(px(tema::ESP_4))
+                        .gap(px(tema::ESP_2))
+                        .justify_between()
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .gap(px(tema::ESP_2))
+                                .child(super::estrutura::rotulo(titulo, tema))
+                                .child(
+                                    h_flex()
+                                        .size(px(tema::ESP_6))
+                                        .flex_shrink_0()
+                                        .justify_center()
+                                        .rounded(px(tema::RAIO))
+                                        .bg(tema::cor(tema::FUNDO_ICONE))
+                                        .child(
+                                            Icon::new(icone)
+                                                .size(px(tema::TAM_CORPO))
+                                                .text_color(destaque),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .items_baseline()
+                                .flex_wrap()
+                                .gap(px(tema::ESP_2))
+                                .child(
+                                    div()
+                                        .font_semibold()
+                                        .text_size(px(tema::TAM_VALOR_PAINEL))
+                                        .child(if simulacao { valor } else { t::SEM_VALOR }),
+                                )
+                                .when(simulacao && !detalhe.is_empty(), |v| {
+                                    v.child(legenda_cor(
+                                        detalhe,
+                                        if icone == IconName::ChartLine {
+                                            tema.muted_foreground
+                                        } else {
+                                            tema::cor(tema::VERDE_PAINEL)
+                                        },
+                                    ))
+                                }),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .flex_wrap()
+                                .gap(px(tema::ESP_1))
+                                .border_t_1()
+                                .border_color(tema::cor(tema::BORDA_SUAVE).opacity(0.65))
+                                .pt(px(tema::ESP_2))
+                                .text_size(px(tema::TAM_LEGENDA))
+                                .child(legenda(rotulo, tema))
+                                .child(
+                                    div()
+                                        .text_color(if simulacao {
+                                            tema.foreground
+                                        } else {
+                                            tema.muted_foreground
+                                        })
+                                        .child(if simulacao { rodape } else { t::SEM_MEDICAO }),
+                                ),
+                        )
+                })),
         )
         .into_any_element()
 }

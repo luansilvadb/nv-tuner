@@ -18,6 +18,7 @@
 
 mod abrir;
 mod arquivo_jogo;
+mod backend;
 mod demonstracao;
 mod fuso;
 mod local;
@@ -31,6 +32,7 @@ use std::time::Duration;
 
 use gpui_kit::*;
 
+use crate::backend::Backend;
 use crate::ui::Secao;
 
 /// Opções da linha de comando.
@@ -90,13 +92,7 @@ fn main() {
         }
     };
     // Demonstração: canal simulado no lugar do serviço (nunca os dois).
-    let canal = match opcoes.demonstracao {
-        Some(c) => {
-            demonstracao::ativar(c);
-            demonstracao::iniciar(c)
-        }
-        None => servico::iniciar(opcoes.pipe.clone()),
-    };
+    let canal = Backend::escolher(opcoes.demonstracao).conectar(opcoes.pipe.clone());
 
     // Pacote Lucide completo: a navegação usa ícones fora do conjunto padrão.
     let app = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);

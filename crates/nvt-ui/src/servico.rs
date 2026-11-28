@@ -546,18 +546,8 @@ impl Trabalhador {
             self.concluir(c, Err(textos::SO_COM_SERVICO.into()));
             return;
         }
-        let req = match &c {
-            Comando::RestaurarOriginal => Requisicao::RestaurarOriginal,
-            Comando::Reescanear => Requisicao::ReescanearJogos,
-            Comando::DefinirPreferencias(p) => Requisicao::DefinirPreferencias {
-                sincronismo: p.sincronismo,
-                qualidade: p.qualidade,
-                limite_fps: p.limite_fps,
-            },
-            Comando::ReverterConfigJogo { destino } => Requisicao::ReverterConfigJogo {
-                destino: destino.clone(),
-            },
-            Comando::Atualizar => unreachable!("tratado acima"),
+        let Some(req) = c.requisicao() else {
+            unreachable!("`Atualizar` é tratado acima e é o único comando sem requisição");
         };
         if let Err(e) = req.validar() {
             self.concluir(c, Err(e));
@@ -633,16 +623,19 @@ pub enum FalhaInicio {
     Outra(String),
 }
 
+/// Traduz um `Resposta::Erro` para a tela: `RecursoAusente` vira a variante
+/// própria (serviço antigo); o resto vira o texto de recusa do serviço.
+pub fn falha_do_erro(codigo: nvt_ipc::CodigoErro, mensagem: &str) -> FalhaInicio {
+    match codigo {
+        nvt_ipc::CodigoErro::RecursoAusente => FalhaInicio::RecursoAusente,
+        _ => FalhaInicio::Outra(textos::erro_servico(codigo, mensagem)),
+    }
+}
+
 /// Resume a resposta do serviço para a ação.
 pub fn resposta_inicio(r: &Resposta) -> Result<RespostaInicio, FalhaInicio> {
     match r {
-        Resposta::Erro {
-            codigo: nvt_ipc::CodigoErro::RecursoAusente,
-            ..
-        } => Err(FalhaInicio::RecursoAusente),
-        Resposta::Erro { codigo, mensagem } => {
-            Err(FalhaInicio::Outra(textos::erro_servico(*codigo, mensagem)))
-        }
+        Resposta::Erro { codigo, mensagem } => Err(falha_do_erro(*codigo, mensagem)),
         Resposta::Recomendadas { aceitas, adiada } => Ok(RespostaInicio::Feito {
             aceitas: aceitas.len(),
             adiada: *adiada,

@@ -121,6 +121,25 @@ impl Comando {
         !matches!(self, Comando::Atualizar | Comando::Reescanear)
     }
 
+    /// Requisição que o serviço atende para o comando; `None` para
+    /// `Atualizar`, que só relê os dados.
+    pub fn requisicao(&self) -> Option<nvt_ipc::Requisicao> {
+        use nvt_ipc::Requisicao;
+        Some(match self {
+            Comando::Atualizar => return None,
+            Comando::RestaurarOriginal => Requisicao::RestaurarOriginal,
+            Comando::Reescanear => Requisicao::ReescanearJogos,
+            Comando::DefinirPreferencias(p) => Requisicao::DefinirPreferencias {
+                sincronismo: p.sincronismo,
+                qualidade: p.qualidade,
+                limite_fps: p.limite_fps,
+            },
+            Comando::ReverterConfigJogo { destino } => Requisicao::ReverterConfigJogo {
+                destino: destino.clone(),
+            },
+        })
+    }
+
     pub fn mensagem_sucesso(&self) -> Option<&'static str> {
         match self {
             Comando::Atualizar => None,

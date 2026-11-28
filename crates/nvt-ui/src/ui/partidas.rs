@@ -3,9 +3,9 @@
 //!
 //! As partidas são lidas pelo IPC numa conexão própria, fora da thread da
 //! janela, e guardadas num `Global` do aplicativo. Na demonstração, os dados
-//! vêm de `demonstracao::partidas` e nada fala com o serviço.
+//! vêm do backend de demonstração e nada fala com o serviço.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Theme;
@@ -14,11 +14,11 @@ use gpui_kit::component::{ActiveTheme, Icon, StyledExt};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use nvt_ipc::{AmostraSegundo, PARTIDAS_MAX, Partida, Requisicao, Resposta, ResumoPartida};
+use nvt_ipc::{AmostraSegundo, Partida, ResumoPartida};
 
-use super::estrutura::{Janela, estado_vazio, explicacao, superficie};
-use crate::demonstracao;
-use crate::servico::{self, FalhaInicio};
+use super::estrutura::{Janela, estado_vazio, explicacao, legenda, superficie};
+use crate::backend::{Backend, PedidoPartidas as Pedido, RetornoPartidas as Retorno};
+use crate::servico::FalhaInicio;
 use crate::tema;
 use crate::textos::partidas as tp;
 
@@ -26,32 +26,6 @@ use crate::textos::partidas as tp;
 const ALTURA_GRAFICO: f32 = 120.;
 /// Pontos desenhados no gráfico (as amostras são agrupadas em faixas).
 const PONTOS_GRAFICO: usize = 90;
-
-/// O que se pede ao serviço (ou à demonstração).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pedido {
-    Listar,
-    Obter(u64),
-}
-
-impl Pedido {
-    fn requisicao(self) -> Requisicao {
-        match self {
-            Pedido::Listar => Requisicao::ListarPartidas {
-                desde_unix: 0,
-                limite: PARTIDAS_MAX,
-            },
-            Pedido::Obter(id) => Requisicao::ObterPartida { id },
-        }
-    }
-}
-
-/// Resultado de um pedido, já interpretado.
-#[derive(Debug, Clone, PartialEq)]
-enum Retorno {
-    Lista(Vec<ResumoPartida>),
-    Detalhe(Box<Partida>),
-}
 
 /// Situação da lista de partidas.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -75,50 +49,11 @@ struct EstadoPartidas {
 
 impl Global for EstadoPartidas {}
 
-/// Resposta do serviço para o pedido; inválida ou de outro tipo = falha.
-fn interpretar(p: Pedido, r: Resposta) -> Result<Retorno, FalhaInicio> {
-    match (p, r) {
-        (Pedido::Listar, Resposta::Partidas { mut resumos }) => {
-            resumos.retain(|r| r.validar().is_ok());
-            resumos.sort_by_key(|r| std::cmp::Reverse(r.inicio_unix));
-            Ok(Retorno::Lista(resumos))
-        }
-        (Pedido::Obter(_), Resposta::Partida(d)) if d.validar().is_ok() => {
-            Ok(Retorno::Detalhe(Box::new(d)))
-        }
-        (
-            _,
-            Resposta::Erro {
-                codigo: nvt_ipc::CodigoErro::RecursoAusente,
-                ..
-            },
-        ) => Err(FalhaInicio::RecursoAusente),
-        (_, Resposta::Erro { codigo, mensagem }) => Err(FalhaInicio::Outra(
-            crate::textos::erro_servico(codigo, &mensagem),
-        )),
-        _ => Err(FalhaInicio::Outra(tp::FALHA.into())),
-    }
-}
-
-/// Pedido bloqueante (chamar fora da thread da janela).
-fn executar(p: Pedido) -> Result<Retorno, FalhaInicio> {
-    match demonstracao::ativo() {
-        Some(c) => {
-            let todas = demonstracao::partidas(c);
-            Ok(match p {
-                Pedido::Listar => Retorno::Lista(todas.into_iter().map(|p| p.resumo).collect()),
-                Pedido::Obter(id) => match todas.into_iter().find(|p| p.resumo.id == id) {
-                    Some(d) => Retorno::Detalhe(Box::new(d)),
-                    None => return Err(FalhaInicio::Outra(tp::FALHA.into())),
-                },
-            })
-        }
-        None => servico::requisitar(&p.requisicao()).and_then(|r| interpretar(p, r)),
-    }
-}
-
 fn pedir(p: Pedido, cx: &mut Context<Janela>) {
-    let tarefa = cx.background_executor().spawn(async move { executar(p) });
+    let backend = Backend::atual();
+    let tarefa = cx
+        .background_executor()
+        .spawn(async move { backend.partidas(p) });
     cx.spawn(async move |this, cx| {
         let r = tarefa.await;
         let _ = this.update(cx, |_, cx| {
@@ -166,10 +101,7 @@ fn garantir(cx: &mut Context<Janela>) {
 
 /// Instante de referência: relógio real, ou o fixo da demonstração.
 fn agora() -> u64 {
-    match demonstracao::ativo() {
-        Some(_) => demonstracao::AGORA_PARTIDAS,
-        None => crate::fuso::agora_unix(),
-    }
+    Backend::atual().agora_partidas()
 }
 
 fn local(unix: u64) -> i64 {
@@ -233,15 +165,23 @@ fn serie(amostras: &[AmostraSegundo], pontos: usize) -> Vec<(u32, f64)> {
         .collect()
 }
 
+/// Nomes da tela Jogos pelo ID da base; montado uma vez por desenho. Com IDs
+/// repetidos vale o primeiro jogo, como na busca linear de antes.
+fn nomes_jogos(janela: &Janela) -> HashMap<&str, &str> {
+    let mut nomes = HashMap::new();
+    for j in &janela.ui.dados.jogos {
+        if let Some(id) = j.competitivo.as_deref() {
+            nomes.entry(id).or_insert(j.nome.as_str());
+        }
+    }
+    nomes
+}
+
 /// Nome do jogo: o da tela Jogos (pelo ID da base), senão o executável.
-fn nome_jogo(janela: &Janela, r: &ResumoPartida) -> String {
-    janela
-        .ui
-        .dados
-        .jogos
-        .iter()
-        .find(|j| j.competitivo.as_deref() == Some(r.jogo_id.as_str()))
-        .map(|j| j.nome.clone())
+fn nome_jogo(nomes: &HashMap<&str, &str>, r: &ResumoPartida) -> String {
+    nomes
+        .get(r.jogo_id.as_str())
+        .map(|nome| (*nome).to_owned())
         .unwrap_or_else(|| {
             r.executavel
                 .strip_suffix(".exe")
@@ -270,12 +210,13 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
         Carga::Pronta(l) if l.is_empty() => {
             return estado_vazio(IconName::ChartLine, tp::VAZIO, None, tema).into_any_element();
         }
-        Carga::Pronta(l) => l.clone(),
+        Carga::Pronta(l) => l,
     };
     let aberta = e.aberta;
-    let detalhe = aberta.and_then(|id| e.detalhes.get(&id).cloned());
+    let detalhe = aberta.and_then(|id| e.detalhes.get(&id));
+    let nomes = nomes_jogos(janela);
     let agora_l = local(agora());
-    let (esta, passada) = semanas(&lista, agora_l, local, |_| true);
+    let (esta, passada) = semanas(lista, agora_l, local, |_| true);
     let mut linhas = superficie(tema);
     for (i, r) in lista.iter().enumerate() {
         let abrir = aberta == Some(r.id);
@@ -305,7 +246,7 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                     .size(px(tema::ESP_4))
                     .text_color(tema.muted_foreground),
                 )
-                .child(div().flex_1().font_semibold().child(nome_jogo(janela, r)))
+                .child(div().flex_1().font_semibold().child(nome_jogo(&nomes, r)))
                 .child(
                     div()
                         .w(px(tema::COLUNA_VALOR))
@@ -332,13 +273,13 @@ pub(super) fn render(janela: &Janela, cx: &mut Context<Janela>) -> AnyElement {
                 ),
         );
         if abrir {
-            linhas = linhas.child(detalhe_partida(&lista, r, detalhe.as_ref(), agora_l, tema));
+            linhas = linhas.child(detalhe_partida(lista, r, detalhe, agora_l, tema));
         }
     }
     v_flex()
         .gap(px(tema::ESP_4))
         .max_w(px(tema::LARGURA_CONTEUDO))
-        .child(explicacao_dinamica(
+        .child(explicacao(
             tp::comparacao_geral(
                 (esta.partidas, esta.com_engasgo),
                 (passada.partidas, passada.com_engasgo),
@@ -357,13 +298,6 @@ fn falha_estatica(f: &FalhaInicio) -> &'static str {
     }
 }
 
-fn explicacao_dinamica(texto: String, tema: &Theme) -> Div {
-    div()
-        .text_size(px(tema::TAM_CORPO))
-        .text_color(tema.muted_foreground)
-        .child(texto)
-}
-
 fn detalhe_partida(
     lista: &[ResumoPartida],
     r: &ResumoPartida,
@@ -379,12 +313,7 @@ fn detalhe_partida(
             let marcas = (pontos.len() / 6).max(1);
             v_flex()
                 .gap(px(tema::ESP_1))
-                .child(
-                    div()
-                        .text_size(px(tema::TAM_LEGENDA))
-                        .text_color(tema.muted_foreground)
-                        .child(tp::LEGENDA_GRAFICO),
-                )
+                .child(legenda(tp::LEGENDA_GRAFICO, tema))
                 .child(
                     div().h(px(ALTURA_GRAFICO)).w_full().child(
                         LineChart::new(pontos)
@@ -417,7 +346,7 @@ fn detalhe_partida(
         .pb(px(tema::ESP_4))
         .child(grafico)
         .child(numeros.text_size(px(tema::TAM_CORPO)))
-        .child(explicacao_dinamica(
+        .child(explicacao(
             tp::comparacao_jogo(
                 (esta.partidas, esta.media()),
                 (passada.partidas, passada.media()),
@@ -429,7 +358,10 @@ fn detalhe_partida(
 #[cfg(test)]
 mod testes {
     use super::*;
+    use crate::backend::interpretar_partidas as interpretar;
+    use crate::demonstracao;
     use nvt_ipc::CodigoErro;
+    use nvt_ipc::{PARTIDAS_MAX, Requisicao, Resposta};
     // `gpui_kit::*` também exporta um `test`; este é o da biblioteca padrão.
     use std::prelude::rust_2024::test;
 

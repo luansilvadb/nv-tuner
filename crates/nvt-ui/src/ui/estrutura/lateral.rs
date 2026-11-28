@@ -260,12 +260,7 @@ impl Janela {
     }
 
     pub(super) fn barra_superior(&self, tema: &Theme) -> Div {
-        let descricao = match self.secao {
-            Secao::Inicio => Some("Painel de desempenho e drivers"),
-            Secao::Jogos => Some("Biblioteca e preferências rápidas"),
-            #[cfg(feature = "medicao-partidas")]
-            Secao::Partidas => None,
-        };
+        let descricao = self.secao.def().descricao;
         h_flex()
             .w_full()
             .h(px(tema::ALTURA_BARRA))
@@ -289,7 +284,7 @@ impl Janela {
                         )
                     }),
             )
-            .when(crate::demonstracao::ativo().is_some(), |v| {
+            .when(crate::backend::Backend::atual().eh_demonstracao(), |v| {
                 v.child(
                     div()
                         .text_color(tema.muted_foreground)
@@ -315,12 +310,7 @@ impl Janela {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match self.secao {
-            Secao::Inicio => super::inicio::render(self, largura, cx),
-            Secao::Jogos => super::jogos::render(self, largura, window, cx),
-            #[cfg(feature = "medicao-partidas")]
-            Secao::Partidas => super::partidas::render(self, cx),
-        }
+        (self.secao.def().render)(self, largura, window, cx)
     }
 }
 

@@ -2,7 +2,6 @@
 //! nome, selo competitivo e um status; detalhe ao clicar com o que o app fez,
 //! "Faça no jogo", "Arquivo do jogo" e detalhes técnicos recolhidos.
 
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use gpui_kit::base::motion::{Transition, transition};
@@ -15,10 +14,13 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use nvt_ipc::{Jogo, LIMITE_FPS_MAX, LIMITE_FPS_MIN, Qualidade, Sincronismo, StatusMudanca};
 
-use super::estrutura::{Janela, estado_vazio, rotulo, superficie};
+use super::estrutura::{
+    Janela, chip_status, estado_vazio, explicacao, legenda, legenda_cor, ponto_status, rotulo,
+    superficie, titulo_cartao,
+};
 use super::movimento::{recolhivel, ripple, ripple_com_forma};
 use crate::arquivo_jogo as aj;
-use crate::modelo::{Comando, Evento, StatusJogo, status_jogo};
+use crate::modelo::{Comando, StatusJogo, status_jogo};
 use crate::tema::{self, EstadoBotao as _};
 use crate::textos as t;
 use crate::textos::jogos as tj;
@@ -41,17 +43,6 @@ struct Selecao {
     mostrar_recomendacoes: bool,
 }
 impl Global for Selecao {}
-
-/// Canal de comandos usado por "Reverter" e "Procurar jogos de novo". Sem
-/// ele instalado os botões ficam desabilitados; quem cria a janela instala
-/// com [`instalar_envio`].
-struct Envio(Sender<Comando>);
-impl Global for Envio {}
-
-/// Liga os botões da tela Jogos ao canal de comandos da janela.
-pub(crate) fn instalar_envio(cx: &mut App, comandos: Sender<Comando>) {
-    cx.set_global(Envio(comandos));
-}
 
 /// Abre já expandido o jogo com esse nome ou perfil (`--expandir`).
 pub(crate) fn abrir_inicial(cx: &mut App, jogo: Option<String>) {
@@ -153,7 +144,7 @@ pub(super) fn render(
         Some(busca) => busca,
         None => {
             let busca =
-                cx.new(|cx| InputState::new(window, cx).placeholder("Buscar jogo instalado…"));
+                cx.new(|cx| InputState::new(window, cx).placeholder(tj::BUSCAR_PLACEHOLDER));
             cx.subscribe(&busca, |_, _, evento: &InputEvent, cx| {
                 if matches!(
                     evento,
@@ -183,7 +174,7 @@ pub(super) fn render(
         .try_global::<Selecao>()
         .map(|s| (s.jogo.clone(), s.tecnicos))
         .unwrap_or_default();
-    let pode = cx.has_global::<Envio>() && janela.ui.pode_executar(&Comando::Reescanear);
+    let pode = janela.ui.pode_executar(&Comando::Reescanear);
 
     let procurar = tema::botao_icone(
         "procurar-jogos",
@@ -196,13 +187,13 @@ pub(super) fn render(
     .indisponivel(!pode)
     .when(!pode, |b| b.tooltip(t::SO_COM_SERVICO))
     .on_click(cx.listener(|this, _, _, cx| {
-        enviar(this, Comando::Reescanear, cx);
+        this.enviar(Comando::Reescanear, cx);
     }));
 
     let campo_busca = Styled::h(
         Input::new(&busca)
             .appearance(false)
-            .aria_label("Buscar jogo instalado")
+            .aria_label(tj::BUSCAR_ROTULO)
             .cleanable(true)
             .prefix(
                 Icon::new(IconName::Search)
@@ -252,7 +243,7 @@ pub(super) fn render(
                     } else {
                         IconName::Zap
                     })
-                    .label("Otimizar sistema")
+                    .label(tj::BOTAO_OTIMIZAR)
                     .primary()
                     .on_click(alternar_detalhes)
                     .h(px(tema::ALTURA_BUSCA))
@@ -302,9 +293,9 @@ pub(super) fn render(
         .gap(px(tema::ESP_3))
         .child(ripple("onda-procurar-jogos", pode, procurar, window, cx))
         .child(div().flex_1().font_semibold().child(if termo.is_empty() {
-            format!("Jogos detectados ({})", jogos.len())
+            tj::jogos_detectados(jogos.len())
         } else {
-            format!("Jogos encontrados ({} de {})", filtrados.len(), jogos.len())
+            tj::jogos_encontrados(filtrados.len(), jogos.len())
         }));
     let v = v.child(v_flex().child(cabecalho).children(recomendacoes));
     if filtrados.is_empty() {
@@ -314,7 +305,7 @@ pub(super) fn render(
                 if jogos.is_empty() {
                     tj::NENHUM_JOGO
                 } else {
-                    "Nenhum jogo corresponde à busca."
+                    tj::NENHUM_NA_BUSCA
                 },
                 None,
                 &tema,
@@ -394,36 +385,26 @@ pub(super) fn render(
                     .child(
                         h_flex()
                             .gap(px(tema::ESP_2))
-                            .child(
-                                div()
-                                    .size(px(tema::TAM_PONTO_STATUS))
-                                    .flex_shrink_0()
-                                    .rounded_full()
-                                    .bg(cor_status),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(tema::TAM_LEGENDA))
-                                    .text_color(tema.muted_foreground)
-                                    .child(if j.api.is_empty() {
-                                        l.texto_status
-                                    } else {
-                                        format!("{} · {}", l.texto_status, t::api_grafica(&j.api))
-                                    }),
-                            ),
+                            .child(ponto_status(tema::TAM_PONTO_STATUS, cor_status).flex_shrink_0())
+                            .child(legenda(
+                                if j.api.is_empty() {
+                                    l.texto_status
+                                } else {
+                                    tj::status_com_api(&l.texto_status, t::api_grafica(&j.api))
+                                },
+                                &tema,
+                            )),
                     ),
             )
             .child(chip_status(l.status == StatusJogo::Otimizado, &tema))
             .child(
-                div()
-                    .w(px(tema::ESP_4))
-                    .text_size(px(tema::TAM_LEGENDA))
-                    .text_color(tema.muted_foreground)
-                    .child(
-                        Icon::new(IconName::ChevronDown)
-                            .size(px(tema::TAM_CORPO))
-                            .rotate(radians(std::f32::consts::PI * expansao)),
-                    ),
+                legenda(
+                    Icon::new(IconName::ChevronDown)
+                        .size(px(tema::TAM_CORPO))
+                        .rotate(radians(std::f32::consts::PI * expansao)),
+                    &tema,
+                )
+                .w(px(tema::ESP_4)),
             );
         let detalhe = recolhivel(
             format!("detalhe-jogo-{}", l.chave),
@@ -457,56 +438,6 @@ pub(super) fn render(
         );
     }
     v.child(lista).child(preferencias).into_any_element()
-}
-
-/// Chip de status (Material 3): tonal quando ativo, contornado quando
-/// pendente; ícone em vez de glifos de texto.
-fn chip_status(ativo: bool, tema: &gpui_kit::component::Theme) -> Div {
-    let (icone, texto, cor, fundo, borda) = if ativo {
-        let cor = tema::cor(tema::TEXTO_ICONE);
-        (
-            IconName::Check,
-            "Ativo",
-            cor,
-            cor.opacity(0.14),
-            tema.transparent,
-        )
-    } else {
-        (
-            IconName::Clock,
-            "Pendente",
-            tema.muted_foreground,
-            tema.transparent,
-            tema::cor(tema::BORDA),
-        )
-    };
-    h_flex()
-        .flex_shrink_0()
-        .h(px(tema::ALTURA_CHIP))
-        .gap(px(tema::ESP_1))
-        .px(px(tema::ESP_2))
-        .rounded(px(tema::RAIO_CHIP))
-        .border_1()
-        .border_color(borda)
-        .bg(fundo)
-        .text_size(px(tema::TAM_LEGENDA))
-        .font_medium()
-        .text_color(cor)
-        .child(Icon::new(icone).size(px(tema::TAM_LEGENDA)))
-        .child(texto)
-}
-
-fn enviar(this: &mut Janela, c: Comando, cx: &mut Context<Janela>) {
-    let Some(Envio(s)) = cx.try_global::<Envio>() else {
-        return;
-    };
-    if !this.ui.pode_executar(&c) {
-        return;
-    }
-    let s = s.clone();
-    this.ui.aplicar(Evento::Ocupado(c.clone()));
-    let _ = s.send(c);
-    cx.notify();
 }
 
 #[cfg(test)]

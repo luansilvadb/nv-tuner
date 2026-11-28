@@ -65,10 +65,73 @@ pub(crate) fn estado_vazio(
         .children(acao)
 }
 
-#[cfg(feature = "medicao-partidas")]
-pub(crate) fn explicacao(texto: &'static str, tema: &Theme) -> Div {
+/// Texto explicativo: corpo em tom apagado.
+pub(crate) fn explicacao(texto: impl IntoElement, tema: &Theme) -> Div {
     div()
         .text_size(px(tema::TAM_CORPO))
         .text_color(tema.muted_foreground)
+        .child(texto)
+}
+
+/// Legenda: texto pequeno em tom apagado.
+pub(crate) fn legenda(conteudo: impl IntoElement, tema: &Theme) -> Div {
+    legenda_cor(conteudo, tema.muted_foreground)
+}
+
+/// Legenda com cor própria (ex.: avisos em `tema.warning`).
+pub(crate) fn legenda_cor(conteudo: impl IntoElement, cor: Hsla) -> Div {
+    div()
+        .text_size(px(tema::TAM_LEGENDA))
+        .text_color(cor)
+        .child(conteudo)
+}
+
+/// Título de cartão: corpo em semibold.
+pub(crate) fn titulo_cartao(texto: impl IntoElement) -> Div {
+    div()
+        .text_size(px(tema::TAM_CORPO))
+        .font_semibold()
+        .child(texto)
+}
+
+/// Ponto de status: círculo cheio do tamanho e da cor dados.
+pub(crate) fn ponto_status(tamanho: f32, cor: Hsla) -> Div {
+    div().size(px(tamanho)).rounded_full().bg(cor)
+}
+
+/// Chip de status (Material 3): tonal quando ativo, contornado quando
+/// pendente; ícone em vez de glifos de texto.
+pub(crate) fn chip_status(ativo: bool, tema: &Theme) -> Div {
+    let (icone, texto, cor, fundo, borda) = if ativo {
+        let cor = tema::cor(tema::TEXTO_ICONE);
+        (
+            IconName::Check,
+            crate::textos::jogos::CHIP_ATIVO,
+            cor,
+            cor.opacity(0.14),
+            tema.transparent,
+        )
+    } else {
+        (
+            IconName::Clock,
+            crate::textos::jogos::CHIP_PENDENTE,
+            tema.muted_foreground,
+            tema.transparent,
+            tema::cor(tema::BORDA),
+        )
+    };
+    h_flex()
+        .flex_shrink_0()
+        .h(px(tema::ALTURA_CHIP))
+        .gap(px(tema::ESP_1))
+        .px(px(tema::ESP_2))
+        .rounded(px(tema::RAIO_CHIP))
+        .border_1()
+        .border_color(borda)
+        .bg(fundo)
+        .text_size(px(tema::TAM_LEGENDA))
+        .font_medium()
+        .text_color(cor)
+        .child(Icon::new(icone).size(px(tema::TAM_LEGENDA)))
         .child(texto)
 }

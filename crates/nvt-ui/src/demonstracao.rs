@@ -32,6 +32,28 @@ use nvt_ipc::{
 use crate::modelo::{Comando, Conexao, Dados, Desfecho, Evento, grupos_do_plano};
 use crate::servico::{AcaoInicio, Canal, FalhaInicio, RespostaInicio};
 
+/// Cenários e chaves de `--demonstracao`, na ordem da lista de ajuda. As
+/// chaves vêm do match exaustivo de `Cenario::chave`.
+pub(crate) const CENARIOS: &[(Cenario, &str)] = &[
+    (Cenario::Otimizado, Cenario::Otimizado.chave()),
+    (Cenario::SemAgente, Cenario::SemAgente.chave()),
+    (Cenario::Melhorias, Cenario::Melhorias.chave()),
+    (Cenario::Piorou, Cenario::Piorou.chave()),
+    (Cenario::JogoAberto, Cenario::JogoAberto.chave()),
+    (Cenario::Desligado, Cenario::Desligado.chave()),
+    (Cenario::Atualizado, Cenario::Atualizado.chave()),
+    (Cenario::SemServico, Cenario::SemServico.chave()),
+    (Cenario::ServicoIniciando, Cenario::ServicoIniciando.chave()),
+    (
+        Cenario::ServicoSemResposta,
+        Cenario::ServicoSemResposta.chave(),
+    ),
+    (Cenario::PrimeiraVez, Cenario::PrimeiraVez.chave()),
+    (Cenario::Saude, Cenario::Saude.chave()),
+    #[cfg(feature = "medicao-partidas")]
+    (Cenario::Partidas, Cenario::Partidas.chave()),
+];
+
 /// Cenários de demonstração.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cenario {
@@ -54,25 +76,19 @@ pub enum Cenario {
 }
 
 impl Cenario {
-    pub const TODOS: &[Cenario] = &[
-        Cenario::Otimizado,
-        Cenario::SemAgente,
-        Cenario::Melhorias,
-        Cenario::Piorou,
-        Cenario::JogoAberto,
-        Cenario::Desligado,
-        Cenario::Atualizado,
-        Cenario::SemServico,
-        Cenario::ServicoIniciando,
-        Cenario::ServicoSemResposta,
-        Cenario::PrimeiraVez,
-        Cenario::Saude,
-        #[cfg(feature = "medicao-partidas")]
-        Cenario::Partidas,
-    ];
+    pub const TODOS: &[Cenario] = &{
+        let mut todos = [Cenario::Otimizado; CENARIOS.len()];
+        let mut i = 0;
+        while i < CENARIOS.len() {
+            todos[i] = CENARIOS[i].0;
+            i += 1;
+        }
+        todos
+    };
 
-    /// Chave de `--demonstracao`.
-    pub fn chave(self) -> &'static str {
+    /// Chave de `--demonstracao`. O match exaustivo garante, na compilação,
+    /// que toda variante tem chave.
+    pub const fn chave(self) -> &'static str {
         match self {
             Cenario::Otimizado => "otimizado",
             Cenario::SemAgente => "sem-agente",
@@ -714,6 +730,25 @@ fn saude_simulacao() -> nvt_ipc::Saude {
 #[cfg(feature = "medicao-partidas")]
 pub const AGORA_PARTIDAS: u64 = QUANDO;
 
+/// Resposta simulada a um pedido da tela Partidas.
+#[cfg(feature = "medicao-partidas")]
+pub fn pedir_partidas(
+    c: Cenario,
+    p: crate::backend::PedidoPartidas,
+) -> Result<crate::backend::RetornoPartidas, FalhaInicio> {
+    use crate::backend::{PedidoPartidas, RetornoPartidas};
+    let todas = partidas(c);
+    Ok(match p {
+        PedidoPartidas::Listar => {
+            RetornoPartidas::Lista(todas.into_iter().map(|p| p.resumo).collect())
+        }
+        PedidoPartidas::Obter(id) => match todas.into_iter().find(|p| p.resumo.id == id) {
+            Some(d) => RetornoPartidas::Detalhe(Box::new(d)),
+            None => return Err(FalhaInicio::Outra(crate::textos::partidas::FALHA.into())),
+        },
+    })
+}
+
 /// Partidas fictícias, da mais recente para a mais antiga (só `partidas`).
 #[cfg(feature = "medicao-partidas")]
 pub fn partidas(c: Cenario) -> Vec<nvt_ipc::Partida> {
@@ -841,6 +876,10 @@ mod testes {
         for &c in Cenario::TODOS {
             assert_eq!(Cenario::de_chave(c.chave()), Some(c));
         }
+        let mut chaves: Vec<_> = Cenario::TODOS.iter().map(|c| c.chave()).collect();
+        chaves.sort_unstable();
+        chaves.dedup();
+        assert_eq!(chaves.len(), Cenario::TODOS.len(), "chaves repetidas");
         assert_eq!(Cenario::de_chave("nada"), None);
     }
 
@@ -953,21 +992,34 @@ mod testes {
         let main = include_str!("main.rs").replace("\r\n", "\n");
         let i = main.find("fn main()").unwrap();
         let corpo = &main[i..main[i..].find("\n}\n").unwrap() + i];
-        let escolha = corpo
-            .find("match opcoes.demonstracao")
-            .expect("main escolhe o canal pela demonstração");
-        let demo = corpo[escolha..].find("demonstracao::iniciar").unwrap();
-        let servico = corpo[escolha..].find("servico::iniciar").unwrap();
-        assert!(demo < servico);
-        assert_eq!(corpo.matches("servico::iniciar").count(), 1);
+        assert!(
+            corpo.contains("Backend::escolher(opcoes.demonstracao).conectar("),
+            "main escolhe o canal pela demonstração"
+        );
+        assert!(!corpo.contains("servico::iniciar"));
+        // A escolha do canal fica num único `match` do backend.
+        let backend = include_str!("backend.rs").replace("\r\n", "\n");
+        let i = backend.find("fn conectar(").unwrap();
+        let corpo = &backend[i..backend[i..].find("\n    }\n").unwrap() + i];
+        let servico = corpo.find("Backend::Servico => servico::iniciar").unwrap();
+        let demo = corpo
+            .find("Backend::Demonstracao(c) => demonstracao::iniciar(c)")
+            .unwrap();
+        assert!(servico < demo);
+        assert_eq!(backend.matches("servico::iniciar").count(), 1);
     }
 
     /// Ações do Início e da tela Jogos passam pelo desvio da demonstração.
     #[test]
     fn acoes_desviam_para_a_simulacao() {
         let inicio = include_str!("ui/inicio.rs");
-        assert!(inicio.contains("demonstracao::ativo()"));
-        assert!(inicio.contains("demonstracao::executar_inicio"));
+        assert!(inicio.contains("Backend::atual()"));
+        assert!(inicio.contains("backend.executar_inicio(acao)"));
+        assert!(!inicio.contains("servico::executar_inicio"));
+        let backend = include_str!("backend.rs");
+        assert!(
+            backend.contains("Backend::Demonstracao(c) => demonstracao::executar_inicio(c, acao)")
+        );
     }
 
     #[test]

@@ -173,3 +173,57 @@ pub const TODOS_L2: &[&str] = &[
     VOLTAR_ADIADO,
     AGUARDE,
 ];
+
+// Painel do Início ----------------------------------------------------------
+pub const OTIMIZACAO_DO_SISTEMA: &str = "Otimização do sistema";
+pub const DESCRICAO_DEMONSTRACAO_OTIMIZADO: &str =
+    "Todos os subsistemas calibrados e otimizados para máxima estabilidade competitiva.";
+pub const SEM_MEDICAO: &str = "Sem medição";
+pub const SEM_VALOR: &str = "—";
+
+/// Textos de um cartão do painel do Início.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextoCartaoPainel {
+    pub titulo: &'static str,
+    pub valor: &'static str,
+    /// Vazio quando o cartão não mostra detalhe ao lado do valor.
+    pub detalhe: &'static str,
+    pub rotulo: &'static str,
+    pub rodape: &'static str,
+}
+
+pub const PAINEL_LATENCIA_SISTEMA: TextoCartaoPainel = TextoCartaoPainel {
+    titulo: "Latência do sistema",
+    valor: "2.4 ms",
+    detalhe: "−0.8 ms",
+    rotulo: "Reflex + Boost",
+    rodape: "PC + Display",
+};
+pub const PAINEL_FRAMETIMES: TextoCartaoPainel = TextoCartaoPainel {
+    titulo: "Frametimes e jitter",
+    valor: "4.1 ms",
+    detalhe: "±0.18 ms",
+    rotulo: "Jitter",
+    rodape: "< 0.2 ms",
+};
+pub const PAINEL_PERIFERICO: TextoCartaoPainel = TextoCartaoPainel {
+    titulo: "Latência do periférico",
+    valor: "0.8 ms",
+    detalhe: "1000 Hz",
+    rotulo: "Taxa de Polling",
+    rodape: "USB Direct Interrupt",
+};
+pub const PAINEL_FILA: TextoCartaoPainel = TextoCartaoPainel {
+    titulo: "Fila de renderização",
+    valor: "0 frames",
+    detalhe: "",
+    rotulo: "Ultra Low Latency",
+    rodape: "Buffer Prerender: OFF",
+};
+pub const PAINEL_DWM: TextoCartaoPainel = TextoCartaoPainel {
+    titulo: "Latência do DWM",
+    valor: "0.0 ms",
+    detalhe: "Direct Flip MPO",
+    rotulo: "Composição de Janela",
+    rodape: "Flip Model (Bypassed)",
+};

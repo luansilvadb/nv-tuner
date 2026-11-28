@@ -21,12 +21,7 @@ pub(super) fn detalhe(
     };
     let bloco = |rotulo: &'static str, linhas: Vec<String>, vazio: &'static str| {
         let corpo = if linhas.is_empty() {
-            v_flex().child(
-                div()
-                    .text_size(px(tema::TAM_CORPO))
-                    .text_color(tema.muted_foreground)
-                    .child(vazio),
-            )
+            v_flex().child(explicacao(vazio, &tema))
         } else {
             v_flex().gap(px(tema::ESP_1)).children(
                 linhas
@@ -104,23 +99,13 @@ pub(super) fn arquivo(
 ) -> Option<Div> {
     let c = j.config_jogo.as_ref()?;
     let tema = cx.theme();
-    let pode = janela.ui.pode_escrever() && cx.has_global::<Envio>();
-    let sub = |s: String| {
-        div()
-            .text_size(px(tema::TAM_LEGENDA))
-            .text_color(tema.muted_foreground)
-            .child(s)
-    };
+    let pode = janela.ui.pode_escrever();
+    let sub = |s: String| legenda(s, tema);
     let mut v = v_flex().gap(px(tema::ESP_2));
     for (k, a) in c.arquivos.iter().enumerate() {
         let mut b = v_flex()
             .gap(px(tema::ESP_1))
-            .child(
-                div()
-                    .text_size(px(tema::TAM_CORPO))
-                    .font_semibold()
-                    .child(aj::nome_arquivo(&a.rotulo.0).to_owned()),
-            )
+            .child(titulo_cartao(aj::nome_arquivo(&a.rotulo.0).to_owned()))
             .children(
                 a.conta
                     .as_ref()
@@ -153,8 +138,7 @@ pub(super) fn arquivo(
                         .indisponivel(!pode)
                         .when(!pode, |b| b.tooltip(t::SO_COM_SERVICO))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            enviar(
-                                this,
+                            this.enviar(
                                 Comando::ReverterConfigJogo {
                                     destino: destino.clone(),
                                 },
