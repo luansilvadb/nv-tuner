@@ -2,18 +2,12 @@
 
 use std::path::PathBuf;
 
+use super::{Contexto, ultimo_componente};
 use crate::model::{DetectedGame, Launcher, caminho_windows};
 use crate::registro::{self, EntradaDesinstalacao, Hive};
 
 fn caminho(s: &str) -> PathBuf {
     caminho_windows(s.trim().trim_matches('"'))
-}
-
-fn ultimo_componente(p: &std::path::Path) -> String {
-    p.components()
-        .next_back()
-        .map(|c| c.as_os_str().to_string_lossy().to_string())
-        .unwrap_or_default()
 }
 
 /// GOG: `HKLM\SOFTWARE\WOW6432Node\GOG.com\Games\<id>` (`gameName`, `path`, `exe`).
@@ -50,23 +44,12 @@ pub fn ubisoft() -> Result<Vec<DetectedGame>, String> {
     Ok(out)
 }
 
-/// Nomes de aplicativos de launcher (não são jogos).
-const LAUNCHERS: &[&str] = &[
-    "ea app",
-    "origin",
-    "battle.net",
-    "steam",
-    "epic games launcher",
-    "riot client",
-    "ubisoft connect",
-    "uplay",
-    "gog galaxy",
-    "xbox",
-];
-
+/// Nome de aplicativo de launcher (não é jogo): igualdade com o nome em minúsculas,
+/// lista `nomes_launcher` de `data/launchers.toml`.
 fn e_launcher(nome: &str) -> bool {
-    let n = nome.to_lowercase();
-    LAUNCHERS.iter().any(|l| n == *l)
+    super::dados::tabela()
+        .nomes_launcher
+        .contains(&nome.to_lowercase())
 }
 
 /// Classifica uma entrada de desinstalação como jogo da EA ou da Blizzard.
@@ -77,18 +60,29 @@ pub fn classificar_publisher(e: &EntradaDesinstalacao) -> Option<DetectedGame> {
         return None;
     }
     let publ = e.publisher.as_deref().unwrap_or("").to_lowercase();
-    let launcher = if publ.contains("blizzard entertainment") {
-        Launcher::BattleNet
-    } else if publ.contains("electronic arts") {
-        Launcher::Ea
-    } else {
-        return None;
-    };
+    // Primeira regra `[[publisher]]` de `data/launchers.toml` cujo texto esteja contido.
+    let launcher = super::dados::tabela()
+        .publisher
+        .iter()
+        .find(|(p, _)| publ.contains(p.as_str()))
+        .map(|(_, l)| *l)?;
     Some(DetectedGame::new(launcher, nome, caminho(pasta)).with_app_id(e.chave.clone()))
 }
 
 /// EA app: `...\Electronic Arts\<jogo>\Install Dir` e `...\EA Games\<jogo>`, mais `Uninstall`.
 pub fn ea(entradas: &[EntradaDesinstalacao]) -> Result<Vec<DetectedGame>, String> {
+    let mut out = ea_registro();
+    out.extend(
+        entradas
+            .iter()
+            .filter_map(classificar_publisher)
+            .filter(|j| j.launcher == Launcher::Ea),
+    );
+    Ok(out)
+}
+
+/// Parte do scanner da EA que lê só as chaves próprias do registro.
+fn ea_registro() -> Vec<DetectedGame> {
     let mut out = Vec::new();
     for base in [
         r"SOFTWARE\WOW6432Node\Electronic Arts",
@@ -108,13 +102,28 @@ pub fn ea(entradas: &[EntradaDesinstalacao]) -> Result<Vec<DetectedGame>, String
             out.push(DetectedGame::new(Launcher::Ea, nome, caminho(&dir)));
         }
     }
-    out.extend(
-        entradas
-            .iter()
-            .filter_map(classificar_publisher)
-            .filter(|j| j.launcher == Launcher::Ea),
-    );
+    out
+}
+
+/// Jogos de `launcher` entre os já classificados por publisher, na ordem original.
+fn do_launcher(classificados: &[DetectedGame], launcher: Launcher) -> Vec<DetectedGame> {
+    classificados
+        .iter()
+        .filter(|j| j.launcher == launcher)
+        .cloned()
+        .collect()
+}
+
+/// EA app pelo contexto (a classificação por publisher é feita uma vez só).
+pub(crate) fn ea_ctx(ctx: &Contexto) -> Result<Vec<DetectedGame>, String> {
+    let mut out = ea_registro();
+    out.extend(do_launcher(ctx.por_publisher(), Launcher::Ea));
     Ok(out)
+}
+
+/// Battle.net pelo contexto.
+pub(crate) fn battlenet_ctx(ctx: &Contexto) -> Result<Vec<DetectedGame>, String> {
+    Ok(do_launcher(ctx.por_publisher(), Launcher::BattleNet))
 }
 
 /// Battle.net: melhor esforço pelas entradas com `Publisher = Blizzard Entertainment`.

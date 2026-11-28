@@ -46,7 +46,25 @@ struct Entrada {
 
 fn tabela() -> &'static Tabela {
     static T: OnceLock<Tabela> = OnceLock::new();
-    T.get_or_init(|| toml::from_str(ANTICHEATS_TOML).expect("data/anticheats.toml inválido"))
+    T.get_or_init(|| {
+        let mut t: Tabela = toml::from_str(ANTICHEATS_TOML).expect("data/anticheats.toml inválido");
+        // Normaliza uma vez os campos só comparados em minúsculas, para o laço
+        // de detecção não alocar `to_lowercase` por entrada e arquivo.
+        for e in &mut t.anticheat {
+            for v in e
+                .pastas
+                .iter_mut()
+                .chain(&mut e.prefixos_arquivo)
+                .chain(&mut e.sufixos_arquivo)
+            {
+                *v = v.to_lowercase();
+            }
+            if let Some(dd) = &mut e.descricao_dll {
+                dd.contem = dd.contem.to_lowercase();
+            }
+        }
+        t
+    })
 }
 
 /// Anticheat detectado para um jogo.
@@ -89,7 +107,6 @@ pub(super) fn detectar_verificado<E>(
             fortes.push("metadata Riot: dependencies.vanguard = true".to_string());
         }
         for p in &e.pastas {
-            let p = p.to_lowercase();
             if let Some(d) = listagem
                 .pastas
                 .iter()
@@ -102,10 +119,10 @@ pub(super) fn detectar_verificado<E>(
             let hit = e.arquivos.iter().any(|x| x.eq_ignore_ascii_case(&a.nome))
                 || e.prefixos_arquivo
                     .iter()
-                    .any(|x| a.nome.starts_with(&x.to_lowercase()))
+                    .any(|x| a.nome.starts_with(x.as_str()))
                 || e.sufixos_arquivo
                     .iter()
-                    .any(|x| a.nome.ends_with(&x.to_lowercase()));
+                    .any(|x| a.nome.ends_with(x.as_str()));
             if hit {
                 medias.push(format!("arquivo {}", a.rel));
             }
@@ -122,7 +139,7 @@ pub(super) fn detectar_verificado<E>(
                         v.descricao.unwrap_or_default(),
                         v.produto.unwrap_or_default()
                     );
-                    if texto.to_lowercase().contains(&dd.contem.to_lowercase()) {
+                    if texto.to_lowercase().contains(dd.contem.as_str()) {
                         fortes.push(format!("{} (VERSIONINFO: {})", a.rel, texto.trim()));
                     }
                 }

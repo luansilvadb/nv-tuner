@@ -135,9 +135,14 @@ impl ServicosSistema {
     }
 
     pub fn com_prefixo<'a>(&'a self, prefixo: &'a str) -> impl Iterator<Item = &'a Servico> + 'a {
-        let p = prefixo.to_ascii_lowercase();
-        self.servicos
-            .iter()
-            .filter(move |s| s.nome.to_ascii_lowercase().starts_with(&p))
+        // Comparação byte a byte sem alocar; equivale a comparar as versões
+        // `to_ascii_lowercase`, que preservam o comprimento em bytes.
+        let p = prefixo.as_bytes();
+        self.servicos.iter().filter(move |s| {
+            s.nome
+                .as_bytes()
+                .get(..p.len())
+                .is_some_and(|ini| ini.eq_ignore_ascii_case(p))
+        })
     }
 }

@@ -94,7 +94,7 @@ pub fn ler_tela_primaria(fonte: &impl FonteTela) -> Result<LeituraTela, TelaIndi
     })
 }
 
-pub use win32::TelaDoSistema;
+pub use win32::{TelaDoSistema, consultar_topologia, nome_alvo, nome_origem, texto_win32};
 
 mod win32 {
     use super::{
@@ -106,6 +106,7 @@ mod win32 {
             DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
             DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_MODE_INFO,
             DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE, DISPLAYCONFIG_PATH_INFO,
+            DISPLAYCONFIG_PATH_SOURCE_INFO, DISPLAYCONFIG_PATH_TARGET_INFO,
             DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME,
             DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS,
             QueryDisplayConfig,
@@ -163,7 +164,12 @@ mod win32 {
         }
     }
 
-    fn consultar_topologia()
+    /// Consulta os caminhos e modos ativos (`QDC_ONLY_ACTIVE_PATHS`), repetindo
+    /// até quatro vezes se a topologia crescer entre o dimensionamento e a
+    /// leitura. `ERROR_ACCESS_DENIED` vira [`TelaIndisponivel::SessaoSemTela`],
+    /// topologia sem caminhos vira [`TelaIndisponivel::SemPrimario`] e outros
+    /// códigos viram [`TelaIndisponivel::Win32`].
+    pub fn consultar_topologia()
     -> Result<(Vec<DISPLAYCONFIG_PATH_INFO>, Vec<DISPLAYCONFIG_MODE_INFO>), TelaIndisponivel> {
         // Repete a consulta se a topologia crescer após o dimensionamento.
         for _ in 0..4 {
@@ -221,41 +227,11 @@ mod win32 {
         let posicao = unsafe { modo.Anonymous.sourceMode.position };
         let taxa = alvo.refreshRate;
 
-        let mut nome_origem = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
-            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-                size: size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
-                adapterId: origem.adapterId,
-                id: origem.id,
-            },
-            ..Default::default()
-        };
-        // SAFETY: o ponteiro identifica o pacote inteiro, cujo tipo e tamanho
-        // estão no cabeçalho inicial.
-        verificar_status(unsafe {
-            DisplayConfigGetDeviceInfo(ptr::from_mut(&mut nome_origem).cast())
-        } as u32)?;
-        let nome_gdi_origem = texto_win32(&nome_origem.viewGdiDeviceName)
-            .ok_or(TelaIndisponivel::ModoAtualIndisponivel)?;
-
+        let nome_gdi_origem = nome_origem(&origem)?;
         let caminho_monitor = if alvo.targetAvailable == 0 {
             None
         } else {
-            let mut nome_alvo = DISPLAYCONFIG_TARGET_DEVICE_NAME {
-                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
-                    size: size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
-                    adapterId: alvo.adapterId,
-                    id: alvo.id,
-                },
-                ..Default::default()
-            };
-            // SAFETY: o ponteiro identifica o pacote inteiro, cujo tipo e
-            // tamanho estão no cabeçalho inicial.
-            verificar_status(unsafe {
-                DisplayConfigGetDeviceInfo(ptr::from_mut(&mut nome_alvo).cast())
-            } as u32)?;
-            texto_win32(&nome_alvo.monitorDevicePath)
+            nome_alvo(&alvo)?
         };
 
         let denominador = NonZeroU32::new(taxa.Denominator)
@@ -272,7 +248,56 @@ mod win32 {
         })
     }
 
-    fn texto_win32(buffer: &[u16]) -> Option<String> {
+    /// Nome GDI da origem (`viewGdiDeviceName`) via `DisplayConfigGetDeviceInfo`.
+    /// Erros de status seguem o mapeamento de [`consultar_topologia`]; nome
+    /// vazio ou inválido vira [`TelaIndisponivel::ModoAtualIndisponivel`].
+    pub fn nome_origem(
+        origem: &DISPLAYCONFIG_PATH_SOURCE_INFO,
+    ) -> Result<String, TelaIndisponivel> {
+        let mut nome = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size: size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                adapterId: origem.adapterId,
+                id: origem.id,
+            },
+            ..Default::default()
+        };
+        // SAFETY: o ponteiro identifica o pacote inteiro, cujo tipo e tamanho
+        // estão no cabeçalho inicial.
+        verificar_status(
+            unsafe { DisplayConfigGetDeviceInfo(ptr::from_mut(&mut nome).cast()) } as u32,
+        )?;
+        texto_win32(&nome.viewGdiDeviceName).ok_or(TelaIndisponivel::ModoAtualIndisponivel)
+    }
+
+    /// Caminho de dispositivo do monitor (`monitorDevicePath`) via
+    /// `DisplayConfigGetDeviceInfo`. Erros de status seguem o mapeamento de
+    /// [`consultar_topologia`]; nome vazio ou inválido devolve `Ok(None)`.
+    /// Não verifica `targetAvailable`: isso cabe ao chamador.
+    pub fn nome_alvo(
+        alvo: &DISPLAYCONFIG_PATH_TARGET_INFO,
+    ) -> Result<Option<String>, TelaIndisponivel> {
+        let mut nome = DISPLAYCONFIG_TARGET_DEVICE_NAME {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+                size: size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+                adapterId: alvo.adapterId,
+                id: alvo.id,
+            },
+            ..Default::default()
+        };
+        // SAFETY: o ponteiro identifica o pacote inteiro, cujo tipo e tamanho
+        // estão no cabeçalho inicial.
+        verificar_status(
+            unsafe { DisplayConfigGetDeviceInfo(ptr::from_mut(&mut nome).cast()) } as u32,
+        )?;
+        Ok(texto_win32(&nome.monitorDevicePath))
+    }
+
+    /// Texto UTF-16 terminado em NUL de um buffer Win32. `None` sem NUL, com
+    /// texto vazio ou com UTF-16 inválido.
+    pub fn texto_win32(buffer: &[u16]) -> Option<String> {
         let fim = buffer.iter().position(|&unidade| unidade == 0)?;
         (fim != 0)
             .then(|| String::from_utf16(&buffer[..fim]).ok())

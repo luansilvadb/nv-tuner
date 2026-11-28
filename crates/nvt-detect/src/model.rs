@@ -1,5 +1,7 @@
 //! Tipos de saída da detecção de jogos.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -20,8 +22,21 @@ pub enum Launcher {
 
 impl Launcher {
     /// Prioridade na deduplicação: menor vence (scanners específicos antes do genérico).
+    ///
+    /// Definida só aqui e de forma explícita (não depende da ordem das variantes).
+    /// A tabela de scanners em `launchers` segue esta ordem; testes travam as duas.
     pub fn prioridade(self) -> u8 {
-        self as u8
+        match self {
+            Launcher::Steam => 0,
+            Launcher::Riot => 1,
+            Launcher::Epic => 2,
+            Launcher::Gog => 3,
+            Launcher::Ubisoft => 4,
+            Launcher::Ea => 5,
+            Launcher::BattleNet => 6,
+            Launcher::Xbox => 7,
+            Launcher::Generico => 8,
+        }
     }
 }
 
@@ -125,11 +140,13 @@ pub(crate) fn chave_caminho(base: &Path) -> String {
 /// Remove duplicatas pela pasta canônica. Mantém a entrada do launcher de maior
 /// prioridade e completa campos ausentes com as demais.
 pub fn deduplicar(jogos: Vec<DetectedGame>) -> Vec<DetectedGame> {
-    let mut saida: Vec<(String, DetectedGame)> = Vec::new();
+    // Índice por chave; `saida` preserva a ordem da primeira ocorrência.
+    let mut indices: HashMap<String, usize> = HashMap::new();
+    let mut saida: Vec<DetectedGame> = Vec::new();
     for j in jogos {
-        let chave = j.chave();
-        match saida.iter_mut().find(|(c, _)| *c == chave) {
-            Some((_, atual)) => {
+        match indices.entry(j.chave()) {
+            Entry::Occupied(o) => {
+                let atual = &mut saida[*o.get()];
                 let (mut vence, perde) = if j.launcher.prioridade() < atual.launcher.prioridade() {
                     (j, atual.clone())
                 } else {
@@ -144,10 +161,13 @@ pub fn deduplicar(jogos: Vec<DetectedGame>) -> Vec<DetectedGame> {
                 vence.exige_vanguard |= perde.exige_vanguard;
                 *atual = vence;
             }
-            None => saida.push((chave, j)),
+            Entry::Vacant(v) => {
+                v.insert(saida.len());
+                saida.push(j);
+            }
         }
     }
-    saida.into_iter().map(|(_, j)| j).collect()
+    saida
 }
 
 #[cfg(test)]
@@ -181,5 +201,41 @@ mod testes {
             DetectedGame::new(Launcher::Epic, "B", "X:/B"),
         ]);
         assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn prioridade_travada() {
+        let ordem = [
+            Launcher::Steam,
+            Launcher::Riot,
+            Launcher::Epic,
+            Launcher::Gog,
+            Launcher::Ubisoft,
+            Launcher::Ea,
+            Launcher::BattleNet,
+            Launcher::Xbox,
+            Launcher::Generico,
+        ];
+        for (i, l) in ordem.iter().enumerate() {
+            assert_eq!(usize::from(l.prioridade()), i, "{l:?}");
+        }
+    }
+
+    #[test]
+    fn dedup_preserva_ordem_e_mescla() {
+        let mut epic = DetectedGame::new(Launcher::Epic, "E", "X:/A");
+        epic.exe_indicado = Some(PathBuf::from(r"X:\A\a.exe"));
+        let mut riot = DetectedGame::new(Launcher::Riot, "R", r"x:\a");
+        riot.exige_vanguard = true;
+        let r = deduplicar(vec![
+            DetectedGame::new(Launcher::Generico, "B", "X:/B"),
+            epic,
+            DetectedGame::new(Launcher::Steam, "C", "X:/C"),
+            riot,
+        ]);
+        let nomes: Vec<_> = r.iter().map(|j| j.nome.as_str()).collect();
+        assert_eq!(nomes, ["B", "R", "C"]);
+        assert!(r[1].exige_vanguard);
+        assert_eq!(r[1].exe_indicado, Some(PathBuf::from(r"X:\A\a.exe")));
     }
 }

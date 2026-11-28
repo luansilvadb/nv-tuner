@@ -110,11 +110,7 @@ pub fn varrer_dir(riot: &Path) -> Result<Vec<DetectedGame>, String> {
             if out.iter().any(|j| j.chave() == chave) {
                 continue;
             }
-            let nome = pasta
-                .components()
-                .next_back()
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .unwrap_or_default();
+            let nome = super::ultimo_componente(&pasta);
             out.push(DetectedGame::new(Launcher::Riot, nome, pasta));
         }
     }
@@ -122,5 +118,10 @@ pub fn varrer_dir(riot: &Path) -> Result<Vec<DetectedGame>, String> {
 }
 
 pub fn varrer() -> Result<Vec<DetectedGame>, String> {
-    varrer_dir(&super::program_data().join("Riot Games"))
+    varrer_em(&super::program_data())
+}
+
+/// Varre a partir de um `ProgramData` informado.
+pub(crate) fn varrer_em(program_data: &Path) -> Result<Vec<DetectedGame>, String> {
+    varrer_dir(&program_data.join("Riot Games"))
 }

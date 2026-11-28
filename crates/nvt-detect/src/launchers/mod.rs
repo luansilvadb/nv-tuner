@@ -10,11 +10,14 @@ pub mod riot;
 pub mod steam;
 pub mod xbox;
 
+mod dados;
+
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::model::{DetectedGame, Launcher, deduplicar};
-use crate::registro;
+use crate::registro::{self, EntradaDesinstalacao};
 
 /// `%ProgramData%` (padrão `C:\ProgramData`).
 pub fn program_data() -> PathBuf {
@@ -38,7 +41,80 @@ pub struct RelatorioVarredura {
     pub falhas: Vec<FalhaScanner>,
 }
 
-type Scanner<'a> = Box<dyn FnOnce() -> Result<Vec<DetectedGame>, String> + Send + 'a>;
+/// Resultado de um scanner: jogos ou erro em texto.
+pub(crate) type Resultado = Result<Vec<DetectedGame>, String>;
+
+/// Dados compartilhados por todos os scanners de uma varredura.
+pub(crate) struct Contexto {
+    /// Chaves de desinstalação do Windows (lidas uma vez).
+    pub entradas: Vec<EntradaDesinstalacao>,
+    /// `%ProgramData%`.
+    pub program_data: PathBuf,
+    /// Entradas classificadas por publisher, calculadas na primeira consulta.
+    por_publisher: OnceLock<Vec<DetectedGame>>,
+}
+
+impl Contexto {
+    pub fn new(entradas: Vec<EntradaDesinstalacao>, program_data: PathBuf) -> Self {
+        Self {
+            entradas,
+            program_data,
+            por_publisher: OnceLock::new(),
+        }
+    }
+
+    /// [`por_registro::classificar_publisher`] sobre todas as entradas, uma vez só.
+    pub fn por_publisher(&self) -> &[DetectedGame] {
+        self.por_publisher.get_or_init(|| {
+            self.entradas
+                .iter()
+                .filter_map(por_registro::classificar_publisher)
+                .collect()
+        })
+    }
+}
+
+/// Um scanner de biblioteca de jogos.
+pub(crate) trait Scanner: Sync {
+    fn launcher(&self) -> Launcher;
+    fn varrer(&self, ctx: &Contexto) -> Resultado;
+}
+
+/// Scanner definido por uma função.
+struct PorFuncao(Launcher, fn(&Contexto) -> Resultado);
+
+impl Scanner for PorFuncao {
+    fn launcher(&self) -> Launcher {
+        self.0
+    }
+    fn varrer(&self, ctx: &Contexto) -> Resultado {
+        (self.1)(ctx)
+    }
+}
+
+/// Ponto único de registro dos scanners.
+///
+/// A ordem da tabela é a ordem em que os resultados são juntados e deve seguir
+/// [`Launcher::prioridade`] (verificado em teste).
+static SCANNERS: &[&dyn Scanner] = &[
+    &PorFuncao(Launcher::Steam, |_| steam::varrer()),
+    &PorFuncao(Launcher::Riot, |c| riot::varrer_em(&c.program_data)),
+    &PorFuncao(Launcher::Epic, |c| epic::varrer_em(&c.program_data)),
+    &PorFuncao(Launcher::Gog, |_| por_registro::gog()),
+    &PorFuncao(Launcher::Ubisoft, |_| por_registro::ubisoft()),
+    &PorFuncao(Launcher::Ea, por_registro::ea_ctx),
+    &PorFuncao(Launcher::BattleNet, por_registro::battlenet_ctx),
+    &PorFuncao(Launcher::Xbox, |_| xbox::varrer()),
+    &PorFuncao(Launcher::Generico, |c| generico::varrer(&c.entradas)),
+];
+
+/// Último componente do caminho (nome da pasta), ou vazio.
+pub(crate) fn ultimo_componente(p: &Path) -> String {
+    p.components()
+        .next_back()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .unwrap_or_default()
+}
 
 /// Roda um scanner isolando pânico; o erro vira texto.
 fn rodar(
@@ -75,30 +151,13 @@ pub fn varrer_tudo() -> RelatorioVarredura {
     let mut jogos = Vec::new();
     let mut falhas = Vec::new();
     let entradas = catch_unwind(registro::entradas_desinstalacao).unwrap_or_default();
-    let entradas = &entradas;
-
-    let scanners: Vec<(Launcher, Scanner)> = vec![
-        (Launcher::Steam, Box::new(steam::varrer)),
-        (Launcher::Riot, Box::new(riot::varrer)),
-        (Launcher::Epic, Box::new(epic::varrer)),
-        (Launcher::Gog, Box::new(por_registro::gog)),
-        (Launcher::Ubisoft, Box::new(por_registro::ubisoft)),
-        (Launcher::Ea, Box::new(move || por_registro::ea(entradas))),
-        (
-            Launcher::BattleNet,
-            Box::new(move || por_registro::battlenet(entradas)),
-        ),
-        (Launcher::Xbox, Box::new(xbox::varrer)),
-        (
-            Launcher::Generico,
-            Box::new(move || generico::varrer(entradas)),
-        ),
-    ];
+    let ctx = Contexto::new(entradas, program_data());
+    let ctx = &ctx;
 
     std::thread::scope(|s| {
-        let tarefas: Vec<_> = scanners
-            .into_iter()
-            .map(|(l, f)| (l, s.spawn(move || rodar(f))))
+        let tarefas: Vec<_> = SCANNERS
+            .iter()
+            .map(|sc| (sc.launcher(), s.spawn(move || rodar(|| sc.varrer(ctx)))))
             .collect();
         for (l, t) in tarefas {
             let r = t.join().unwrap_or_else(|_| Err("pânico no scanner".into()));
@@ -132,5 +191,62 @@ mod testes {
         );
         assert_eq!(jogos.len(), 1);
         assert_eq!(falhas.len(), 2);
+    }
+
+    #[test]
+    fn tabela_segue_a_prioridade_e_cobre_cada_launcher_uma_vez() {
+        let ordem: Vec<_> = SCANNERS.iter().map(|s| s.launcher()).collect();
+        assert_eq!(
+            ordem,
+            [
+                Launcher::Steam,
+                Launcher::Riot,
+                Launcher::Epic,
+                Launcher::Gog,
+                Launcher::Ubisoft,
+                Launcher::Ea,
+                Launcher::BattleNet,
+                Launcher::Xbox,
+                Launcher::Generico,
+            ]
+        );
+        assert!(
+            ordem
+                .windows(2)
+                .all(|w| w[0].prioridade() < w[1].prioridade())
+        );
+    }
+
+    #[test]
+    fn contexto_classifica_publisher_como_antes() {
+        let e = |nome: &str, publ: &str| EntradaDesinstalacao {
+            chave: nome.into(),
+            display_name: Some(nome.into()),
+            install_location: Some(format!(r"D:\{nome}")),
+            publisher: Some(publ.into()),
+        };
+        let entradas = vec![
+            e("A", "Electronic Arts"),
+            e("B", "Blizzard Entertainment"),
+            e("C", "Electronic Arts"),
+            e("Battle.net", "Blizzard Entertainment"),
+        ];
+        let ctx = Contexto::new(entradas.clone(), PathBuf::new());
+        assert_eq!(
+            por_registro::battlenet_ctx(&ctx).unwrap(),
+            por_registro::battlenet(&entradas).unwrap()
+        );
+        let ea: Vec<_> = por_registro::ea_ctx(&ctx)
+            .unwrap()
+            .into_iter()
+            .filter(|j| j.app_id.is_some())
+            .collect();
+        let ea_antigo: Vec<_> = por_registro::ea(&entradas)
+            .unwrap()
+            .into_iter()
+            .filter(|j| j.app_id.is_some())
+            .collect();
+        assert_eq!(ea, ea_antigo);
+        assert_eq!(ea.len(), 2);
     }
 }

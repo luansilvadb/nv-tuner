@@ -1,0 +1,51 @@
+# Listas de identificação de launchers (dados, não código).
+#
+# Cada lista mantém o próprio modo de comparação; não unificar.
+#   nomes_launcher  = nome (minúsculo) do aplicativo de launcher; compara por igualdade
+#                     com o nome em minúsculas (scanners EA/Battle.net por registro)
+#   nao_jogo        = trecho (minúsculo) que, contido no nome, indica software que não é
+#                     jogo; compara por substring (scanner genérico de desinstalação)
+#   [[publisher]]   = `contem` (minúsculo) contido no Publisher da entrada de desinstalação
+#                     atribui o jogo ao `launcher`; a primeira regra que casar vence
+#   steam_nao_jogos = AppIDs da Steam que não são jogos (redistribuíveis, ferramentas)
+
+versao_schema = 1
+
+nomes_launcher = [
+    "ea app",
+    "origin",
+    "battle.net",
+    "steam",
+    "epic games launcher",
+    "riot client",
+    "ubisoft connect",
+    "uplay",
+    "gog galaxy",
+    "xbox",
+]
+
+nao_jogo = [
+    "vanguard",
+    "redistributable",
+    "runtime",
+    "anti-cheat",
+    "anticheat",
+    "driver",
+    "sdk",
+    "launcher",
+    "riot client",
+    "battle.net",
+    "ea app",
+    "gog galaxy",
+    "ubisoft connect",
+]
+
+steam_nao_jogos = ["228980", "1070560", "1391110", "1493710", "1628350"]
+
+[[publisher]]
+contem = "blizzard entertainment"
+launcher = "BattleNet"
+
+[[publisher]]
+contem = "electronic arts"
+launcher = "Ea"

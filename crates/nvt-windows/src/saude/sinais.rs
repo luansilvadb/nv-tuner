@@ -73,7 +73,57 @@ impl Default for ParametrosSinais {
     }
 }
 
-fn sinal(tipo: TipoSinal, gravidade: Gravidade, valor: ValorSinal, agora: u64) -> Sinal {
+/// Resultado da avaliação de um sinal: `None` = indisponível.
+type Avaliacao = Option<(Gravidade, ValorSinal)>;
+
+/// Espera entre amostras (CPU). Chamada no máximo uma vez por leitura.
+type Esperar<'a> = &'a mut dyn FnMut(Duration);
+
+/// Entrada do registro de sinais: o tipo e a função que o avalia.
+struct Descritor<F> {
+    tipo: TipoSinal,
+    avaliar: F,
+}
+
+type AvaliarMaquina = fn(&dyn LeitorSinaisMaquina, &ParametrosSinais, Esperar<'_>) -> Avaliacao;
+type AvaliarSessao = fn(&dyn LeitorSinaisSessao) -> Avaliacao;
+
+/// Registro dos sinais do serviço. A ordem aqui é a ordem da lista publicada; a de leitura
+/// põe a CPU primeiro (ver [`ler_sinais_maquina`]).
+/// Sinal novo: escrever a função `avaliar_*` e acrescentar uma entrada.
+const SINAIS_MAQUINA: &[Descritor<AvaliarMaquina>] = &[
+    Descritor {
+        tipo: TipoSinal::EspacoLivre,
+        avaliar: |l, _, _| avaliar_espaco(l),
+    },
+    Descritor {
+        tipo: TipoSinal::MemoriaRepouso,
+        avaliar: |l, _, _| avaliar_memoria(l),
+    },
+    Descritor {
+        tipo: TipoSinal::CpuRepouso,
+        // Sem janela (jogo aberto, logo após o logon) a CPU não é amostrada.
+        avaliar: |l, p, esperar| avaliar_cpu(l, p.janela_cpu?, esperar),
+    },
+    Descritor {
+        tipo: TipoSinal::DriverDesatualizado,
+        avaliar: |l, p, _| avaliar_driver(l, p.driver_ultimo),
+    },
+    Descritor {
+        tipo: TipoSinal::PlanoEnergia,
+        avaliar: |l, p, _| avaliar_plano(l, &p.planos_esperados),
+    },
+];
+
+/// Registro dos sinais da sessão (agente), na ordem publicada.
+const SINAIS_SESSAO: &[Descritor<AvaliarSessao>] = &[Descritor {
+    tipo: TipoSinal::SensorArmazenamento,
+    avaliar: avaliar_storage_sense,
+}];
+
+/// Único ponto que monta o [`Sinal`], inclusive o caso indisponível.
+fn montar(tipo: TipoSinal, avaliacao: Avaliacao, agora: u64) -> Sinal {
+    let (gravidade, valor) = avaliacao.unwrap_or((Gravidade::Indisponivel, ValorSinal::Nenhum));
     Sinal {
         tipo,
         gravidade,
@@ -82,8 +132,14 @@ fn sinal(tipo: TipoSinal, gravidade: Gravidade, valor: ValorSinal, agora: u64) -
     }
 }
 
-fn indisponivel(tipo: TipoSinal, agora: u64) -> Sinal {
-    sinal(tipo, Gravidade::Indisponivel, ValorSinal::Nenhum, agora)
+/// Adapta um `FnOnce` à espera do registro: chamadas extras são ignoradas.
+fn uma_vez(esperar: impl FnOnce(Duration)) -> impl FnMut(Duration) {
+    let mut esperar = Some(esperar);
+    move |d| {
+        if let Some(e) = esperar.take() {
+            e(d);
+        }
+    }
 }
 
 fn pct(parte: u64, total: u64) -> u8 {
@@ -93,37 +149,84 @@ fn pct(parte: u64, total: u64) -> u8 {
     (u128::from(parte.min(total)) * 100 / u128::from(total)) as u8
 }
 
-pub fn sinal_espaco(l: &impl LeitorSinaisMaquina, agora: u64) -> Sinal {
-    let tipo = TipoSinal::EspacoLivre;
-    match l.disco_sistema() {
-        Some((livres, total)) if total > 0 && livres <= total => {
-            let baixo = u128::from(livres) * 100 < u128::from(total) * u128::from(ESPACO_MIN_PCT)
-                || livres < ESPACO_MIN_BYTES;
-            let g = if baixo {
-                Gravidade::Atencao
-            } else {
-                Gravidade::Ok
-            };
-            sinal(tipo, g, ValorSinal::Bytes { livres, total }, agora)
-        }
-        _ => indisponivel(tipo, agora),
+fn atencao_se(cond: bool) -> Gravidade {
+    if cond {
+        Gravidade::Atencao
+    } else {
+        Gravidade::Ok
     }
 }
 
-pub fn sinal_memoria(l: &impl LeitorSinaisMaquina, agora: u64) -> Sinal {
-    let tipo = TipoSinal::MemoriaRepouso;
-    match l.memoria_comprometida() {
-        Some((uso, limite)) if limite > 0 => {
-            let p = pct(uso, limite);
-            let g = if p >= MEMORIA_ATENCAO_PCT {
-                Gravidade::Atencao
-            } else {
-                Gravidade::Ok
-            };
-            sinal(tipo, g, ValorSinal::Percentual(p), agora)
-        }
-        _ => indisponivel(tipo, agora),
+fn informativo_se(cond: bool) -> Gravidade {
+    if cond {
+        Gravidade::Informativo
+    } else {
+        Gravidade::Ok
     }
+}
+
+fn avaliar_espaco(l: &dyn LeitorSinaisMaquina) -> Avaliacao {
+    let (livres, total) = l.disco_sistema().filter(|&(l, t)| t > 0 && l <= t)?;
+    let baixo = u128::from(livres) * 100 < u128::from(total) * u128::from(ESPACO_MIN_PCT)
+        || livres < ESPACO_MIN_BYTES;
+    Some((atencao_se(baixo), ValorSinal::Bytes { livres, total }))
+}
+
+fn avaliar_memoria(l: &dyn LeitorSinaisMaquina) -> Avaliacao {
+    let (uso, limite) = l.memoria_comprometida().filter(|&(_, lim)| lim > 0)?;
+    let p = pct(uso, limite);
+    Some((
+        atencao_se(p >= MEMORIA_ATENCAO_PCT),
+        ValorSinal::Percentual(p),
+    ))
+}
+
+/// Duas leituras separadas por `esperar(janela)`.
+fn avaliar_cpu(l: &dyn LeitorSinaisMaquina, janela: Duration, esperar: Esperar<'_>) -> Avaliacao {
+    let a = l.tempos_cpu()?;
+    esperar(janela);
+    let b = l.tempos_cpu()?;
+    let ocioso = b.ocioso.checked_sub(a.ocioso)?;
+    let kernel = b.kernel.checked_sub(a.kernel)?;
+    let usuario = b.usuario.checked_sub(a.usuario)?;
+    let total = kernel.saturating_add(usuario);
+    if total == 0 || ocioso > total {
+        return None;
+    }
+    let p = pct(total - ocioso, total);
+    Some((atencao_se(p >= CPU_ATENCAO_PCT), ValorSinal::Percentual(p)))
+}
+
+fn avaliar_driver(l: &dyn LeitorSinaisMaquina, ultimo: Option<u32>) -> Avaliacao {
+    let (atual, ultima) = (l.driver_nvidia()?, ultimo?);
+    Some((
+        informativo_se(atual < ultima),
+        ValorSinal::Versao { atual, ultima },
+    ))
+}
+
+fn avaliar_plano(l: &dyn LeitorSinaisMaquina, esperados: &[u128]) -> Avaliacao {
+    let trocado = !esperados.contains(&l.plano_ativo()?);
+    Some((informativo_se(trocado), ValorSinal::Booleano(trocado)))
+}
+
+fn avaliar_storage_sense(l: &dyn LeitorSinaisSessao) -> Avaliacao {
+    match l.storage_policy_01()? {
+        LeituraDword::Valor(1) => Some((Gravidade::Ok, ValorSinal::Booleano(true))),
+        LeituraDword::Valor(0) => Some((Gravidade::Informativo, ValorSinal::Booleano(false))),
+        _ => None,
+    }
+}
+
+// Avaliações avulsas mantidas como API pública (reexportadas e usadas nos testes).
+// Sinais novos não precisam de função equivalente: o registro basta.
+
+pub fn sinal_espaco(l: &impl LeitorSinaisMaquina, agora: u64) -> Sinal {
+    montar(TipoSinal::EspacoLivre, avaliar_espaco(l), agora)
+}
+
+pub fn sinal_memoria(l: &impl LeitorSinaisMaquina, agora: u64) -> Sinal {
+    montar(TipoSinal::MemoriaRepouso, avaliar_memoria(l), agora)
 }
 
 /// Duas leituras separadas por `esperar(janela)`.
@@ -133,112 +236,63 @@ pub fn sinal_cpu(
     esperar: impl FnOnce(Duration),
     agora: u64,
 ) -> Sinal {
-    let tipo = TipoSinal::CpuRepouso;
-    let Some(a) = l.tempos_cpu() else {
-        return indisponivel(tipo, agora);
-    };
-    esperar(janela);
-    let Some(b) = l.tempos_cpu() else {
-        return indisponivel(tipo, agora);
-    };
-    let delta = |x: u64, y: u64| y.checked_sub(x);
-    let (Some(ocioso), Some(kernel), Some(usuario)) = (
-        delta(a.ocioso, b.ocioso),
-        delta(a.kernel, b.kernel),
-        delta(a.usuario, b.usuario),
-    ) else {
-        return indisponivel(tipo, agora);
-    };
-    let total = kernel.saturating_add(usuario);
-    if total == 0 || ocioso > total {
-        return indisponivel(tipo, agora);
-    }
-    let p = pct(total - ocioso, total);
-    let g = if p >= CPU_ATENCAO_PCT {
-        Gravidade::Atencao
-    } else {
-        Gravidade::Ok
-    };
-    sinal(tipo, g, ValorSinal::Percentual(p), agora)
+    let avaliacao = avaliar_cpu(l, janela, &mut uma_vez(esperar));
+    montar(TipoSinal::CpuRepouso, avaliacao, agora)
 }
 
 pub fn sinal_driver(l: &impl LeitorSinaisMaquina, ultimo: Option<u32>, agora: u64) -> Sinal {
-    let tipo = TipoSinal::DriverDesatualizado;
-    match (l.driver_nvidia(), ultimo) {
-        (Some(atual), Some(ultima)) => {
-            let g = if atual < ultima {
-                Gravidade::Informativo
-            } else {
-                Gravidade::Ok
-            };
-            sinal(tipo, g, ValorSinal::Versao { atual, ultima }, agora)
-        }
-        _ => indisponivel(tipo, agora),
-    }
+    montar(
+        TipoSinal::DriverDesatualizado,
+        avaliar_driver(l, ultimo),
+        agora,
+    )
 }
 
 /// `Booleano(true)` = plano trocado em relação aos esperados.
 pub fn sinal_plano(l: &impl LeitorSinaisMaquina, esperados: &[u128], agora: u64) -> Sinal {
-    let tipo = TipoSinal::PlanoEnergia;
-    match l.plano_ativo() {
-        Some(guid) => {
-            let trocado = !esperados.contains(&guid);
-            let g = if trocado {
-                Gravidade::Informativo
-            } else {
-                Gravidade::Ok
-            };
-            sinal(tipo, g, ValorSinal::Booleano(trocado), agora)
-        }
-        None => indisponivel(tipo, agora),
-    }
+    montar(TipoSinal::PlanoEnergia, avaliar_plano(l, esperados), agora)
 }
 
 /// `Booleano(ligado)`. Ausente ou valor fora de {0, 1} = indisponível.
 pub fn sinal_storage_sense(l: &impl LeitorSinaisSessao, agora: u64) -> Sinal {
-    let tipo = TipoSinal::SensorArmazenamento;
-    match l.storage_policy_01() {
-        Some(LeituraDword::Valor(1)) => {
-            sinal(tipo, Gravidade::Ok, ValorSinal::Booleano(true), agora)
-        }
-        Some(LeituraDword::Valor(0)) => sinal(
-            tipo,
-            Gravidade::Informativo,
-            ValorSinal::Booleano(false),
-            agora,
-        ),
-        _ => indisponivel(tipo, agora),
-    }
+    montar(
+        TipoSinal::SensorArmazenamento,
+        avaliar_storage_sense(l),
+        agora,
+    )
 }
 
-/// Serviço: espaço, memória, CPU, driver e plano.
+/// Serviço: sinais de [`SINAIS_MAQUINA`], na ordem do registro.
 pub fn ler_sinais_maquina(
     l: &impl LeitorSinaisMaquina,
     p: &ParametrosSinais,
     esperar: impl FnOnce(Duration),
     agora: u64,
 ) -> Vec<Sinal> {
-    let cpu = match p.janela_cpu {
-        Some(j) => sinal_cpu(l, j, esperar, agora),
-        None => indisponivel(TipoSinal::CpuRepouso, agora),
-    };
-    vec![
-        sinal_espaco(l, agora),
-        sinal_memoria(l, agora),
-        cpu,
-        sinal_driver(l, p.driver_ultimo, agora),
-        sinal_plano(l, &p.planos_esperados, agora),
-    ]
+    let mut esperar = uma_vez(esperar);
+    // Ordem de leitura: CPU primeiro (com a espera da janela), depois os demais na ordem
+    // do registro. A lista publicada segue a ordem do registro.
+    let mut ordem: Vec<usize> = (0..SINAIS_MAQUINA.len()).collect();
+    ordem.sort_by_key(|&i| SINAIS_MAQUINA[i].tipo != TipoSinal::CpuRepouso);
+    let mut saida: Vec<Option<Sinal>> = SINAIS_MAQUINA.iter().map(|_| None).collect();
+    for i in ordem {
+        let d = &SINAIS_MAQUINA[i];
+        saida[i] = Some(montar(d.tipo, (d.avaliar)(l, p, &mut esperar), agora));
+    }
+    saida.into_iter().flatten().collect()
 }
 
-/// Agente: Storage Sense.
+/// Agente: sinais de [`SINAIS_SESSAO`], na ordem do registro.
 pub fn ler_sinais_sessao(l: &impl LeitorSinaisSessao, agora: u64) -> Vec<Sinal> {
-    vec![sinal_storage_sense(l, agora)]
+    SINAIS_SESSAO
+        .iter()
+        .map(|d| montar(d.tipo, (d.avaliar)(l), agora))
+        .collect()
 }
 
 #[cfg(test)]
 mod testes {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use super::*;
 
@@ -253,30 +307,44 @@ mod testes {
         plano: Option<u128>,
         driver: Option<u32>,
         storage: Option<LeituraDword>,
+        /// Sequência de chamadas ao leitor, para travar a ordem de leitura.
+        chamadas: RefCell<Vec<&'static str>>,
+    }
+
+    impl Falso {
+        fn anotar(&self, c: &'static str) {
+            self.chamadas.borrow_mut().push(c);
+        }
     }
 
     impl LeitorSinaisMaquina for Falso {
         fn disco_sistema(&self) -> Option<(u64, u64)> {
+            self.anotar("disco");
             self.disco
         }
         fn memoria_comprometida(&self) -> Option<(u64, u64)> {
+            self.anotar("memoria");
             self.memoria
         }
         fn tempos_cpu(&self) -> Option<TemposCpu> {
+            self.anotar("cpu");
             let i = self.lidas.get();
             self.lidas.set(i + 1);
             self.cpu.get(i).copied()
         }
         fn plano_ativo(&self) -> Option<u128> {
+            self.anotar("plano");
             self.plano
         }
         fn driver_nvidia(&self) -> Option<u32> {
+            self.anotar("driver");
             self.driver
         }
     }
 
     impl LeitorSinaisSessao for Falso {
         fn storage_policy_01(&self) -> Option<LeituraDword> {
+            self.anotar("storage");
             self.storage
         }
     }
@@ -433,5 +501,46 @@ mod testes {
         assert_eq!(tipos.len(), 5);
         assert!(m.iter().all(|s| s.gravidade == Gravidade::Indisponivel));
         assert_eq!(f.lidas.get(), 0, "sem janela, CPU não é amostrada");
+    }
+
+    #[test]
+    fn ordem_de_leitura_cpu_primeiro() {
+        let t = TemposCpu {
+            ocioso: 0,
+            kernel: 0,
+            usuario: 0,
+        };
+        let f = Falso {
+            cpu: vec![t, t],
+            ..Falso::default()
+        };
+        let p = ParametrosSinais {
+            janela_cpu: Some(Duration::ZERO),
+            ..ParametrosSinais::default()
+        };
+        let m = ler_sinais_maquina(&f, &p, |_| f.anotar("esperar"), 0);
+        assert_eq!(
+            *f.chamadas.borrow(),
+            [
+                "cpu", "esperar", "cpu", "disco", "memoria", "driver", "plano"
+            ]
+        );
+        let tipos: Vec<_> = m.iter().map(|s| s.tipo).collect();
+        assert_eq!(
+            tipos,
+            [
+                TipoSinal::EspacoLivre,
+                TipoSinal::MemoriaRepouso,
+                TipoSinal::CpuRepouso,
+                TipoSinal::DriverDesatualizado,
+                TipoSinal::PlanoEnergia,
+            ]
+        );
+
+        let f = Falso::default();
+        let s = ler_sinais_sessao(&f, 0);
+        assert_eq!(*f.chamadas.borrow(), ["storage"]);
+        let tipos: Vec<_> = s.iter().map(|s| s.tipo).collect();
+        assert_eq!(tipos, [TipoSinal::SensorArmazenamento]);
     }
 }

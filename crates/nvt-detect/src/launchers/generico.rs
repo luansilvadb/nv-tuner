@@ -8,23 +8,6 @@ use std::path::{Path, PathBuf};
 use crate::model::{DetectedGame, Launcher};
 use crate::registro::EntradaDesinstalacao;
 
-/// Nomes que indicam software que não é jogo.
-const NAO_JOGO: &[&str] = &[
-    "vanguard",
-    "redistributable",
-    "runtime",
-    "anti-cheat",
-    "anticheat",
-    "driver",
-    "sdk",
-    "launcher",
-    "riot client",
-    "battle.net",
-    "ea app",
-    "gog galaxy",
-    "ubisoft connect",
-];
-
 /// Arquivos/pastas cuja presença indica uma instalação de jogo.
 fn tem_marcador(pasta: &Path, profundidade: u32) -> bool {
     let Ok(rd) = std::fs::read_dir(pasta) else {
@@ -93,7 +76,12 @@ pub fn classificar(
         );
     }
     let n = nome.to_lowercase();
-    if NAO_JOGO.iter().any(|x| n.contains(x)) {
+    // Nomes que indicam software que não é jogo (substring), de `data/launchers.toml`.
+    if super::dados::tabela()
+        .nao_jogo
+        .iter()
+        .any(|x| n.contains(x.as_str()))
+    {
         return None;
     }
     sonda(&pasta).then(|| DetectedGame::new(Launcher::Generico, nome, pasta))

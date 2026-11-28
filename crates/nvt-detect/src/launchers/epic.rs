@@ -48,8 +48,13 @@ pub fn varrer_dir(manifests: &Path) -> Result<Vec<DetectedGame>, String> {
 }
 
 pub fn varrer() -> Result<Vec<DetectedGame>, String> {
+    varrer_em(&super::program_data())
+}
+
+/// Varre a partir de um `ProgramData` informado.
+pub(crate) fn varrer_em(program_data: &Path) -> Result<Vec<DetectedGame>, String> {
     varrer_dir(
-        &super::program_data()
+        &program_data
             .join("Epic")
             .join("EpicGamesLauncher")
             .join("Data")

@@ -141,12 +141,17 @@ impl FonteProcessos for ProcessosFalsos {
 /// Nomes de `vigiados` que estão em execução, na ordem e grafia de `vigiados`,
 /// sem repetição. Comparação sem diferenciar maiúsculas. Função pura.
 pub fn em_execucao<S: AsRef<str>>(processos: &[Processo], vigiados: &[S]) -> Vec<String> {
+    // Chave `to_ascii_lowercase`: mesma equivalência de `eq_ignore_ascii_case`.
+    let ativos: std::collections::HashSet<String> = processos
+        .iter()
+        .map(|p| p.nome.to_ascii_lowercase())
+        .collect();
+    let mut vistos = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
     for v in vigiados {
         let v = v.as_ref();
-        if processos.iter().any(|p| p.nome.eq_ignore_ascii_case(v))
-            && !out.iter().any(|x| x.eq_ignore_ascii_case(v))
-        {
+        let chave = v.to_ascii_lowercase();
+        if ativos.contains(&chave) && vistos.insert(chave) {
             out.push(v.to_string());
         }
     }

@@ -6,9 +6,6 @@ use crate::model::{DetectedGame, Launcher, caminho_windows};
 use crate::registro::{self, Hive};
 use crate::vdf;
 
-/// AppIDs que não são jogos (redistribuíveis, ferramentas).
-const NAO_JOGOS: &[&str] = &["228980", "1070560", "1391110", "1493710", "1628350"];
-
 /// Pasta raiz da Steam pelo registro (barras e caixa normalizadas pelo chamador).
 pub fn raiz() -> Option<PathBuf> {
     registro::texto(Hive::Hkcu, r"Software\Valve\Steam", "SteamPath")
@@ -60,7 +57,11 @@ pub fn jogo_de_manifesto(src: &str, biblioteca: &Path) -> Result<Option<Detected
         return Ok(None);
     }
     let nome_lc = nome.to_lowercase();
-    if NAO_JOGOS.contains(&appid)
+    // AppIDs que não são jogos (redistribuíveis, ferramentas), de `data/launchers.toml`.
+    if super::dados::tabela()
+        .steam_nao_jogos
+        .iter()
+        .any(|x| x == appid)
         || nome_lc.contains("redistributable")
         || nome_lc.contains("steamvr")
         || nome_lc.starts_with("proton")

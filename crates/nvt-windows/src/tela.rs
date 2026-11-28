@@ -1,12 +1,13 @@
 use std::{mem::size_of, ptr};
 
 use nvt_core::usuario::RefreshRacional;
-use nvt_detect::tela::{FonteTela, TelaDoSistema, TelaIndisponivel};
+use nvt_detect::tela::{
+    FonteTela, TelaDoSistema, TelaIndisponivel, consultar_topologia, texto_win32,
+};
 use windows_sys::Win32::{
     Devices::Display::*,
     Foundation::{
-        ERROR_BAD_CONFIGURATION, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_SUCCESS,
-        LUID,
+        ERROR_ACCESS_DENIED, ERROR_BAD_CONFIGURATION, ERROR_INVALID_PARAMETER, ERROR_SUCCESS, LUID,
     },
 };
 
@@ -359,40 +360,15 @@ fn reindexar(indice: u32, removido: u32) -> u32 {
 }
 
 fn consultar() -> Result<Vetores, Erro> {
-    for _ in 0..4 {
-        let (mut caminhos, mut modos) = (0, 0);
-        // SAFETY: ponteiros para dois contadores gravaveis.
-        verificar(unsafe {
-            GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut caminhos, &mut modos)
-        })?;
-        if caminhos == 0 {
-            return Err(Erro::AlvoIndisponivel);
-        }
-        let mut config = Vetores {
-            caminhos: vec![DISPLAYCONFIG_PATH_INFO::default(); caminhos as usize],
-            modos: vec![DISPLAYCONFIG_MODE_INFO::default(); modos as usize],
-        };
-        // SAFETY: buffers dimensionados pelos contadores. A consulta ativa
-        // exige ponteiro nulo para o identificador de topologia.
-        let codigo = unsafe {
-            QueryDisplayConfig(
-                QDC_ONLY_ACTIVE_PATHS,
-                &mut caminhos,
-                config.caminhos.as_mut_ptr(),
-                &mut modos,
-                config.modos.as_mut_ptr(),
-                ptr::null_mut(),
-            )
-        };
-        if codigo == ERROR_INSUFFICIENT_BUFFER {
-            continue;
-        }
-        verificar(codigo)?;
-        config.caminhos.truncate(caminhos as usize);
-        config.modos.truncate(modos as usize);
-        return Ok(config);
-    }
-    Err(Erro::Win32(ERROR_INSUFFICIENT_BUFFER))
+    // Converte de volta exatamente para os erros da consulta local antiga:
+    // `consultar_topologia` so produz estas tres variantes.
+    let (caminhos, modos) = consultar_topologia().map_err(|e| match e {
+        TelaIndisponivel::SessaoSemTela => Erro::Win32(ERROR_ACCESS_DENIED),
+        TelaIndisponivel::Win32(codigo) => Erro::Win32(codigo),
+        // SemPrimario: topologia sem caminhos ativos.
+        _ => Erro::AlvoIndisponivel,
+    })?;
+    Ok(Vetores { caminhos, modos })
 }
 
 fn taxa(caminho: &DISPLAYCONFIG_PATH_INFO) -> Result<RefreshRacional, Erro> {
@@ -416,7 +392,7 @@ fn nome_alvo(alvo: &DISPLAYCONFIG_PATH_TARGET_INFO) -> Result<String, Erro> {
     };
     // SAFETY: o cabecalho inicial descreve a estrutura inteira e o buffer e gravavel.
     verificar(unsafe { DisplayConfigGetDeviceInfo(ptr::from_mut(&mut nome).cast()) } as u32)?;
-    texto(&nome.monitorDevicePath).ok_or(Erro::AlvoIndisponivel)
+    texto_win32(&nome.monitorDevicePath).ok_or(Erro::AlvoIndisponivel)
 }
 
 fn nome_origem(origem: &DISPLAYCONFIG_PATH_SOURCE_INFO) -> Result<String, Erro> {
@@ -431,13 +407,7 @@ fn nome_origem(origem: &DISPLAYCONFIG_PATH_SOURCE_INFO) -> Result<String, Erro> 
     };
     // SAFETY: o cabecalho inicial descreve a estrutura inteira e o buffer e gravavel.
     verificar(unsafe { DisplayConfigGetDeviceInfo(ptr::from_mut(&mut nome).cast()) } as u32)?;
-    texto(&nome.viewGdiDeviceName).ok_or(Erro::ModoIndisponivel)
-}
-
-fn texto(buffer: &[u16]) -> Option<String> {
-    let fim = buffer.iter().position(|&u| u == 0)?;
-    (fim > 0).then_some(())?;
-    String::from_utf16(&buffer[..fim]).ok()
+    texto_win32(&nome.viewGdiDeviceName).ok_or(Erro::ModoIndisponivel)
 }
 
 fn mesmo_adaptador(a: LUID, b: LUID) -> bool {
